@@ -1,0 +1,29 @@
+# Meson cross file for aarch64 (GNU triplet aarch64-linux-gnu).
+#
+# Targets the QEMU 'virt' machine (device/qemu-virt). Uses the Debian/Ubuntu
+# cross toolchain (gcc-aarch64-linux-gnu) and arm64 multiarch dev libraries
+# installed via `dpkg --add-architecture arm64`, so pkg-config finds the arm64
+# wlroots/wayland/egl/... under /usr/lib/aarch64-linux-gnu/pkgconfig.
+#
+# Usage:
+#   meson setup build-arm64 --cross-file meta/cross/aarch64-linux-gnu.txt
+#   ninja -C build-arm64
+#
+# See docs/contributing/build-zelto-os.md ("Cross-compile for a device").
+
+[binaries]
+c          = 'aarch64-linux-gnu-gcc'
+cpp        = 'aarch64-linux-gnu-g++'
+ar         = 'aarch64-linux-gnu-ar'
+strip      = 'aarch64-linux-gnu-strip'
+pkg-config = 'aarch64-linux-gnu-pkg-config'
+
+[properties]
+# Multiarch pkg-config search path for arm64 dev libraries.
+pkg_config_libdir = '/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig'
+
+[host_machine]
+system     = 'linux'
+cpu_family = 'aarch64'
+cpu        = 'aarch64'
+endian     = 'little'

@@ -1,0 +1,62 @@
+#!/bin/sh
+# Zelto OS initramfs init (PID 1) for the QEMU 'virt' bring-up.
+#
+# Minimal job: mount the kernel pseudo-filesystems, set up /dev (devtmpfs) and
+# binderfs (Android-container prereq), then hand off to zcomp. If zcomp is
+# missing or exits, fall back to an interactive shell so the boot is debuggable.
+#
+# This is intentionally tiny; the real OS uses a postmarketOS rootfs + init
+# (see docs/contributing/build-zelto-os.md). Step 3/5 of the bootstrap task.
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+echo "[zelto-init] hello from initramfs"
+
+# Core pseudo-filesystems.
+mount -t proc     none /proc      2>/dev/null
+mount -t sysfs    none /sys       2>/dev/null
+mount -t devtmpfs none /dev       2>/dev/null || mount -t tmpfs none /dev
+mount -t tmpfs    none /tmp       2>/dev/null
+mount -t tmpfs    none /run       2>/dev/null
+
+# DRM render/card nodes appear under /dev/dri via devtmpfs; make sure the dir is
+# there even if no device showed up (helps diagnostics).
+mkdir -p /dev/dri /dev/pts
+mount -t devpts none /dev/pts 2>/dev/null
+
+# binderfs: Android-container IPC (docs/overview/how-it-runs-apks.md). Best-effort
+# now (Waydroid is a later phase); failure must not block boot.
+mkdir -p /dev/binderfs
+if mount -t binder none /dev/binderfs 2>/dev/null; then
+    echo "[zelto-init] binderfs mounted at /dev/binderfs"
+else
+    echo "[zelto-init] binderfs unavailable (ok for compositor bring-up)"
+fi
+
+# Report what the kernel gave us, to make GPU/input bring-up debuggable.
+echo "[zelto-init] DRM nodes:"; ls -l /dev/dri 2>/dev/null || echo "  (none)"
+echo "[zelto-init] input nodes:"; ls /dev/input 2>/dev/null || echo "  (none)"
+
+# wlroots/EGL knobs for the QEMU software path (no host GL / virgl):
+#   - WLR_RENDERER=gles2 keeps the GLES path that the task requires.
+#   - LIBGL_ALWAYS_SOFTWARE + the swrast DRI driver give GLES via llvmpipe on the
+#     virtio-gpu dumb-buffer KMS device.
+#   - WLR_BACKENDS=drm/libinput: we are a real DRM compositor, not nested.
+export XDG_RUNTIME_DIR=/run
+export WLR_RENDERER=gles2
+export WLR_BACKENDS=drm,libinput
+export LIBGL_ALWAYS_SOFTWARE=1
+export WLR_RENDERER_ALLOW_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+
+echo "[zelto-init] starting zcomp..."
+if [ -x /usr/bin/zcomp ]; then
+    /usr/bin/zcomp
+    echo "[zelto-init] zcomp exited ($?)."
+else
+    echo "[zelto-init] /usr/bin/zcomp not found!"
+fi
+
+echo "[zelto-init] dropping to shell (Ctrl-A X to quit QEMU)"
+exec /bin/sh
