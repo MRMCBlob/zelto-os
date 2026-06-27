@@ -16,7 +16,10 @@ c          = 'aarch64-linux-gnu-gcc'
 cpp        = 'aarch64-linux-gnu-g++'
 ar         = 'aarch64-linux-gnu-ar'
 strip      = 'aarch64-linux-gnu-strip'
-pkg-config = 'aarch64-linux-gnu-pkg-config'
+# Plain pkg-config is fine: the pkg_config_libdir property below points it at the
+# arm64 multiarch .pc files. (Avoids needing the aarch64-linux-gnu-pkg-config
+# wrapper package.)
+pkg-config = 'pkg-config'
 
 [properties]
 # Multiarch pkg-config search path for arm64 dev libraries.

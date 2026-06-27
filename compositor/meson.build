@@ -39,6 +39,7 @@ if have_graphics
 
   zcomp_deps = [
     wlroots, wayland_server, xkbcommon, pixman, libdrm, egl, glesv2,
+    cc.find_library('m', required : false),
   ]
 
   zcomp_src = files(
