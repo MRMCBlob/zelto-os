@@ -78,7 +78,7 @@ KCMD="console=ttyAMA0 rdinit=/init loglevel=7"
 
 if [ "${HEADLESS:-0}" = "1" ]; then
     echo "==> launching QEMU headless; frame -> $OUT/frame.ppm after ${SHOT_DELAY}s"
-    rm -f "$OUT/frame.ppm"
+    rm -f "$OUT/frame.ppm" "$OUT/frame-after.ppm"
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"
@@ -88,33 +88,71 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         -serial mon:stdio \
         -qmp "unix:$QMP_SOCK,server,nowait" &
     QPID=$!
-    # Wait for the GPU + compositor to paint, then screendump via QMP.
-    sleep "$SHOT_DELAY"
-    if command -v socat >/dev/null 2>&1; then
-        printf '%s\n' \
-          '{"execute":"qmp_capabilities"}' \
-          "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/frame.ppm\"}}" \
-          | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-    else
-        echo "WARN: socat not installed; cannot drive QMP screendump"
-    fi
-    sleep 1
-    kill "$QPID" 2>/dev/null || true
-    if [ -f "$OUT/frame.ppm" ]; then
-        echo "==> wrote $OUT/frame.ppm"
-        # Convert to PNG for easy viewing. Prefer netpbm/ImageMagick; otherwise
-        # fall back to a tiny pure-Python PPM->PNG encoder (python3 is ubiquitous).
+
+    have_socat=0
+    command -v socat >/dev/null 2>&1 && have_socat=1
+    [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+    # Send one QMP command (JSON, sans the capabilities handshake) to the socket.
+    qmp() {
+        [ "$have_socat" = "1" ] || return 0
+        printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+            | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+    }
+    # PPM -> PNG (netpbm / ImageMagick / pure-python fallback).
+    to_png() {
+        [ -f "$1" ] || return 0
+        echo "==> wrote $1"
         if command -v pnmtopng >/dev/null 2>&1; then
-            pnmtopng "$OUT/frame.ppm" > "$OUT/frame.png" 2>/dev/null && \
-                echo "==> wrote $OUT/frame.png"
+            pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
         elif command -v convert >/dev/null 2>&1; then
-            convert "$OUT/frame.ppm" "$OUT/frame.png" && \
-                echo "==> wrote $OUT/frame.png"
+            convert "$1" "$2" && echo "==> wrote $2"
         elif command -v python3 >/dev/null 2>&1; then
-            python3 "$REPO_ROOT/meta/ppm2png.py" "$OUT/frame.ppm" "$OUT/frame.png" && \
-                echo "==> wrote $OUT/frame.png"
+            python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
         fi
+    }
+
+    # Wait for the GPU + compositor to paint, then screendump the "before" frame.
+    sleep "$SHOT_DELAY"
+    qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/frame.ppm\"}}"
+    sleep 1
+    to_png "$OUT/frame.ppm" "$OUT/frame.png"
+
+    # Optional: inject a pointer tap + key press over QMP input-send-event, wait
+    # for the app to rebuild, and capture an "after" frame. Coordinates are the
+    # on-screen tap point in pixels (default: the sample's Button); the abs axes
+    # map the point into the 0..32767 input range over the output size.
+    if [ "${INJECT:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        TAP_X="${TAP_X:-640}"; TAP_Y="${TAP_Y:-140}"
+        KEY="${KEY:-a}"
+        TAPS="${TAPS:-1}"; KEYS="${KEYS:-1}"
+        AX=$(( TAP_X * 32767 / OUTW ))
+        AY=$(( TAP_Y * 32767 / OUTH ))
+        echo "==> injecting ${TAPS}x tap @ ${TAP_X},${TAP_Y} (abs $AX,$AY) + ${KEYS}x key '$KEY'"
+        # Position the absolute pointer once.
+        qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$AX}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$AY}}]}}"
+        i=0
+        while [ "$i" -lt "$TAPS" ]; do
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"left\"}}]}}"
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"left\"}}]}}"
+            sleep 1
+            i=$((i + 1))
+        done
+        i=0
+        while [ "$i" -lt "$KEYS" ]; do
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":true,\"key\":{\"type\":\"qcode\",\"data\":\"$KEY\"}}}]}}"
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":false,\"key\":{\"type\":\"qcode\",\"data\":\"$KEY\"}}}]}}"
+            sleep 1
+            i=$((i + 1))
+        done
+        sleep 2
+        qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/frame-after.ppm\"}}"
+        sleep 1
+        to_png "$OUT/frame-after.ppm" "$OUT/frame-after.png"
     fi
+
+    kill "$QPID" 2>/dev/null || true
 else
     echo "==> launching QEMU with GTK display (WSLg)"
     exec qemu-system-aarch64 "${common[@]}" \
