@@ -1,0 +1,25 @@
+# Normalize line endings: the repo is developed/built on Linux (and WSL on
+# Windows). Force LF so shell scripts, Meson files, and C sources stay POSIX-
+# clean regardless of the contributor's OS or core.autocrlf setting.
+* text=auto eol=lf
+
+# Shell scripts and the initramfs init MUST be LF (CRLF breaks the shebang).
+*.sh        text eol=lf
+init        text eol=lf
+
+# Meson / config fragments are LF.
+*.build     text eol=lf
+*.txt       text eol=lf
+*.config    text eol=lf
+*.py        text eol=lf
+
+# C sources / headers.
+*.c         text eol=lf
+*.h         text eol=lf
+
+# Binary assets — never normalize or diff as text.
+*.png       binary
+*.ppm       binary
+*.cpio.gz   binary
+*.img       binary
+Image       binary

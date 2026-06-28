@@ -22,7 +22,7 @@ OUT="$REPO_ROOT/device/qemu-virt/out"
 MEM="${MEM:-2048}"
 SMP="${SMP:-4}"
 CPU="${CPU:-cortex-a72}"
-SHOT_DELAY="${SHOT_DELAY:-8}"
+SHOT_DELAY="${SHOT_DELAY:-16}"
 
 KERNEL="$OUT/Image"
 INITRD="$OUT/initramfs.cpio.gz"
@@ -45,6 +45,20 @@ fi
 [ -f "$KERNEL" ] || { echo "ERROR: kernel missing ($KERNEL); run device/qemu-virt/build-kernel.sh"; exit 1; }
 [ -f "$INITRD" ] || { echo "ERROR: initramfs missing ($INITRD)"; exit 1; }
 
+# QEMU's kernel loader cannot mmap files on a WSL 9p/drvfs mount (/mnt/c/...).
+# If the artifacts live there, stage them to a native tmp dir before launching.
+case "$KERNEL" in
+    /mnt/*)
+        STAGE="$(mktemp -d "${TMPDIR:-/tmp}/zelto-run.XXXXXX")"
+        echo "==> staging kernel+initramfs to native fs ($STAGE) for QEMU"
+        cp -f "$KERNEL" "$STAGE/Image"
+        cp -f "$INITRD" "$STAGE/initramfs.cpio.gz"
+        KERNEL="$STAGE/Image"
+        INITRD="$STAGE/initramfs.cpio.gz"
+        trap 'rm -rf "$STAGE"' EXIT
+        ;;
+esac
+
 # Common QEMU arguments.
 common=(
     -M virt
@@ -65,7 +79,8 @@ KCMD="console=ttyAMA0 rdinit=/init loglevel=7"
 if [ "${HEADLESS:-0}" = "1" ]; then
     echo "==> launching QEMU headless; frame -> $OUT/frame.ppm after ${SHOT_DELAY}s"
     rm -f "$OUT/frame.ppm"
-    QMP_SOCK="$OUT/qmp.sock"
+    # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
+    QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"
     qemu-system-aarch64 "${common[@]}" \
         -append "$KCMD" \
@@ -85,7 +100,21 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
     sleep 1
     kill "$QPID" 2>/dev/null || true
-    [ -f "$OUT/frame.ppm" ] && echo "==> wrote $OUT/frame.ppm"
+    if [ -f "$OUT/frame.ppm" ]; then
+        echo "==> wrote $OUT/frame.ppm"
+        # Convert to PNG for easy viewing. Prefer netpbm/ImageMagick; otherwise
+        # fall back to a tiny pure-Python PPM->PNG encoder (python3 is ubiquitous).
+        if command -v pnmtopng >/dev/null 2>&1; then
+            pnmtopng "$OUT/frame.ppm" > "$OUT/frame.png" 2>/dev/null && \
+                echo "==> wrote $OUT/frame.png"
+        elif command -v convert >/dev/null 2>&1; then
+            convert "$OUT/frame.ppm" "$OUT/frame.png" && \
+                echo "==> wrote $OUT/frame.png"
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 "$REPO_ROOT/meta/ppm2png.py" "$OUT/frame.ppm" "$OUT/frame.png" && \
+                echo "==> wrote $OUT/frame.png"
+        fi
+    fi
 else
     echo "==> launching QEMU with GTK display (WSLg)"
     exec qemu-system-aarch64 "${common[@]}" \

@@ -38,22 +38,34 @@ fi
 echo "[zelto-init] DRM nodes:"; ls -l /dev/dri 2>/dev/null || echo "  (none)"
 echo "[zelto-init] input nodes:"; ls /dev/input 2>/dev/null || echo "  (none)"
 
-# wlroots/EGL knobs for the QEMU software path (no host GL / virgl):
-#   - WLR_RENDERER=gles2 keeps the GLES path that the task requires.
-#   - LIBGL_ALWAYS_SOFTWARE + the swrast DRI driver give GLES via llvmpipe on the
-#     virtio-gpu dumb-buffer KMS device.
-#   - WLR_BACKENDS=drm/libinput: we are a real DRM compositor, not nested.
+# Compositor environment.
+#   - WLR_BACKENDS=drm,libinput: we are a real DRM compositor, not nested.
+#   - libseat builtin backend: no seatd/logind daemon in this initramfs; run as
+#     root (PID 1) and let libseat use its embedded builtin seat.
 export XDG_RUNTIME_DIR=/run
-export WLR_RENDERER=gles2
 export WLR_BACKENDS=drm,libinput
-export LIBGL_ALWAYS_SOFTWARE=1
-export WLR_RENDERER_ALLOW_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
+export LIBSEAT_BACKEND=builtin
+# No udev daemon in this initramfs, so libinput enumerates no devices. Allow the
+# libinput backend to start anyway (input wiring is a later phase; this bring-up
+# only needs the display). Full input needs udev/seatd in the rootfs.
+export WLR_LIBINPUT_NO_DEVICES=1
 
-echo "[zelto-init] starting zcomp..."
+# Renderer selection. We try the GLES2 path first (EGL/GLES, the documented GPU
+# path) and fall back to the pixman software renderer if GL is unavailable:
+#   - With QEMU's virtio-gpu-gl (virgl), GLES2 is host-accelerated.
+#   - With plain virtio-gpu (KMS only), GLES2 has no 3D, so pixman renders on the
+#     CPU and presents through the virtio-gpu dumb-buffer KMS path.
+# Either way zcomp clears the screen and draws the rectangle.
+run_zcomp() {
+    echo "[zelto-init] starting zcomp (renderer=$1)..."
+    WLR_RENDERER="$1" /usr/bin/zcomp
+    rc=$?
+    echo "[zelto-init] zcomp (renderer=$1) exited ($rc)."
+    return $rc
+}
+
 if [ -x /usr/bin/zcomp ]; then
-    /usr/bin/zcomp
-    echo "[zelto-init] zcomp exited ($?)."
+    run_zcomp gles2 || run_zcomp pixman || true
 else
     echo "[zelto-init] /usr/bin/zcomp not found!"
 fi
