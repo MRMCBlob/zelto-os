@@ -4,6 +4,13 @@ The native UI API. Apps are Wayland clients linking `libzelto`. UI is declarativ
 `body` function returns a `ZView` tree that the framework diffs into the GPU scene graph.
 Conventions: [../conventions.md](../conventions.md).
 
+> **Availability (MVP).** The current phase implements `Z_APP`, `z_invalidate`,
+> `z_app_quit`, the `VStack`/`HStack`/`ZStack`/`Spacer`/`Rect`/`Text` views, the
+> `Background`/`Foreground`/`Padding`/`Frame`/`CornerRadius`/`Font`/`Grow` modifiers,
+> the colour tokens and `z_rgba`, with single-pass stack/flex layout and software
+> (shm) rendering. Everything else on this page (`Button`, `Grid`, `List`, `Scroll`,
+> presentation/navigation, animation, gestures, focus) is **Planned**.
+
 ## App entry
 
 ```c
@@ -25,27 +32,33 @@ ZView body(ZApp *app, StateType *state);
 
 ## Views
 
-All return `ZView`. Options use designated initializers; children are variadic.
+All return `ZView`. For stacks, **children are listed first (positionally), then
+options as designated initializers** — this lets any subset of options compose
+cleanly in C (the children fill the leading `ZView[]` member; the `.field = value`
+options follow). Views without children (e.g. `Rect`) just take options.
 
 ### Layout
 
 ```c
-VStack(.spacing = 12, .align = Z_ALIGN_LEADING, .padding = 16, child1, child2, ...);
-HStack(.spacing = 8, child1, child2, ...);
-ZStack(.align = Z_ALIGN_CENTER, child1, child2, ...);
+VStack(child1, child2, .spacing = 12, .align = Z_ALIGN_LEADING, .padding = 16);
+HStack(child1, child2, .spacing = 8);
+ZStack(child1, child2, .align = Z_ALIGN_CENTER);
 Spacer();
-Grid(.columns = 3, .spacing = 8, children...);
-Scroll(.axis = Z_AXIS_VERTICAL, child);
-List(.data = items, .count = n, .key = key_fn, .row = row_fn);
+Grid(.columns = 3, .spacing = 8, children...);       // Planned
+Scroll(.axis = Z_AXIS_VERTICAL, child);              // Planned
+List(.data = items, .count = n, .key = key_fn, .row = row_fn);  // Planned
 ```
 
-`align`: `Z_ALIGN_LEADING|CENTER|TRAILING`. `axis`: `Z_AXIS_VERTICAL|HORIZONTAL|BOTH`.
+`align`: `Z_ALIGN_LEADING|CENTER|TRAILING`. `axis`: `Z_AXIS_VERTICAL|HORIZONTAL|DEPTH`.
+`Grow(n, view)` weights a child's share of free main-axis space; `Spacer()` is a
+flexible gap.
 
 ### Content
 
 ```c
-Text(const char *fmt, ...);              // printf-style
-Image(const char *source);
+Rect(.color = Z_COLOR_PRIMARY, .width = 80, .height = 80, .radius = 12);  // solid box
+Text(const char *fmt, ...);              // printf-style, shaped with HarfBuzz/FreeType
+Image(const char *source);               // Planned
 Button(ZAction onTap, const char *fmt, ...);
 TextField(.value = s, .on_change = cb, .placeholder = "…");
 Switch(.value = b, .on_change = cb);

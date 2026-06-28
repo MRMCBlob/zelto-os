@@ -92,16 +92,17 @@ entry = "lib"        # native entry; build produces libapp.so
 typedef struct { int count; } State;
 
 static ZView body(ZApp *app, State *s) {
-  return VStack(.spacing = 12, .padding = 16, .align = Z_ALIGN_CENTER,
+  return VStack(
     Text("Count: %d", s->count),
-    Button("Increment", ZACT({ s->count++; z_invalidate(app); })));
+    Button("Increment", ZACT({ s->count++; z_invalidate(app); })),   // Button: Planned
+    .spacing = 12, .padding = 16, .align = Z_ALIGN_CENTER);
 }
 
 Z_APP(State, body)   // declares the entry point + state type
 ```
 
-- `VStack(...)` and friends are variadic macros that build the tree using designated
-  initializers for options.
+- `VStack(...)` and friends are variadic macros that build the tree. Stack children
+  are listed first; layout options follow as designated initializers.
 - `ZACT({ ... })` wraps a callback body.
 - `z_invalidate(app)` requests a rebuild (the C equivalent of `setState`).
 - `Z_APP(StateType, bodyFn)` generates the entry point. See
