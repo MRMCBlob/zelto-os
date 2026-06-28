@@ -19,10 +19,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 OUT="$REPO_ROOT/device/qemu-virt/out"
 
-MEM="${MEM:-2048}"
+MEM="${MEM:-4096}"
 SMP="${SMP:-4}"
 CPU="${CPU:-cortex-a72}"
 SHOT_DELAY="${SHOT_DELAY:-16}"
+# There is no aarch64 KVM on an x86 host, so QEMU emulates via TCG. Multi-threaded
+# TCG (one host thread per vCPU) plus a larger translation-block cache is the
+# biggest lever we have on the lag (the "[libinput] your system is too slow"
+# warning is the guest clock outrunning emulation). Override with ACCEL= if a
+# host ever offers KVM.
+ACCEL="${ACCEL:-tcg,thread=multi,tb-size=1024}"
 
 KERNEL="$OUT/Image"
 INITRD="$OUT/initramfs.cpio.gz"
@@ -62,6 +68,7 @@ esac
 # Common QEMU arguments.
 common=(
     -M virt
+    -accel "$ACCEL"
     -cpu "$CPU"
     -smp "$SMP"
     -m "$MEM"
@@ -118,38 +125,63 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     sleep 1
     to_png "$OUT/frame.ppm" "$OUT/frame.png"
 
-    # Optional: inject a pointer tap + key press over QMP input-send-event, wait
-    # for the app to rebuild, and capture an "after" frame. Coordinates are the
-    # on-screen tap point in pixels (default: the sample's Button); the abs axes
-    # map the point into the 0..32767 input range over the output size.
+    # Optional: drive the P5 list/navigation sample over QMP input-send-event and
+    # capture a *sequence* of frames proving each stage. The flow is one path (no
+    # fork): wheel-scroll the list, pan-drag it (multi-step, releases into a
+    # fling), tap a row to push the detail screen (slide transition), then press
+    # Escape (system back) to pop it. Each stage dumps a PNG. Coordinates are
+    # on-screen pixels mapped into the 0..32767 absolute input range.
     if [ "${INJECT:-0}" = "1" ]; then
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        TAP_X="${TAP_X:-640}"; TAP_Y="${TAP_Y:-140}"
-        KEY="${KEY:-a}"
-        TAPS="${TAPS:-1}"; KEYS="${KEYS:-1}"
-        AX=$(( TAP_X * 32767 / OUTW ))
-        AY=$(( TAP_Y * 32767 / OUTH ))
-        echo "==> injecting ${TAPS}x tap @ ${TAP_X},${TAP_Y} (abs $AX,$AY) + ${KEYS}x key '$KEY'"
-        # Position the absolute pointer once.
-        qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$AX}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$AY}}]}}"
-        i=0
-        while [ "$i" -lt "$TAPS" ]; do
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"left\"}}]}}"
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"left\"}}]}}"
+        CX="${CX:-640}"                   # horizontal centre (over the list)
+        ROW_Y="${ROW_Y:-150}"             # y of a row to tap (just below navbar)
+        BACK_KEY="${BACK_KEY:-esc}"       # system-back key (Escape / backspace)
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        # Move the absolute pointer to (x,y) px.
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {  # btn down|up
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        wheel() {  # wheel-down|wheel-up
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"$1\"}}]}}"
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"$1\"}}]}}"
+        }
+        keypress() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":true,\"key\":{\"type\":\"qcode\",\"data\":\"$1\"}}}]}}"
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":false,\"key\":{\"type\":\"qcode\",\"data\":\"$1\"}}}]}}"
+        }
+        shot() {  # shot NAME : screendump <out>/NAME.ppm -> NAME.png
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
             sleep 1
-            i=$((i + 1))
-        done
-        i=0
-        while [ "$i" -lt "$KEYS" ]; do
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":true,\"key\":{\"type\":\"qcode\",\"data\":\"$KEY\"}}}]}}"
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":false,\"key\":{\"type\":\"qcode\",\"data\":\"$KEY\"}}}]}}"
-            sleep 1
-            i=$((i + 1))
-        done
-        sleep 2
-        qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/frame-after.ppm\"}}"
-        sleep 1
-        to_png "$OUT/frame-after.ppm" "$OUT/frame-after.png"
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+
+        echo "==> [inject 1/4] wheel-scroll the list"
+        move "$CX" 400
+        for _ in 1 2 3 4 5; do wheel wheel-down; sleep 0.2; done
+        sleep 1; shot frame-scroll
+
+        echo "==> [inject 2/4] pan-drag (multi-step) -> fling"
+        move "$CX" 540; btn down
+        for yy in 480 420 360 300 240 180; do move "$CX" "$yy"; sleep 0.12; done
+        btn up
+        sleep 2; shot frame-drag       # captures mid-fling / settled scroll
+
+        echo "==> [inject 3/4] tap a row -> push detail (slide transition)"
+        move "$CX" "$ROW_Y"; btn down; btn up
+        sleep 1; shot frame-detail-mid # mid slide-in
+        sleep 2; shot frame-detail     # settled detail screen
+
+        echo "==> [inject 4/4] system back ('$BACK_KEY') -> pop"
+        keypress "$BACK_KEY"
+        sleep 1; shot frame-back-mid   # mid slide-out
+        sleep 2; shot frame-after      # back on the list (settled)
     fi
 
     kill "$QPID" 2>/dev/null || true

@@ -5,6 +5,12 @@ It is built on a mainline Linux base, runs Android in a container (Waydroid) for
 compatibility, and adds a C graphics/UI layer — the `zcomp` Wayland compositor and the
 `libzelto` SDK. See [`docs/`](docs/) for the full design.
 
+## Start device:
+```bash
+wsl -d Ubuntu
+SKIP_BUILD=1 meta/run-qemu.sh
+```
+
 > **This repo is at P0/P1 (Foundation + Compositor bring-up).** What exists today is the
 > bootable foundation: a mainline aarch64 kernel, a tiny initramfs, and the `zcomp`
 > compositor skeleton that brings up a display and paints a frame inside QEMU. The SDK,
