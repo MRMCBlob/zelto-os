@@ -82,6 +82,19 @@ if [ -f "$FONT_SRC" ]; then
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
 fi
 
+# --- xkb keyboard data (xkeyboard-config) -----------------------------------
+# libzelto's client-side xkbcommon needs the keymap dataset to create a context;
+# without it xkb_context_new() fails and the keyboard is disabled. The data is
+# architecture-independent, so the host copy works in the arm64 guest.
+XKB_SRC="${XKB_SRC:-/usr/share/X11/xkb}"
+if [ -d "$XKB_SRC" ]; then
+    echo "    xkb data: $XKB_SRC"
+    mkdir -p "$ROOT/usr/share/X11"
+    cp -a "$XKB_SRC" "$ROOT/usr/share/X11/xkb"
+else
+    echo "WARN: xkb data not found at $XKB_SRC (client keyboard will be disabled)"
+fi
+
 # --- udev (arm64) for input device enumeration ------------------------------
 # libinput enumerates evdev devices through udev and needs their ID_INPUT
 # properties, which udevd attaches. We bundle the arm64 udevadm (the daemon is

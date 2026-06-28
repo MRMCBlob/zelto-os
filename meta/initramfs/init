@@ -19,6 +19,11 @@ mount -t sysfs    none /sys       2>/dev/null
 mount -t devtmpfs none /dev       2>/dev/null || mount -t tmpfs none /dev
 mount -t tmpfs    none /tmp       2>/dev/null
 mount -t tmpfs    none /run       2>/dev/null
+# POSIX shm: wlroots allocates the xkb keymap through shm_open(), which needs
+# /dev/shm. Without it the compositor sends clients an empty keymap and the
+# keyboard can't be translated to keysyms.
+mkdir -p /dev/shm
+mount -t tmpfs    none /dev/shm   2>/dev/null
 
 # DRM render/card nodes appear under /dev/dri via devtmpfs; make sure the dir is
 # there even if no device showed up (helps diagnostics).
@@ -52,18 +57,29 @@ export LIBSEAT_BACKEND=builtin
 # handler then wires keyboards (xkbcommon) and pointers and routes events to the
 # focused surface.
 #
-# WLR_LIBINPUT_NO_DEVICES stays set on purpose: it only suppresses wlroots'
-# "zero devices at startup -> fatal" check, it does NOT disable input. Devices
-# that udev enumerates are still picked up. Keeping it set means the compositor
-# (and the display) always come up, whether or not udev tagged any devices.
-export WLR_LIBINPUT_NO_DEVICES=1
+# WLR_LIBINPUT_NO_DEVICES is intentionally NOT set: once udevd tags the evdev
+# nodes (ID_INPUT=1, confirmed by the diag below), libinput enumerates the
+# virtio keyboard + tablet at coldplug, so wlroots' real device path works and
+# we want its "zero devices" guard active. Set ZCOMP_NO_INPUT=1 on the kernel
+# cmdline to fall back to the no-devices guard if enumeration ever regresses.
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" ZCOMP_NO_INPUT=1 "*) export WLR_LIBINPUT_NO_DEVICES=1 ;;
+esac
 mkdir -p /run/udev
 if [ -x /usr/lib/systemd/systemd-udevd ] && [ -x /usr/bin/udevadm ]; then
     echo "[zelto-init] starting udevd + coldplug..."
-    /usr/lib/systemd/systemd-udevd --daemon 2>/dev/null
-    udevadm trigger --type=subsystems --action=add 2>/dev/null
-    udevadm trigger --type=devices --action=add 2>/dev/null
-    udevadm settle --timeout=5 2>/dev/null
+    /usr/lib/systemd/systemd-udevd --daemon
+    udevadm trigger --type=subsystems --action=add
+    udevadm trigger --type=devices --action=add
+    udevadm settle --timeout=5
+    # Confirm the evdev nodes were tagged (ID_INPUT) so libinput will enumerate.
+    echo "[zelto-init] tagged input devices:"
+    for ev in /dev/input/event*; do
+        [ -e "$ev" ] || continue
+        if udevadm info --query=property "$ev" 2>/dev/null | grep -q '^ID_INPUT=1'; then
+            echo "  $ev: ID_INPUT=1"
+        fi
+    done
     # A real seat daemon (the builtin libseat seat already works for root; this
     # just exercises the seatd path when the binary is bundled).
     [ -x /usr/sbin/seatd ] && /usr/sbin/seatd >/dev/null 2>&1 &
