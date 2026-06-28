@@ -56,8 +56,29 @@ export WLR_LIBINPUT_NO_DEVICES=1
 #   - With plain virtio-gpu (KMS only), GLES2 has no 3D, so pixman renders on the
 #     CPU and presents through the virtio-gpu dumb-buffer KMS path.
 # Either way zcomp clears the screen and draws the rectangle.
+# Launch the libzelto sample app once the compositor's Wayland socket appears,
+# so zcomp composites a real client surface (the declarative view tree) rather
+# than just the background. The socket is wayland-0 under XDG_RUNTIME_DIR.
+launch_sample() {
+    [ -x /usr/bin/zelto-hello ] || return 0
+    i=0
+    while [ ! -e "$XDG_RUNTIME_DIR/wayland-0" ] && [ "$i" -lt 15 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ -e "$XDG_RUNTIME_DIR/wayland-0" ]; then
+        echo "[zelto-init] launching libzelto sample (zelto-hello)..."
+        WAYLAND_DISPLAY=wayland-0 ZELTO_FONT=/usr/share/zelto/fonts/ZeltoSans.ttf \
+            /usr/bin/zelto-hello &
+    else
+        echo "[zelto-init] Wayland socket never appeared; sample not started"
+    fi
+}
+
 run_zcomp() {
     echo "[zelto-init] starting zcomp (renderer=$1)..."
+    # Background waiter starts the client as soon as the socket is up.
+    launch_sample &
     WLR_RENDERER="$1" /usr/bin/zcomp
     rc=$?
     echo "[zelto-init] zcomp (renderer=$1) exited ($rc)."

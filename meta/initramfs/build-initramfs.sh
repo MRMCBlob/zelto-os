@@ -24,6 +24,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 ZCOMP="${ZCOMP:-$REPO_ROOT/build-arm64/compositor/zcomp}"
+SAMPLE="${SAMPLE:-$REPO_ROOT/build-arm64/samples/hello/zelto-hello}"
+FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
 OUT_DIR="$REPO_ROOT/device/qemu-virt/out"
@@ -66,6 +68,19 @@ chmod +x "$ROOT/init"
 # --- zcomp ------------------------------------------------------------------
 cp "$ZCOMP" "$ROOT/usr/bin/zcomp"
 chmod +x "$ROOT/usr/bin/zcomp"
+
+# --- libzelto sample app + bundled font -------------------------------------
+if [ -x "$SAMPLE" ]; then
+    echo "    sample: $SAMPLE"
+    cp "$SAMPLE" "$ROOT/usr/bin/zelto-hello"
+    chmod +x "$ROOT/usr/bin/zelto-hello"
+else
+    echo "WARN: sample app not found at $SAMPLE (booting compositor only)"
+fi
+if [ -f "$FONT_SRC" ]; then
+    mkdir -p "$ROOT/usr/share/zelto/fonts"
+    cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
+fi
 
 # --- shared-library closure (only if dynamically linked) --------------------
 # We resolve the closure with the *real* arm64 dynamic loader run under QEMU
@@ -122,6 +137,10 @@ if is_dynamic "$ZCOMP"; then
 
     # 1. zcomp's own closure (pulls libwlroots, libwayland, libEGL/glvnd, ...).
     bundle_with_closure "$ZCOMP"
+
+    # 1b. the sample app's closure (libwayland-client, libharfbuzz, libfreetype,
+    #     and their transitive deps: glib, png, brotli, z, ...).
+    [ -x "$SAMPLE" ] && bundle_with_closure "$SAMPLE"
 
     # 2. Mesa userspace bits that are dlopen'd, so they are invisible to the ELF
     #    NEEDED walk and must be added explicitly:
