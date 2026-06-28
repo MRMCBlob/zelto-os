@@ -82,6 +82,43 @@ if [ -f "$FONT_SRC" ]; then
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
 fi
 
+# --- udev (arm64) for input device enumeration ------------------------------
+# libinput enumerates evdev devices through udev and needs their ID_INPUT
+# properties, which udevd attaches. We bundle the arm64 udevadm (the daemon is
+# the same binary invoked as systemd-udevd) plus the stock rules; init runs the
+# daemon + a coldplug trigger before starting zcomp. Best-effort: if any of this
+# is missing the compositor still boots (libinput just finds no devices).
+UDEVADM=""
+SEATD=""
+UDEV_STAGE="$BUILD_DIR/udev"
+if [ ! -x "$UDEV_STAGE/usr/bin/udevadm" ]; then
+    echo "==> fetching udev:arm64 + seatd:arm64 via apt"
+    rm -rf "$UDEV_STAGE"; mkdir -p "$UDEV_STAGE"
+    pushd "$UDEV_STAGE" >/dev/null
+    apt-get download udev:arm64 seatd:arm64 2>/dev/null || true
+    for d in ./*.deb; do [ -e "$d" ] && dpkg-deb -x "$d" .; done
+    rm -f ./*.deb
+    popd >/dev/null
+fi
+if [ -x "$UDEV_STAGE/usr/bin/udevadm" ]; then
+    UDEVADM="$UDEV_STAGE/usr/bin/udevadm"
+    cp "$UDEVADM" "$ROOT/usr/bin/udevadm"
+    chmod +x "$ROOT/usr/bin/udevadm"
+    # systemd-udevd is a symlink to udevadm; invoking it that way runs the daemon.
+    mkdir -p "$ROOT/usr/lib/systemd"
+    ln -sf ../../bin/udevadm "$ROOT/usr/lib/systemd/systemd-udevd"
+    # Stock udev rules (arch-independent) + config.
+    mkdir -p "$ROOT/usr/lib/udev/rules.d" "$ROOT/etc/udev"
+    cp -a "$UDEV_STAGE"/usr/lib/udev/rules.d/*.rules \
+        "$ROOT/usr/lib/udev/rules.d/" 2>/dev/null || true
+    cp -a "$UDEV_STAGE"/etc/udev/udev.conf "$ROOT/etc/udev/" 2>/dev/null || true
+fi
+if [ -x "$UDEV_STAGE/usr/sbin/seatd" ]; then
+    SEATD="$UDEV_STAGE/usr/sbin/seatd"
+    cp "$SEATD" "$ROOT/usr/sbin/seatd"
+    chmod +x "$ROOT/usr/sbin/seatd"
+fi
+
 # --- shared-library closure (only if dynamically linked) --------------------
 # We resolve the closure with the *real* arm64 dynamic loader run under QEMU
 # user emulation (`ld-linux-aarch64.so.1 --list`), which is far more reliable
@@ -141,6 +178,10 @@ if is_dynamic "$ZCOMP"; then
     # 1b. the sample app's closure (libwayland-client, libharfbuzz, libfreetype,
     #     and their transitive deps: glib, png, brotli, z, ...).
     [ -x "$SAMPLE" ] && bundle_with_closure "$SAMPLE"
+
+    # 1c. udevadm (== systemd-udevd) and seatd closures, for input bring-up.
+    [ -n "$UDEVADM" ] && bundle_with_closure "$UDEVADM"
+    [ -n "$SEATD" ] && bundle_with_closure "$SEATD"
 
     # 2. Mesa userspace bits that are dlopen'd, so they are invisible to the ELF
     #    NEEDED walk and must be added explicitly:

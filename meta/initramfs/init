@@ -40,15 +40,36 @@ echo "[zelto-init] input nodes:"; ls /dev/input 2>/dev/null || echo "  (none)"
 
 # Compositor environment.
 #   - WLR_BACKENDS=drm,libinput: we are a real DRM compositor, not nested.
-#   - libseat builtin backend: no seatd/logind daemon in this initramfs; run as
-#     root (PID 1) and let libseat use its embedded builtin seat.
+#   - libseat builtin backend: run as root (PID 1) and let libseat open the DRM
+#     and evdev nodes directly via its embedded builtin seat. This keeps the
+#     known-good display path; seatd is bundled but not required here.
 export XDG_RUNTIME_DIR=/run
 export WLR_BACKENDS=drm,libinput
 export LIBSEAT_BACKEND=builtin
-# No udev daemon in this initramfs, so libinput enumerates no devices. Allow the
-# libinput backend to start anyway (input wiring is a later phase; this bring-up
-# only needs the display). Full input needs udev/seatd in the rootfs.
+
+# Input: bring up udev so libinput can enumerate the virtio keyboard/pointer and
+# tag them with the ID_INPUT/seat properties it filters on. zcomp's new_input
+# handler then wires keyboards (xkbcommon) and pointers and routes events to the
+# focused surface.
+#
+# WLR_LIBINPUT_NO_DEVICES stays set on purpose: it only suppresses wlroots'
+# "zero devices at startup -> fatal" check, it does NOT disable input. Devices
+# that udev enumerates are still picked up. Keeping it set means the compositor
+# (and the display) always come up, whether or not udev tagged any devices.
 export WLR_LIBINPUT_NO_DEVICES=1
+mkdir -p /run/udev
+if [ -x /usr/lib/systemd/systemd-udevd ] && [ -x /usr/bin/udevadm ]; then
+    echo "[zelto-init] starting udevd + coldplug..."
+    /usr/lib/systemd/systemd-udevd --daemon 2>/dev/null
+    udevadm trigger --type=subsystems --action=add 2>/dev/null
+    udevadm trigger --type=devices --action=add 2>/dev/null
+    udevadm settle --timeout=5 2>/dev/null
+    # A real seat daemon (the builtin libseat seat already works for root; this
+    # just exercises the seatd path when the binary is bundled).
+    [ -x /usr/sbin/seatd ] && /usr/sbin/seatd >/dev/null 2>&1 &
+else
+    echo "[zelto-init] udevd not bundled; running without device enumeration"
+fi
 
 # Renderer selection. We try the GLES2 path first (EGL/GLES, the documented GPU
 # path) and fall back to the pixman software renderer if GL is unavailable:
