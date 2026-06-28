@@ -8,8 +8,19 @@ Conventions: [../conventions.md](../conventions.md).
 > `z_app_quit`, the `VStack`/`HStack`/`ZStack`/`Spacer`/`Rect`/`Text` views, the
 > `Background`/`Foreground`/`Padding`/`Frame`/`CornerRadius`/`Font`/`Grow` modifiers,
 > the colour tokens and `z_rgba`, with single-pass stack/flex layout and software
-> (shm) rendering. Everything else on this page (`Button`, `Grid`, `List`, `Scroll`,
-> presentation/navigation, animation, gestures, focus) is **Planned**.
+> (shm) rendering. Interactivity is now live too: the `Button` view, the `OnTap`
+> and `OnKey` modifiers, `ZAction`/`ZKeyAction` handlers, pointer hit-testing,
+> single-target keyboard focus, and a frame-callback-driven rebuild/repaint loop
+> (input arrives from `zcomp` over `wl_seat`). Still **Planned**: `Grid`, `List`,
+> `Scroll`, presentation/navigation, animation, multi-recognizer gestures
+> (pan/long-press/swipe) and focus traversal beyond the first focusable view.
+
+> **C handlers vs. Script closures.** The Script/JS examples on this page pass
+> inline closures (`() => …`). In C, handlers are ordinary named `ZAction` /
+> `ZKeyAction` functions — the project builds under strict ISO C (`-std=c17
+> -Wpedantic -Werror`), which rules out the GNU statement-expression / nested-
+> function tricks an inline-block macro would need. Define a static function and
+> pass it (see *Callbacks & actions* below).
 
 ## App entry
 
@@ -99,17 +110,34 @@ Tokens: `Z_COLOR_*`, `Z_FONT_*`, `Z_RADIUS_*`, `Z_ELEVATION_*`, `Z_SPACE_*`
 
 ## Callbacks & actions
 
-```c
-typedef void (*ZAction)(ZApp *app, void *ud);
-
-OnTap(ZACT({ s->count++; z_invalidate(app); }), Button(...));
-```
-
-`ZACT` captures `app` and `state` in scope. For pan/gesture callbacks:
+Handlers are named functions. A `ZAction` fires on tap or keyboard activation; a
+`ZKeyAction` fires on a key press while the view holds focus. Both receive the
+live `ZApp` and the app's persistent `state` (the pointer passed to `body`), so
+they mutate state and call `z_invalidate` to schedule a rebuild:
 
 ```c
-void on_pan(ZApp *app, ZPanEvent *e, void *ud);   // e->translation_x, e->velocity_x, ...
+typedef void (*ZAction)(ZApp *app, void *state);
+typedef void (*ZKeyAction)(ZApp *app, void *state, uint32_t keysym);
+
+static void on_tap(ZApp *app, void *state) {
+    App *s = state;
+    s->count++;
+    z_invalidate(app);
+}
+
+// in body():
+Button(on_tap, "Count: %d", s->count);
+OnTap(on_tap, Rect(.color = Z_COLOR_PRIMARY, .width = 80, .height = 80));
+OnKey(on_key, VStack(/* ... */));
 ```
+
+Handlers run on the app loop in response to input, not during `body()`, which is
+why they take `app`/`state` as parameters rather than capturing them. Pointer
+taps are routed by hit-testing the laid-out tree (deepest `OnTap` under the
+cursor wins); keys go to the first focusable view (any `Button`/`OnKey`), and
+Enter/Space activates a focused control's `on_tap`. Multi-recognizer pan/gesture
+callbacks (`on_pan`, `ZPanEvent`) remain **Planned**
+([../../guides/gestures.md](../../guides/gestures.md)).
 
 ## Animation
 

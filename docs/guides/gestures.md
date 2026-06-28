@@ -88,13 +88,22 @@ Returning `true` allows the back; `false` cancels it. See [navigation.md](naviga
 
 ## C API
 
+In C, gesture handlers are named `ZAction` functions (inline closures are a
+Script-only convenience — see the note in
+[../api-reference/c/ui.md](../api-reference/c/ui.md)). The MVP ships single-tap
+hit-testing via `OnTap` / `Button`; `OnPan` and the other recognizers are
+**Planned**.
+
 ```c
-OnTap(ZACT({ open(); }),
-  OnPan(handle_pan,
-    Card()));
+static void open_card(ZApp *app, void *state) { /* ... */ z_invalidate(app); }
+
+// in body():
+OnTap(open_card, Card());
 ```
 
-See [../api-reference/c/ui.md](../api-reference/c/ui.md).
+A pointer tap is dispatched to the deepest `OnTap` view under the cursor; a
+focused control is also activated by Enter/Space from the keyboard. See
+[../api-reference/c/ui.md](../api-reference/c/ui.md).
 
 ## Next
 

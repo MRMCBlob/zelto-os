@@ -35,6 +35,14 @@ body() ──► ViewTree (immutable, per-build)
 Stable keys (lists/conditionals) let the reconciler reuse nodes instead of recreating
 them ([../ui/components/list.md](../ui/components/list.md)).
 
+> **MVP status.** The reconciler is implemented as a positional diff (no list keys
+> yet): each build goes into one of two alternating arenas, so the previous tree
+> survives for diffing. Changed nodes (geometry or any visual property) contribute
+> their old∪new rect to a damage set; the renderer keeps a retained double-buffer
+> shm pool and repaints only the damaged rects (clipped), reporting them with
+> `wl_surface_damage_buffer`. Unchanged regions keep their already-painted pixels.
+> Per-buffer pending-damage tracking keeps the two pool buffers consistent.
+
 ## Layout engine
 
 Single-pass, constraint-light:
@@ -63,6 +71,13 @@ GPU. Type tokens resolve to concrete font specs per theme
 A recognizer tree mirrors the view tree; libinput events arrive from `zcomp`, are
 hit-tested, and dispatched to recognizers that negotiate (tap vs. pan, scroll lock)
 ([../guides/gestures.md](../guides/gestures.md)).
+
+> **MVP status.** The client binds `wl_seat` and handles pointer + keyboard
+> (xkbcommon) events directly in the app loop. Pointer taps hit-test the laid-out
+> node tree (deepest `OnTap` under the cursor wins); a single keyboard focus
+> target (first focusable node — any `Button`/`OnKey`) receives keys, and
+> Enter/Space activates a focused control. The full multi-recognizer negotiation
+> (pan/long-press/swipe, scroll lock, focus traversal) is still to come.
 
 ## Threading
 

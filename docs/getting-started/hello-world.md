@@ -91,10 +91,18 @@ entry = "lib"        # native entry; build produces libapp.so
 
 typedef struct { int count; } State;
 
+// Tap handler: a named ZAction (C has no inline closures under strict ISO C).
+static void increment(ZApp *app, void *state) {
+  State *s = state;
+  s->count++;
+  z_invalidate(app);
+}
+
 static ZView body(ZApp *app, State *s) {
+  (void)app;
   return VStack(
     Text("Count: %d", s->count),
-    Button("Increment", ZACT({ s->count++; z_invalidate(app); })),   // Button: Planned
+    Button(increment, "Increment"),
     .spacing = 12, .padding = 16, .align = Z_ALIGN_CENTER);
 }
 
@@ -103,7 +111,8 @@ Z_APP(State, body)   // declares the entry point + state type
 
 - `VStack(...)` and friends are variadic macros that build the tree. Stack children
   are listed first; layout options follow as designated initializers.
-- `ZACT({ ... })` wraps a callback body.
+- `Button(on_tap, fmt, ...)` takes a named `ZAction`; tapping it (pointer or, while
+  focused, Enter/Space) runs the handler. `OnTap`/`OnKey` add gestures to any view.
 - `z_invalidate(app)` requests a rebuild (the C equivalent of `setState`).
 - `Z_APP(StateType, bodyFn)` generates the entry point. See
   [../api-reference/c/ui.md](../api-reference/c/ui.md).
