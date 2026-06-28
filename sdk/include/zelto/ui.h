@@ -12,6 +12,7 @@
 #define ZELTO_UI_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "zelto/gfx.h"
 
@@ -23,6 +24,27 @@ extern "C" {
 // thrown away each rebuild; never freed by the app.
 typedef struct ZNode *ZView;
 typedef struct ZApp ZApp;
+
+// ---------------------------------------------------------------------------
+// Callbacks & actions.
+//
+// A ZAction is a tap/activation handler; a ZKeyAction handles a key press. Both
+// receive the live ZApp and the app's persistent state struct (the same pointer
+// passed to body), so they can mutate state and call z_invalidate. They are
+// invoked from the app loop on input, NOT during body(), so they take app/state
+// as parameters rather than capturing them.
+//
+// Handlers are ordinary named functions in C; the JS/Script binding's inline
+// closures (docs/guides/gestures.md) cannot be expressed as a portable C macro
+// under the project's strict ISO C settings (no GNU statement-expressions /
+// nested functions). Define a static function and pass it:
+//
+//   static void on_tap(ZApp *app, void *state) {
+//       App *s = state; s->count++; z_invalidate(app);
+//   }
+//   ...  Button(on_tap, "Count: %d", s->count)
+typedef void (*ZAction)(ZApp *app, void *state);
+typedef void (*ZKeyAction)(ZApp *app, void *state, uint32_t keysym);
 
 // Maximum children collected by a single stack literal (see the options trick
 // below). Plenty for hand-written UI; List handles large data sets (Planned).
@@ -102,6 +124,12 @@ ZView z_rect(const ZRectOpts *opts);
 ZView z_text(const char *fmt, ...);
 #define Text(...) z_text(__VA_ARGS__)
 
+// A tappable control: a rounded, padded label that runs `on_tap` when tapped or
+// activated from the keyboard (Enter/Space while focused). printf-style label.
+//   Button(on_tap, "Count: %d", s->count);   // on_tap is a static ZAction
+ZView z_button(ZAction on_tap, const char *fmt, ...);
+#define Button(action, ...) z_button(action, __VA_ARGS__)
+
 // ---------------------------------------------------------------------------
 // Modifiers. Each wraps a ZView and returns it (apply outermost-last).
 // ---------------------------------------------------------------------------
@@ -112,6 +140,11 @@ ZView Frame(float width, float height, ZView view);
 ZView CornerRadius(float radius, ZView view);
 ZView Font(ZFont size, ZView view);
 ZView Grow(float weight, ZView view);
+
+// Gesture / input modifiers. OnTap makes any view tappable; OnKey makes it a
+// keyboard target (keys are delivered to the first focusable view in the tree).
+ZView OnTap(ZAction action, ZView view);
+ZView OnKey(ZKeyAction action, ZView view);
 
 // ---------------------------------------------------------------------------
 // App entry + lifecycle.

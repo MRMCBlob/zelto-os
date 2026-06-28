@@ -3,32 +3,48 @@
 // path through a glyph atlas is the documented target; shm software rendering is
 // the MVP — it needs no client GPU context, which is robust under QEMU's virtio
 // software path. See docs/contributing/sdk-internals.md.
+#include <string.h>
+
 #include "internal.h"
+
+void z_canvas_set_clip(ZCanvas *c, int x0, int y0, int x1, int y1) {
+    if (x0 < 0) { x0 = 0; }
+    if (y0 < 0) { y0 = 0; }
+    if (x1 > c->width) { x1 = c->width; }
+    if (y1 > c->height) { y1 = c->height; }
+    c->clip_x0 = x0;
+    c->clip_y0 = y0;
+    c->clip_x1 = x1;
+    c->clip_y1 = y1;
+}
+
+void z_canvas_clear_clip(ZCanvas *c) {
+    for (int y = c->clip_y0; y < c->clip_y1; y++) {
+        memset(&c->pixels[y * c->stride_px + c->clip_x0], 0,
+               (size_t)(c->clip_x1 - c->clip_x0) * 4);
+    }
+}
 
 static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
                             float radius, ZColor col) {
-    int x0 = (int)(fx + 0.5f), y0 = (int)(fy + 0.5f);
-    int x1 = (int)(fx + fw + 0.5f), y1 = (int)(fy + fh + 0.5f);
-    if (x0 < 0) {
-        x0 = 0;
-    }
-    if (y0 < 0) {
-        y0 = 0;
-    }
-    if (x1 > c->width) {
-        x1 = c->width;
-    }
-    if (y1 > c->height) {
-        y1 = c->height;
-    }
+    // Rect geometry (used for the rounded-corner test) — independent of the clip.
+    int rx0 = (int)(fx + 0.5f), ry0 = (int)(fy + 0.5f);
+    int rx1 = (int)(fx + fw + 0.5f), ry1 = (int)(fy + fh + 0.5f);
+
     float r = radius;
-    float rw = (float)(x1 - x0), rh = (float)(y1 - y0);
+    float rw = (float)(rx1 - rx0), rh = (float)(ry1 - ry0);
     if (r > rw / 2.0f) {
         r = rw / 2.0f;
     }
     if (r > rh / 2.0f) {
         r = rh / 2.0f;
     }
+
+    // Iteration bounds = rect intersected with the active clip region.
+    int x0 = rx0 < c->clip_x0 ? c->clip_x0 : rx0;
+    int y0 = ry0 < c->clip_y0 ? c->clip_y0 : ry0;
+    int x1 = rx1 > c->clip_x1 ? c->clip_x1 : rx1;
+    int y1 = ry1 > c->clip_y1 ? c->clip_y1 : ry1;
 
     uint32_t src = 0xff000000u | ((uint32_t)col.r << 16) |
                    ((uint32_t)col.g << 8) | col.b;
@@ -37,20 +53,20 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
             if (r > 0.5f) {
-                // Skip pixels outside the rounded corners.
+                // Skip pixels outside the rounded corners (rect-relative).
                 float cx = -1.0f, cy = -1.0f;
-                if (x - x0 < r && y - y0 < r) {
-                    cx = (float)x0 + r;
-                    cy = (float)y0 + r;
-                } else if (x - x0 < r && y1 - 1 - y < r) {
-                    cx = (float)x0 + r;
-                    cy = (float)y1 - r;
-                } else if (x1 - 1 - x < r && y - y0 < r) {
-                    cx = (float)x1 - r;
-                    cy = (float)y0 + r;
-                } else if (x1 - 1 - x < r && y1 - 1 - y < r) {
-                    cx = (float)x1 - r;
-                    cy = (float)y1 - r;
+                if (x - rx0 < r && y - ry0 < r) {
+                    cx = (float)rx0 + r;
+                    cy = (float)ry0 + r;
+                } else if (x - rx0 < r && ry1 - 1 - y < r) {
+                    cx = (float)rx0 + r;
+                    cy = (float)ry1 - r;
+                } else if (rx1 - 1 - x < r && y - ry0 < r) {
+                    cx = (float)rx1 - r;
+                    cy = (float)ry0 + r;
+                } else if (rx1 - 1 - x < r && ry1 - 1 - y < r) {
+                    cx = (float)rx1 - r;
+                    cy = (float)ry1 - r;
                 }
                 if (cx >= 0.0f) {
                     float dx = (float)x + 0.5f - cx;
@@ -76,7 +92,22 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
     }
 }
 
+// Draw a rounded plate just outside a node's frame; the node's own fill paints
+// over the interior immediately after, leaving a thin border = the focus ring.
+static void stroke_focus_ring(ZCanvas *c, ZView n) {
+    const ZColor ring = {0x2e, 0x9b, 0xff, 0xff};  // accent
+    const float t = 3.0f;     // ring thickness
+    const float g = 2.0f;     // gap from the frame
+    float x = n->x - g - t, y = n->y - g - t;
+    float w = n->w + 2.0f * (g + t), h = n->h + 2.0f * (g + t);
+    float r = n->radius > 0.0f ? n->radius + g + t : 0.0f;
+    fill_round_rect(c, x, y, w, h, r, ring);
+}
+
 static void paint(ZCanvas *canvas, ZView n) {
+    if (n->focused && (n->has_bg || n->kind == Z_K_RECT)) {
+        stroke_focus_ring(canvas, n);
+    }
     if (n->has_bg) {
         fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius, n->bg);
     }

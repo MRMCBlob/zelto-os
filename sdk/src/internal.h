@@ -42,6 +42,16 @@ struct ZNode {
     float font_size;
     ZColor fg;
 
+    // Interactivity. on_tap fires on pointer tap / keyboard activation; on_key
+    // receives raw key presses when this node holds focus; focusable marks a
+    // keyboard target (Buttons are focusable). key is a stable identity hint for
+    // the reconciler (0 = positional).
+    ZAction on_tap;
+    ZKeyAction on_key;
+    bool focusable;
+    bool focused;         // set by the app loop on the focused node (focus ring)
+    uint32_t key;
+
     // Children.
     ZView children[Z_MAX_CHILDREN];
     int n_children;
@@ -79,16 +89,49 @@ float z_text_measure(ZText *t, const char *s, float size, float *ascent,
 // `text` is used to measure Text nodes.
 void z_layout(ZView root, float w, float h, ZText *text);
 
+// --- Damage / reconcile ---------------------------------------------------
+// An integer pixel rect, half-open [x0,x1) x [y0,y1).
+typedef struct ZIRect {
+    int x0, y0, x1, y1;
+} ZIRect;
+
+#define Z_MAX_DAMAGE 64
+
+// The set of pixel regions that differ between two builds. `full` means repaint
+// everything (first frame, structural change, or too many small rects to track).
+typedef struct ZDamage {
+    ZIRect rects[Z_MAX_DAMAGE];
+    int count;
+    bool full;
+} ZDamage;
+
+void z_damage_reset(ZDamage *d);
+void z_damage_add(ZDamage *d, ZIRect r);                 // union-append (-> full if overflow)
+void z_damage_merge(ZDamage *dst, const ZDamage *src);   // dst |= src
+
+// Diff the previous laid-out tree against the new one (positional, since there
+// are no list keys yet) and accumulate the changed regions into `out`. Unchanged
+// subtrees contribute nothing, so their cached layout/paint is reused.
+void z_reconcile(ZView old_root, ZView new_root, ZDamage *out);
+
 // --- Render ---------------------------------------------------------------
-// A 32-bit ARGB (little-endian: B,G,R,A bytes) software target.
+// A 32-bit ARGB (little-endian: B,G,R,A bytes) software target. clip_* is the
+// half-open region paint is restricted to (set to the full canvas for a full
+// repaint, or to a damage rect for partial repaint).
 typedef struct ZCanvas {
     uint32_t *pixels;
     int width, height;
     int stride_px;       // pixels per row
+    int clip_x0, clip_y0, clip_x1, clip_y1;
     ZText *text;
 } ZCanvas;
 
-// Paint the laid-out tree into the canvas.
+// Restrict subsequent drawing to [x0,x1) x [y0,y1) (clamped to the canvas).
+void z_canvas_set_clip(ZCanvas *canvas, int x0, int y0, int x1, int y1);
+// Clear the current clip region to fully transparent.
+void z_canvas_clear_clip(ZCanvas *canvas);
+
+// Paint the laid-out tree into the canvas (within its current clip).
 void z_render(ZCanvas *canvas, ZView root);
 // Blit one shaped line; used by the renderer (kept here so layout can share
 // the measure path). pen_x/pen_y is the top-left of the text box.

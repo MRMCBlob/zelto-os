@@ -96,6 +96,32 @@ ZView z_text(const char *fmt, ...) {
     return n;
 }
 
+ZView z_button(ZAction on_tap, const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    // A button is a padded, rounded, filled stack wrapping its label. Building
+    // it from primitives keeps layout/paint/hit-test uniform (no new kind).
+    ZView label = node_new(Z_K_TEXT);
+    label->text = z_arena_strdup(z_build_arena, buf);
+    label->fg = Z_COLOR_TEXT_INV;
+
+    ZView n = node_new(Z_K_STACK);
+    n->axis = Z_AXIS_HORIZONTAL;
+    n->align = Z_ALIGN_CENTER;
+    n->padding = 14.0f;                 // ~14px inset -> >=44px tall at body size
+    n->has_bg = true;
+    n->bg = Z_COLOR_PRIMARY;
+    n->radius = 12.0f;
+    n->on_tap = on_tap;
+    n->focusable = true;
+    n->children[n->n_children++] = label;
+    return n;
+}
+
 // --- modifiers ------------------------------------------------------------
 ZView Background(ZColor color, ZView view) {
     view->has_bg = true;
@@ -131,5 +157,16 @@ ZView Font(ZFont size, ZView view) {
 
 ZView Grow(float weight, ZView view) {
     view->grow = weight;
+    return view;
+}
+
+ZView OnTap(ZAction action, ZView view) {
+    view->on_tap = action;
+    return view;
+}
+
+ZView OnKey(ZKeyAction action, ZView view) {
+    view->on_key = action;
+    view->focusable = true;
     return view;
 }

@@ -126,7 +126,8 @@ typedef struct {
 } DrawCtx;
 
 static void blend_cover(ZCanvas *c, int x, int y, ZColor col, uint8_t cov) {
-    if (x < 0 || y < 0 || x >= c->width || y >= c->height || cov == 0) {
+    if (x < c->clip_x0 || y < c->clip_y0 || x >= c->clip_x1 ||
+        y >= c->clip_y1 || cov == 0) {
         return;
     }
     uint32_t *dst = &c->pixels[y * c->stride_px + x];
