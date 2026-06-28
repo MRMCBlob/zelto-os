@@ -15,6 +15,7 @@ typedef enum ZKind {
     Z_K_RECT,
     Z_K_TEXT,
     Z_K_SPACER,
+    Z_K_SCROLL,      // clips + translates a single content child by a ZScroll offset
 } ZKind;
 
 // One UI node. Arena-allocated per build; the computed frame (x,y,w,h) is filled
@@ -47,10 +48,25 @@ struct ZNode {
     // keyboard target (Buttons are focusable). key is a stable identity hint for
     // the reconciler (0 = positional).
     ZAction on_tap;
+    ZTapAction on_tap_data;  // tap handler carrying tap_data (data-driven rows)
+    void *tap_data;
     ZKeyAction on_key;
+    ZPanHandler on_pan;   // pan/drag recognizer (NULL = none)
     bool focusable;
     bool focused;         // set by the app loop on the focused node (focus ring)
-    uint32_t key;
+    uint64_t key;         // stable identity for keyed reconcile (0 = positional)
+
+    // Translation (Offset). Added to this node's origin in arrange(), so the
+    // whole subtree shifts. Drag/transition motion bakes into layout each frame.
+    float off_x, off_y;
+
+    // Scroll / virtualised-list support.
+    bool clip;            // clip this subtree to the node frame (viewport)
+    bool fill;            // in a parent's arrange, expand to the inner box
+    bool abs_children;    // position children by their layout_y, not flow
+    float layout_y;       // absolute y within an abs_children parent (rows)
+    float content_h;      // overrides measured content height for a scroll (0 = auto)
+    struct ZScroll *scroll;  // Z_K_SCROLL: the persistent offset/fling cell
 
     // Children.
     ZView children[Z_MAX_CHILDREN];
@@ -60,11 +76,102 @@ struct ZNode {
     float x, y, w, h;
 };
 
+// --- Persistent (retained) UI state --------------------------------------
+// These survive rebuilds (the arena does not). They live in per-screen storage
+// so call-order allocation gives an animated value / scroll position a stable
+// identity across body() calls. See docs/contributing/sdk-internals.md.
+
+// A spring-backed scalar. `value` is what views read; z_animated_spring sets
+// `target` and the per-frame tick integrates value/velocity toward it.
+struct ZAnimated {
+    ZApp *app;
+    float value, target, velocity;
+    float stiffness, damping, mass;
+    bool animating;
+    bool used;
+};
+
+// A scroll position with momentum. offset >= 0 measured from the top; the layout
+// pass fills viewport_h/content_h (used to clamp + for fling settling).
+struct ZScroll {
+    ZApp *app;
+    float offset;          // current scroll offset
+    float velocity;        // px/s, for fling
+    bool flinging;
+    float viewport_h;      // last laid-out viewport height
+    float content_h;       // last laid-out content height
+    float painted_offset;  // offset the buffer was last painted at (reconcile)
+    bool used;
+};
+
+#define Z_MAX_CELLS 8
+#define Z_MAX_SCREENS 8
+
+// One screen instance: its builder + props, plus the retained cells its body
+// allocates by call order, plus the slide-transition progress for this screen.
+typedef struct ZScreen {
+    ZScreenFn fn;
+    void *props;
+    struct ZAnimated anims[Z_MAX_CELLS];
+    int anim_count, anim_cursor;
+    struct ZScroll scrolls[Z_MAX_CELLS];
+    int scroll_count, scroll_cursor;
+    struct ZAnimated trans;   // 0 = off-screen (right), 1 = fully on screen
+    int op;                   // pending op: 0 none, 1 entering, 2 exiting
+} ZScreen;
+
+struct ZNav {
+    ZApp *app;
+    ZScreen stack[Z_MAX_SCREENS];
+    int depth;
+    bool inited;
+};
+
+// The retained UI state embedded in ZApp (kept out of the wayland-heavy ZApp
+// struct so the toolkit modules can reach it via z_app_ui without app.c's
+// private definition). cur is the screen currently being built.
+typedef struct ZUI {
+    ZScreen *cur;
+    ZScreen implicit;      // host screen: non-nav apps, and the Navigator itself
+    struct ZNav nav;
+    bool nav_used;
+    bool transitioning;    // a screen slide is in flight (force full repaint)
+    ZSpring anim_spring;   // active profile for z_animated_spring (z_with_animation)
+    double last_s;         // last tick timestamp (monotonic seconds)
+    bool have_last;
+} ZUI;
+
+// Implemented in app.c (ZApp is private there).
+ZUI *z_app_ui(ZApp *app);
+void *z_app_state(ZApp *app);
+int z_app_width(ZApp *app);
+int z_app_height(ZApp *app);
+
+// --- Animation ------------------------------------------------------------
+// Advance every retained spring + scroll fling by dt seconds. Returns true if
+// anything is still in motion (so the caller keeps the frame loop running).
+bool z_anim_tick(ZApp *app, float dt);
+double z_now_seconds(void);
+
+// --- Scroll input (called from the app loop's pointer handling) -----------
+void z_scroll_begin_drag(ZScroll *sc);              // pan begin: stop any fling
+void z_scroll_drag_by(ZScroll *sc, float dy);       // wheel / pan delta (clamped)
+void z_scroll_end_drag(ZScroll *sc, float velocity_y);  // pan end: start a fling
+
 // --- Per-build arena ------------------------------------------------------
+// A chunked bump allocator. Growth links a NEW chunk instead of realloc'ing, so
+// pointers handed out earlier in a build never move — the retained view tree
+// (whose nodes point at each other) depends on that stability. reset() keeps the
+// chunks and rewinds them for reuse next build.
+typedef struct ZChunk {
+    struct ZChunk *next;
+    size_t cap, used;
+    uint8_t *data;
+} ZChunk;
+
 typedef struct ZArena {
-    uint8_t *base;
-    size_t cap;
-    size_t used;
+    ZChunk *head;   // first chunk (reset rewinds to here)
+    ZChunk *cur;    // chunk currently being filled
 } ZArena;
 
 void *z_arena_alloc(ZArena *arena, size_t size);

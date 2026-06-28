@@ -62,10 +62,23 @@ struct ZApp {
     // Pointer state: last surface-local position + the node a press landed on.
     double ptr_x, ptr_y;
 
+    // Pan/drag recognizer. A press waits to see if it crosses the slop threshold
+    // (-> pan) or releases first (-> tap). While panning it drives a scroll
+    // container or a custom OnPan target and tracks velocity for the fling.
+    bool ptr_down, panning;
+    double press_x, press_y;     // where the press landed
+    double last_x, last_y;       // previous motion sample
+    double last_motion_s;        // its timestamp (monotonic s)
+    double drag_vel_y;           // latest finger velocity (px/s)
+    ZScroll *drag_scroll;        // scroll being dragged (NULL = none)
+    ZView pan_target;            // custom OnPan target (NULL = none)
+
     // Retained build output: the laid-out root from the most recent build, used
     // to hit-test pointer events and route keys until the next build replaces it.
     ZView root;
     ZView focused;              // first focusable node (keyboard target)
+
+    ZUI ui;                     // retained toolkit state (animation/scroll/nav)
 
     int width, height;          // surface size in pixels
     int out_width, out_height;  // advertised output mode
@@ -74,6 +87,13 @@ struct ZApp {
     bool running;
     bool dirty;
 };
+
+// Accessors so the toolkit modules (animation/scroll/navigation) reach the
+// retained state without app.c's wayland-heavy ZApp definition.
+ZUI *z_app_ui(ZApp *app) { return &app->ui; }
+void *z_app_state(ZApp *app) { return app->state; }
+int z_app_width(ZApp *app) { return app->width; }
+int z_app_height(ZApp *app) { return app->height; }
 
 // --- shm buffer pool ------------------------------------------------------
 // The compositor finished reading a buffer: free it for reuse.
@@ -188,18 +208,71 @@ static ZView hit_test(ZView n, double x, double y) {
             return h;
         }
     }
-    return n->on_tap ? n : NULL;
+    return (n->on_tap || n->on_tap_data) ? n : NULL;
+}
+
+// Deepest scroll container under (x,y) — the wheel/vertical-drag target.
+static ZView find_scroll(ZView n, double x, double y) {
+    if (!n || !point_in(n, x, y)) {
+        return NULL;
+    }
+    for (int i = n->n_children - 1; i >= 0; i--) {
+        ZView h = find_scroll(n->children[i], x, y);
+        if (h) {
+            return h;
+        }
+    }
+    return (n->kind == Z_K_SCROLL && n->scroll) ? n : NULL;
+}
+
+// Deepest custom OnPan target under (x,y).
+static ZView find_pan(ZView n, double x, double y) {
+    if (!n || !point_in(n, x, y)) {
+        return NULL;
+    }
+    for (int i = n->n_children - 1; i >= 0; i--) {
+        ZView h = find_pan(n->children[i], x, y);
+        if (h) {
+            return h;
+        }
+    }
+    return n->on_pan ? n : NULL;
 }
 
 // --- build/layout/paint/commit -------------------------------------------
 static const struct wl_callback_listener frame_listener;
 
 static void render(ZApp *app) {
+    // Advance springs/flings before building so body() reads this frame's values.
+    // dt comes from a monotonic clock (render runs both from the main loop and
+    // the frame callback), clamped so a long stall doesn't explode the integrator.
+    double now = z_now_seconds();
+    float dt = app->ui.have_last ? (float)(now - app->ui.last_s) : 1.0f / 60.0f;
+    // Track wall-clock so animations finish in real time even when the (software,
+    // TCG-emulated) frame rate is low; the spring integrator sub-steps internally,
+    // so a large dt stays stable. Cap only to absorb a long stall/first frame.
+    if (dt < 0.001f) {
+        dt = 0.001f;
+    } else if (dt > 0.25f) {
+        dt = 0.25f;
+    }
+    app->ui.last_s = now;
+    app->ui.have_last = true;
+    bool anim_active = z_anim_tick(app, dt);
+
     // Build the new view tree into the *other* arena, so the previous build's
     // tree (app->root, in the current arena) stays intact for diffing.
     int other = 1 - app->cur_arena;
     z_arena_reset(&app->arenas[other]);
     z_build_arena = &app->arenas[other];
+
+    // The body runs in the implicit (host) screen's retained scope; a Navigator
+    // inside it switches scope per managed screen as it builds them.
+    app->ui.cur = &app->ui.implicit;
+    app->ui.implicit.anim_cursor = 0;
+    app->ui.implicit.scroll_cursor = 0;
+    app->ui.transitioning = false;   // the Navigator re-asserts this if mid-slide
+
     ZView old_root = app->root;
     ZView new_root = app->body(app, app->state);
 
@@ -243,6 +316,12 @@ static void render(ZApp *app) {
     if (!buf->valid) {
         repaint.full = true;
     }
+    // A screen-slide moves whole screens; the per-node damage degenerates into
+    // many rects, and the partial path re-walks the tree once per rect. Repaint
+    // the frame once instead. Likewise collapse heavily fragmented damage.
+    if (app->ui.transitioning || repaint.count > 8) {
+        repaint.full = true;
+    }
 
     if (repaint.full) {
         z_canvas_set_clip(&canvas, 0, 0, app->width, app->height);
@@ -264,9 +343,16 @@ static void render(ZApp *app) {
     }
 
     // This buffer is now up to date; the *other* buffer still needs this frame's
-    // changes applied the next time it is used.
+    // changes applied the next time it is used. Propagate what was actually
+    // repainted: a full repaint means the other buffer is wholly stale too (else
+    // it could later do a partial repaint over an old mid-transition frame).
+    ZBuf *other_buf = &app->bufs[1 - (buf - app->bufs)];
     z_damage_reset(&buf->pending);
-    z_damage_merge(&app->bufs[1 - (buf - app->bufs)].pending, &dmg);
+    if (repaint.full) {
+        other_buf->pending.full = true;
+    } else {
+        z_damage_merge(&other_buf->pending, &dmg);
+    }
 
     buf->busy = true;
     wl_surface_attach(app->surface, buf->wl, 0, 0);
@@ -278,6 +364,13 @@ static void render(ZApp *app) {
     wl_callback_add_listener(app->frame_cb, &frame_listener, app);
 
     wl_surface_commit(app->surface);
+
+    // Keep the loop running while anything is still in motion: the frame
+    // callback will re-render next vsync. Once everything settles, dirty stays
+    // false and the loop idles until the next input/invalidate.
+    if (anim_active) {
+        app->dirty = true;
+    }
 }
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
@@ -294,9 +387,15 @@ static const struct wl_callback_listener frame_listener = {
     .done = frame_done,
 };
 
-// Run a node's tap handler (pointer tap or keyboard activation).
+// Run a node's tap handler (pointer tap or keyboard activation). A data-carrying
+// handler (rows) takes precedence over a plain one.
 static void dispatch_tap(ZApp *app, ZView node) {
-    if (node && node->on_tap) {
+    if (!node) {
+        return;
+    }
+    if (node->on_tap_data) {
+        node->on_tap_data(app, app->state, node->tap_data);
+    } else if (node->on_tap) {
         node->on_tap(app, app->state);
     }
 }
@@ -384,27 +483,125 @@ static void pointer_leave(void *data, struct wl_pointer *p, uint32_t serial,
                           struct wl_surface *surface) {
     (void)data; (void)p; (void)serial; (void)surface;
 }
+// Movement past this many pixels turns a press into a pan (cancelling the tap).
+#define Z_PAN_SLOP 8.0
+
+static void dispatch_pan(ZApp *app, ZPanPhase phase) {
+    if (!app->pan_target || !app->pan_target->on_pan) {
+        return;
+    }
+    ZPanEvent e = {
+        .x = (float)app->ptr_x,
+        .y = (float)app->ptr_y,
+        .translation_x = (float)(app->ptr_x - app->press_x),
+        .translation_y = (float)(app->ptr_y - app->press_y),
+        .velocity_x = 0.0f,
+        .velocity_y = (float)app->drag_vel_y,
+        .phase = phase,
+    };
+    app->pan_target->on_pan(app, app->state, &e);
+}
+
 static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
                            wl_fixed_t sx, wl_fixed_t sy) {
     (void)p; (void)time;
     ZApp *app = data;
     app->ptr_x = wl_fixed_to_double(sx);
     app->ptr_y = wl_fixed_to_double(sy);
+
+    if (!app->ptr_down) {
+        return;
+    }
+
+    double dx = app->ptr_x - app->press_x;
+    double dy = app->ptr_y - app->press_y;
+    if (!app->panning && (dx * dx + dy * dy) > (Z_PAN_SLOP * Z_PAN_SLOP)) {
+        // Slop crossed: this is a drag. Pick a target (custom OnPan first, else
+        // the scroll container under the press) and begin.
+        app->panning = true;
+        app->pan_target = find_pan(app->root, app->press_x, app->press_y);
+        if (!app->pan_target) {
+            ZView sv = find_scroll(app->root, app->press_x, app->press_y);
+            app->drag_scroll = sv ? sv->scroll : NULL;
+            if (app->drag_scroll) {
+                z_scroll_begin_drag(app->drag_scroll);
+            }
+        }
+        dispatch_pan(app, Z_PAN_BEGIN);
+    }
+
+    if (app->panning) {
+        double now = z_now_seconds();
+        double mdt = now - app->last_motion_s;
+        if (mdt < 0.001) {
+            mdt = 0.001;
+        }
+        double vy = (app->ptr_y - app->last_y) / mdt;   // finger velocity (px/s)
+        app->drag_vel_y = vy;
+        if (app->drag_scroll) {
+            // Content follows the finger: dragging down (y increases) scrolls up.
+            z_scroll_drag_by(app->drag_scroll, -(float)(app->ptr_y - app->last_y));
+        }
+        dispatch_pan(app, Z_PAN_CHANGED);
+        app->last_x = app->ptr_x;
+        app->last_y = app->ptr_y;
+        app->last_motion_s = now;
+    }
 }
+
 static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
                            uint32_t time, uint32_t button, uint32_t state) {
     (void)p; (void)serial; (void)time;
     ZApp *app = data;
-    // Treat a left-button press as a tap: hit-test the retained tree and run
-    // the deepest handler under the cursor.
-    if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+    if (button != BTN_LEFT) {
+        return;
+    }
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        // Arm the recognizer; defer the tap-vs-pan decision to release/motion.
+        app->ptr_down = true;
+        app->panning = false;
+        app->drag_scroll = NULL;
+        app->pan_target = NULL;
+        app->drag_vel_y = 0.0;
+        app->press_x = app->last_x = app->ptr_x;
+        app->press_y = app->last_y = app->ptr_y;
+        app->last_motion_s = z_now_seconds();
+        return;
+    }
+    // Release.
+    if (!app->ptr_down) {
+        return;
+    }
+    app->ptr_down = false;
+    if (!app->panning) {
+        // No drag: it was a tap. Hit-test and run the deepest handler.
         ZView hit = hit_test(app->root, app->ptr_x, app->ptr_y);
         dispatch_tap(app, hit);
+        return;
     }
+    // Drag end: edge-swipe-from-left pops the navigator; otherwise fling/notify.
+    double total_dx = app->ptr_x - app->press_x;
+    if (app->press_x < 32.0 && total_dx > (double)app->width * 0.30) {
+        z_nav_pop(z_navigation(app));
+    } else if (app->drag_scroll) {
+        z_scroll_end_drag(app->drag_scroll, -(float)app->drag_vel_y);
+    }
+    dispatch_pan(app, Z_PAN_END);
+    app->panning = false;
 }
+
 static void pointer_axis(void *data, struct wl_pointer *p, uint32_t time,
                          uint32_t axis, wl_fixed_t value) {
-    (void)data; (void)p; (void)time; (void)axis; (void)value;
+    (void)p; (void)time;
+    ZApp *app = data;
+    if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL) {
+        return;
+    }
+    ZView sv = find_scroll(app->root, app->ptr_x, app->ptr_y);
+    if (sv && sv->scroll) {
+        // Wheel notches arrive in ~10px units; scale to a comfortable step.
+        z_scroll_drag_by(sv->scroll, (float)wl_fixed_to_double(value) * 4.0f);
+    }
 }
 static void pointer_frame(void *data, struct wl_pointer *p) {
     (void)data; (void)p;
@@ -498,6 +695,12 @@ static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial,
     xkb_keysym_t sym = XKB_KEY_NoSymbol;
     if (app->xkb_state) {
         sym = xkb_state_key_get_one_sym(app->xkb_state, key + 8);
+    }
+    // System back: Escape / Backspace pop the navigator if it has a stack.
+    if ((sym == XKB_KEY_Escape || sym == XKB_KEY_BackSpace) &&
+        app->ui.nav_used && app->ui.nav.depth > 1) {
+        z_nav_pop(&app->ui.nav);
+        return;
     }
     ZView f = app->focused;
     if (f && f->on_key) {

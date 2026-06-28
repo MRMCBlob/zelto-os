@@ -105,6 +105,31 @@ static void stroke_focus_ring(ZCanvas *c, ZView n) {
 }
 
 static void paint(ZCanvas *canvas, ZView n) {
+    // A clipping node (scroll viewport) intersects the active clip with its frame
+    // for its subtree, then restores it. Skip entirely if nothing is visible.
+    int save_x0 = canvas->clip_x0, save_y0 = canvas->clip_y0;
+    int save_x1 = canvas->clip_x1, save_y1 = canvas->clip_y1;
+    if (n->clip) {
+        // Intersect with the active clip (which may already be a damage rect),
+        // never widen it — otherwise a partial repaint would paint outside its
+        // damaged region over stale pixels.
+        int cx0 = (int)n->x, cy0 = (int)n->y;
+        int cx1 = (int)(n->x + n->w), cy1 = (int)(n->y + n->h);
+        if (cx0 < save_x0) { cx0 = save_x0; }
+        if (cy0 < save_y0) { cy0 = save_y0; }
+        if (cx1 > save_x1) { cx1 = save_x1; }
+        if (cy1 > save_y1) { cy1 = save_y1; }
+        z_canvas_set_clip(canvas, cx0, cy0, cx1, cy1);
+        if (canvas->clip_x1 <= canvas->clip_x0 ||
+            canvas->clip_y1 <= canvas->clip_y0) {
+            canvas->clip_x0 = save_x0;
+            canvas->clip_y0 = save_y0;
+            canvas->clip_x1 = save_x1;
+            canvas->clip_y1 = save_y1;
+            return;
+        }
+    }
+
     if (n->focused && (n->has_bg || n->kind == Z_K_RECT)) {
         stroke_focus_ring(canvas, n);
     }
@@ -121,10 +146,18 @@ static void paint(ZCanvas *canvas, ZView n) {
         break;
     case Z_K_STACK:
     case Z_K_SPACER:
+    case Z_K_SCROLL:
         break;
     }
     for (int i = 0; i < n->n_children; i++) {
         paint(canvas, n->children[i]);
+    }
+
+    if (n->clip) {
+        canvas->clip_x0 = save_x0;
+        canvas->clip_y0 = save_y0;
+        canvas->clip_x1 = save_x1;
+        canvas->clip_y1 = save_y1;
     }
 }
 

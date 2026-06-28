@@ -21,6 +21,11 @@ static void measure(ZView n, ZText *text) {
         dw = n->fixed_w;
         dh = n->fixed_h;
         break;
+    case Z_K_SCROLL:
+        // A viewport sizes to its parent (fills); content size is the child's.
+        dw = 0.0f;
+        dh = 0.0f;
+        break;
     case Z_K_TEXT: {
         float ascent = 0.0f, descent = 0.0f;
         dw = z_text_measure(text, n->text, n->font_size, &ascent, &descent);
@@ -28,6 +33,12 @@ static void measure(ZView n, ZText *text) {
         break;
     }
     case Z_K_STACK: {
+        if (n->abs_children) {
+            // Virtualised list content: full virtual height, fills width.
+            dw = 0.0f;
+            dh = n->content_h;
+            break;
+        }
         if (n->axis == Z_AXIS_DEPTH) {
             for (int i = 0; i < n->n_children; i++) {
                 dw = maxf(dw, n->children[i]->w);
@@ -76,24 +87,69 @@ static float align_offset(ZAlign align, float free) {
 // Assign final frames top-down. Reads children's desired sizes (from measure)
 // before overwriting them.
 static void arrange(ZView n, float x, float y, float w, float h) {
+    // Offset (drag / screen transition) shifts this node and its whole subtree.
+    x += n->off_x;
+    y += n->off_y;
     n->x = x;
     n->y = y;
     n->w = w;
     n->h = h;
 
+    float pad = n->padding;
+    float ix = x + pad, iy = y + pad;
+    float iw = w - 2.0f * pad, ih = h - 2.0f * pad;
+
+    // Scroll viewport: lay the content out at its natural height, translated up
+    // by the offset, and record the metrics the fling/clamp logic reads back.
+    if (n->kind == Z_K_SCROLL) {
+        if (n->n_children == 0) {
+            return;
+        }
+        ZView c = n->children[0];
+        float content_h = c->content_h > 0.0f ? c->content_h : c->h;
+        if (n->scroll) {
+            n->scroll->viewport_h = h;
+            n->scroll->content_h = content_h;
+            float max = content_h - h;
+            if (max < 0.0f) {
+                max = 0.0f;
+            }
+            if (n->scroll->offset > max) {
+                n->scroll->offset = max;
+            }
+            if (n->scroll->offset < 0.0f) {
+                n->scroll->offset = 0.0f;
+            }
+        }
+        float off = n->scroll ? n->scroll->offset : 0.0f;
+        arrange(c, x, y - off, w, content_h);
+        return;
+    }
+
     if (n->kind != Z_K_STACK || n->n_children == 0) {
         return;
     }
 
-    float pad = n->padding;
-    float ix = x + pad, iy = y + pad;
-    float iw = w - 2.0f * pad, ih = h - 2.0f * pad;
+    // Absolutely positioned children (list rows): place each at its layout_y.
+    if (n->abs_children) {
+        for (int i = 0; i < n->n_children; i++) {
+            ZView c = n->children[i];
+            float cw = c->fixed_w > 0.0f ? c->fixed_w : iw;
+            float ch = c->fixed_h > 0.0f ? c->fixed_h : c->h;
+            arrange(c, ix, y + c->layout_y, cw, ch);
+        }
+        return;
+    }
 
     if (n->axis == Z_AXIS_DEPTH) {
         for (int i = 0; i < n->n_children; i++) {
             ZView c = n->children[i];
             float cw = c->w > 0.0f ? c->w : iw;
             float ch = c->h > 0.0f ? c->h : ih;
+            if (c->fill) {
+                cw = iw;
+                ch = ih;
+            }
             arrange(c, ix + (iw - cw) / 2.0f, iy + (ih - ch) / 2.0f, cw, ch);
         }
         return;
@@ -129,8 +185,12 @@ static void arrange(ZView n, float x, float y, float w, float h) {
         // their cross dimension unset (0) fill too.
         float c_cross = horiz ? c->h : c->w;
         bool fixed_cross = horiz ? (c->fixed_h > 0.0f) : (c->fixed_w > 0.0f);
-        if ((c->kind == Z_K_STACK && !fixed_cross) || c_cross <= 0.0f ||
-            c_cross > inner_cross) {
+        if ((c->kind == Z_K_STACK && !fixed_cross) || c->kind == Z_K_SCROLL ||
+            c_cross <= 0.0f || c_cross > inner_cross) {
+            c_cross = inner_cross;
+        }
+        if (c->fill) {
+            c_main = inner_main;
             c_cross = inner_cross;
         }
         float cross_off = align_offset(n->align, inner_cross - c_cross);

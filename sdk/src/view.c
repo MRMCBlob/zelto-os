@@ -11,19 +11,56 @@
 ZArena *z_build_arena = NULL;
 
 // --- arena ----------------------------------------------------------------
+#define Z_CHUNK_MIN (256u * 1024u)
+
+static ZChunk *chunk_new(size_t cap) {
+    ZChunk *c = malloc(sizeof(*c));
+    if (!c) {
+        return NULL;
+    }
+    c->data = malloc(cap);
+    if (!c->data) {
+        free(c);
+        return NULL;
+    }
+    c->next = NULL;
+    c->cap = cap;
+    c->used = 0;
+    return c;
+}
+
 void *z_arena_alloc(ZArena *arena, size_t size) {
     size = (size + 15u) & ~(size_t)15u;  // 16-byte align
-    if (arena->used + size > arena->cap) {
-        size_t need = arena->used + size;
-        size_t cap = arena->cap ? arena->cap : 64u * 1024u;
-        while (cap < need) {
-            cap *= 2;
+
+    if (!arena->cur) {
+        // First use (or after a full free): start a chunk list.
+        size_t cap = size > Z_CHUNK_MIN ? size : Z_CHUNK_MIN;
+        arena->head = arena->cur = chunk_new(cap);
+        if (!arena->cur) {
+            return NULL;
         }
-        arena->base = realloc(arena->base, cap);
-        arena->cap = cap;
     }
-    void *p = arena->base + arena->used;
-    arena->used += size;
+
+    // Bump within the current chunk; if it won't fit, advance to (or append) a
+    // chunk that does. Existing chunks are never moved, so live pointers stay valid.
+    if (arena->cur->used + size > arena->cur->cap) {
+        if (arena->cur->next && size <= arena->cur->next->cap) {
+            arena->cur = arena->cur->next;
+            arena->cur->used = 0;
+        } else {
+            size_t cap = size > Z_CHUNK_MIN ? size : Z_CHUNK_MIN;
+            ZChunk *c = chunk_new(cap);
+            if (!c) {
+                return NULL;
+            }
+            c->next = arena->cur->next;  // splice (handles the reuse-too-small case)
+            arena->cur->next = c;
+            arena->cur = c;
+        }
+    }
+
+    void *p = arena->cur->data + arena->cur->used;
+    arena->cur->used += size;
     memset(p, 0, size);
     return p;
 }
@@ -31,16 +68,29 @@ void *z_arena_alloc(ZArena *arena, size_t size) {
 char *z_arena_strdup(ZArena *arena, const char *s) {
     size_t n = strlen(s) + 1;
     char *p = z_arena_alloc(arena, n);
-    memcpy(p, s, n);
+    if (p) {
+        memcpy(p, s, n);
+    }
     return p;
 }
 
-void z_arena_reset(ZArena *arena) { arena->used = 0; }
+// Rewind for reuse without freeing: next build refills the existing chunks.
+void z_arena_reset(ZArena *arena) {
+    for (ZChunk *c = arena->head; c; c = c->next) {
+        c->used = 0;
+    }
+    arena->cur = arena->head;
+}
 
 void z_arena_free(ZArena *arena) {
-    free(arena->base);
-    arena->base = NULL;
-    arena->cap = arena->used = 0;
+    ZChunk *c = arena->head;
+    while (c) {
+        ZChunk *next = c->next;
+        free(c->data);
+        free(c);
+        c = next;
+    }
+    arena->head = arena->cur = NULL;
 }
 
 static ZView node_new(ZKind kind) {
@@ -162,6 +212,17 @@ ZView Grow(float weight, ZView view) {
 
 ZView OnTap(ZAction action, ZView view) {
     view->on_tap = action;
+    return view;
+}
+
+ZView OnTapData(ZTapAction action, void *data, ZView view) {
+    view->on_tap_data = action;
+    view->tap_data = data;
+    return view;
+}
+
+ZView OnPan(ZPanHandler handler, ZView view) {
+    view->on_pan = handler;
     return view;
 }
 

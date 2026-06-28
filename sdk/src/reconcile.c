@@ -80,9 +80,94 @@ static bool node_changed(ZView a, ZView b) {
     return false;
 }
 
+// Exact node frame (no AA margin) as an integer rect.
+static ZIRect frame_rect(ZView n) {
+    ZIRect r = {(int)n->x, (int)n->y, (int)(n->x + n->w), (int)(n->y + n->h)};
+    return r;
+}
+
+// Intersect r with the viewport rect v (so list-row damage never escapes the
+// scroll area and repaints the navbar / surrounding UI).
+static ZIRect intersect(ZIRect r, ZIRect v) {
+    ZIRect o = r;
+    if (o.x0 < v.x0) { o.x0 = v.x0; }
+    if (o.y0 < v.y0) { o.y0 = v.y0; }
+    if (o.x1 > v.x1) { o.x1 = v.x1; }
+    if (o.y1 > v.y1) { o.y1 = v.y1; }
+    return o;
+}
+
+static void walk(ZView old_n, ZView new_n, ZDamage *d);
+
+// A scroll viewport: keep the diff bounded to the viewport instead of falling
+// back to a full repaint when virtualisation changes the visible row set.
+static void reconcile_scroll(ZView old_n, ZView new_n, ZDamage *d) {
+    ZIRect vp = frame_rect(new_n);
+
+    // The viewport itself moved or resized (e.g. a screen transition): repaint
+    // the old and new viewport areas; the content underneath all shifted.
+    if (old_n->x != new_n->x || old_n->y != new_n->y ||
+        old_n->w != new_n->w || old_n->h != new_n->h) {
+        z_damage_add(d, node_rect(old_n));
+        z_damage_add(d, node_rect(new_n));
+        return;
+    }
+    if (old_n->n_children == 0 || new_n->n_children == 0) {
+        z_damage_add(d, vp);
+        return;
+    }
+
+    ZView oc = old_n->children[0], nc = new_n->children[0];
+    // Content scrolled this frame (offset changed -> content origin moved): the
+    // whole viewport's pixels shifted, so damage exactly the viewport.
+    if (oc->y != nc->y) {
+        z_damage_add(d, vp);
+        return;
+    }
+
+    // Offset unchanged: keyed diff of the visible rows. Entering/leaving/changed
+    // rows damage (clipped to the viewport); reused, unchanged rows cost nothing.
+    for (int i = 0; i < nc->n_children; i++) {
+        ZView nr = nc->children[i];
+        ZView match = NULL;
+        for (int j = 0; j < oc->n_children; j++) {
+            if (oc->children[j]->key == nr->key) {
+                match = oc->children[j];
+                break;
+            }
+        }
+        if (!match) {
+            z_damage_add(d, intersect(node_rect(nr), vp));   // entered
+        } else {
+            walk(match, nr, d);                              // same key: diff in place
+        }
+    }
+    for (int j = 0; j < oc->n_children; j++) {
+        ZView orow = oc->children[j];
+        bool still = false;
+        for (int i = 0; i < nc->n_children; i++) {
+            if (nc->children[i]->key == orow->key) {
+                still = true;
+                break;
+            }
+        }
+        if (!still) {
+            z_damage_add(d, intersect(node_rect(orow), vp));  // left
+        }
+    }
+}
+
 static void walk(ZView old_n, ZView new_n, ZDamage *d) {
     // Structural divergence: can't map old pixels onto new layout cheaply.
-    if (old_n->kind != new_n->kind || old_n->n_children != new_n->n_children) {
+    if (old_n->kind != new_n->kind) {
+        d->full = true;
+        return;
+    }
+    if (new_n->kind == Z_K_SCROLL) {
+        reconcile_scroll(old_n, new_n, d);
+        return;
+    }
+    if (old_n->n_children != new_n->n_children) {
         d->full = true;
         return;
     }

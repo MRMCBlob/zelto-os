@@ -12,6 +12,7 @@
 #define ZELTO_UI_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "zelto/gfx.h"
@@ -24,6 +25,16 @@ extern "C" {
 // thrown away each rebuild; never freed by the app.
 typedef struct ZNode *ZView;
 typedef struct ZApp ZApp;
+
+// Persistent (non-arena) handles. Unlike views, these survive rebuilds: the
+// framework keeps them in per-screen retained storage so an animated value or a
+// scroll position carries across body() calls. Allocated by call order within
+// the building screen (the first z_animated_value() call in a screen body maps
+// to the same cell every rebuild — a stable identity à la React hooks). See
+// docs/contributing/sdk-internals.md ("View tree vs. scene graph").
+typedef struct ZAnimated ZAnimated;   // a spring-backed scalar
+typedef struct ZScroll ZScroll;       // a scroll position + fling state
+typedef struct ZNav ZNav;             // the navigation stack
 
 // ---------------------------------------------------------------------------
 // Callbacks & actions.
@@ -45,6 +56,12 @@ typedef struct ZApp ZApp;
 //   ...  Button(on_tap, "Count: %d", s->count)
 typedef void (*ZAction)(ZApp *app, void *state);
 typedef void (*ZKeyAction)(ZApp *app, void *state, uint32_t keysym);
+
+// Like ZAction but also receives a per-view data pointer bound at build time —
+// the way a data-driven row carries its item into the tap handler (closures
+// being unavailable in strict C). The data must outlive the tap (point into
+// stable state). See OnTapData below.
+typedef void (*ZTapAction)(ZApp *app, void *state, void *data);
 
 // Maximum children collected by a single stack literal (see the options trick
 // below). Plenty for hand-written UI; List handles large data sets (Planned).
@@ -145,6 +162,125 @@ ZView Grow(float weight, ZView view);
 // keyboard target (keys are delivered to the first focusable view in the tree).
 ZView OnTap(ZAction action, ZView view);
 ZView OnKey(ZKeyAction action, ZView view);
+// Tap handler that carries a data pointer (e.g. the list item a row stands for).
+ZView OnTapData(ZTapAction action, void *data, ZView view);
+
+// ---------------------------------------------------------------------------
+// Gestures: pan / drag.
+//
+// A pan recognizer fires as the pointer drags across a view. A press that moves
+// less than the slop threshold stays a tap (OnTap); once it crosses the slop it
+// becomes a pan and the tap is cancelled. Inside a Scroll/List vertical drags
+// scroll automatically; OnPan is for custom drags (swipe-to-dismiss, sliders).
+// translation_* is the delta since the gesture began; velocity_* is in px/s
+// (used for fling). Handlers are named functions, like ZAction.
+// ---------------------------------------------------------------------------
+typedef enum ZPanPhase {
+    Z_PAN_BEGIN = 0,
+    Z_PAN_CHANGED,
+    Z_PAN_END,
+} ZPanPhase;
+
+typedef struct ZPanEvent {
+    float x, y;                       // current pointer pos (surface-local)
+    float translation_x, translation_y;
+    float velocity_x, velocity_y;     // px/s, valid at Z_PAN_END
+    ZPanPhase phase;
+} ZPanEvent;
+
+typedef void (*ZPanHandler)(ZApp *app, void *state, const ZPanEvent *e);
+
+ZView OnPan(ZPanHandler handler, ZView view);
+
+// ---------------------------------------------------------------------------
+// Scrolling.
+//
+// Scroll wraps a single content child and clips it to the viewport, translating
+// it by a persistent offset that responds to the pointer wheel and to vertical
+// pan drags (with momentum/spring settling on release). For long, data-driven
+// content use List, which builds only the rows in (and just around) the viewport
+// — virtualised by a fixed row_height — and keys rows so the reconciler reuses
+// them across scrolls. Both take `app` first (they allocate a retained ZScroll
+// cell from the current screen).
+// ---------------------------------------------------------------------------
+typedef struct ZScrollOpts {
+    ZView children[Z_MAX_CHILDREN];   // MUST be first; only children[0] (content) is used
+    ZAxis axis;                       // Z_AXIS_VERTICAL (default) or _HORIZONTAL
+} ZScrollOpts;
+
+ZView z_scroll_view(ZApp *app, const ZScrollOpts *opts);
+#define Scroll(appp, ...) z_scroll_view(appp, &(ZScrollOpts){__VA_ARGS__})
+
+// A row's stable identity and its view, given the item and its index. `data` is
+// the array base and `stride` its element size, so any contiguous array works:
+// item i lives at (const char *)data + i*stride.
+typedef uint64_t (*ZKeyFn)(const void *item, int index);
+typedef ZView (*ZRowFn)(ZApp *app, const void *item, int index);
+
+typedef struct ZListOpts {
+    const void *data;
+    size_t stride;
+    int count;
+    float row_height;                 // fixed row height (required for virtualisation)
+    ZKeyFn key;
+    ZRowFn row;
+} ZListOpts;
+
+ZView z_list(ZApp *app, const ZListOpts *opts);
+#define List(appp, ...) z_list(appp, &(ZListOpts){__VA_ARGS__})
+
+// Programmatic scroll handle (e.g. scroll-to-top). z_scroll allocates/fetches
+// the current screen's next retained scroll cell, matching the one a Scroll/List
+// built in the same position consumes.
+ZScroll *z_scroll(ZApp *app);
+void z_scroll_to(ZScroll *sc, float x, float y, bool animated);
+
+// ---------------------------------------------------------------------------
+// Animation.
+//
+// Motion is spring-based. An animated value is a persistent scalar you bind to a
+// transform with Offset(); z_animated_spring drives it toward a target and the
+// framework advances it on the surface frame callback (continuous repaint while
+// in flight, idle once settled). z_with_animation runs a state change under a
+// chosen spring (the implicit-animation default for values created within).
+// ---------------------------------------------------------------------------
+typedef enum ZSpring {
+    Z_SPRING_STANDARD = 0,            // default: settles smoothly
+    Z_SPRING_SNAPPY,                  // stiffer, quicker
+} ZSpring;
+
+ZAnimated *z_animated_value(ZApp *app, float initial);
+void z_animated_set(ZAnimated *v, float to);        // jump (no animation)
+void z_animated_spring(ZAnimated *v, float to);      // spring toward `to`
+float z_animated_get(const ZAnimated *v);            // current value
+
+void z_with_animation(ZApp *app, ZSpring spring, ZAction change);
+
+// Bind an animated value to a horizontal translation: the subtree is shifted by
+// (z_animated_get(x), y). Use for gesture-driven drags and screen transitions.
+ZView Offset(ZAnimated *x, float y, ZView view);
+
+// ---------------------------------------------------------------------------
+// Navigation.
+//
+// A Navigator owns a stack of screens and slides between them with the standard
+// spring. A screen is a function returning a view; it reads the stack through
+// z_navigation(app) and receives the props passed at push time (props must
+// outlive the screen — pass a pointer into stable app state). Back is the system
+// gesture (edge-swipe) or the Escape/Backspace key; both pop the top screen.
+// ---------------------------------------------------------------------------
+typedef ZView (*ZScreenFn)(ZApp *app, void *props);
+
+typedef struct ZNavOpts {
+    ZScreenFn root;
+} ZNavOpts;
+
+ZView z_navigator(ZApp *app, const ZNavOpts *opts);
+#define Navigator(appp, ...) z_navigator(appp, &(ZNavOpts){__VA_ARGS__})
+
+ZNav *z_navigation(ZApp *app);
+void z_nav_push(ZNav *nav, ZScreenFn screen, void *props);
+void z_nav_pop(ZNav *nav);
 
 // ---------------------------------------------------------------------------
 // App entry + lifecycle.
