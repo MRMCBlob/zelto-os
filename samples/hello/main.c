@@ -1,61 +1,148 @@
-// samples/hello - the smallest interactive native Zelto app. A declarative view
-// tree (background + title + a Button + state-driven boxes) that responds to
-// input: tapping the button (pointer or Enter/Space) bumps a counter, any key
-// press bumps another, and z_invalidate rebuilds the UI so the change shows.
-// libzelto hit-tests/routes the events; zcomp composites the surface.
-// See docs/getting-started/hello-world.md and docs/guides/state-management.md.
+// samples/hello - a multi-screen native Zelto app exercising the P5 toolkit:
+// a virtualised, scrollable List of rows (wheel + drag scroll, fling momentum)
+// inside a Navigator; tapping a row pushes a detail screen with the standard
+// slide transition; Escape / Backspace / an edge-swipe pops it back. The detail
+// screen also drives an explicit animated value through Offset to show the
+// spring engine ticking off the frame callback. libzelto routes the input and
+// runs the build -> reconcile -> damaged-repaint loop; zcomp composites it.
+// See docs/guides/{animation,gestures,navigation}.md.
+#include <stdio.h>
+
 #include <zelto/ui.h>
 
-// App state: two counters the UI is derived from. Mutated by the input handlers
-// below, which then call z_invalidate to schedule a rebuild.
-typedef struct HelloState {
-    int taps;
-    int keys;
-} HelloState;
+// --- data -----------------------------------------------------------------
+#define N_ITEMS 60
 
-// Input handlers: ordinary named ZAction/ZKeyAction functions. Each mutates the
-// persistent state struct and calls z_invalidate to schedule a rebuild.
-static void on_tap(ZApp *app, void *state) {
-    HelloState *s = state;
-    s->taps++;
-    z_invalidate(app);
+typedef struct Item {
+    int id;
+    char title[32];
+    char detail[64];
+    ZColor color;
+} Item;
+
+static Item g_items[N_ITEMS];
+static bool g_ready;
+
+static void ensure_items(void) {
+    if (g_ready) {
+        return;
+    }
+    g_ready = true;
+    const ZColor palette[4] = {
+        Z_COLOR_PRIMARY,
+        Z_COLOR_ACCENT,
+        z_rgba(0x3d, 0xc7, 0x8c, 0xff),  // green
+        z_rgba(0xc8, 0x6b, 0xff, 0xff),  // violet
+    };
+    for (int i = 0; i < N_ITEMS; i++) {
+        g_items[i].id = i;
+        snprintf(g_items[i].title, sizeof(g_items[i].title), "Row %d", i);
+        snprintf(g_items[i].detail, sizeof(g_items[i].detail),
+                 "Detail for row %d — pushed via Navigator.", i);
+        g_items[i].color = palette[i % 4];
+    }
 }
 
-static void on_key(ZApp *app, void *state, uint32_t keysym) {
-    (void)keysym;
-    HelloState *s = state;
-    s->keys++;
-    z_invalidate(app);
-}
-
-static ZView body(ZApp *app, HelloState *state) {
+// --- detail screen --------------------------------------------------------
+// Toggle the animated box between two positions (explicit animated value +
+// Offset + spring). The handler gets the persistent ZAnimated via tap data.
+static void toggle_box(ZApp *app, void *state, void *data) {
     (void)app;
+    (void)state;
+    ZAnimated *x = data;
+    z_animated_spring(x, z_animated_get(x) > 60.0f ? 0.0f : 140.0f);
+}
 
-    // Tap parity drives a visible colour swap so a single tap is unmistakable.
-    ZColor swatch = (state->taps % 2 == 0) ? Z_COLOR_ACCENT : Z_COLOR_PRIMARY;
+static void pop_screen(ZApp *app, void *state) {
+    (void)state;
+    z_nav_pop(z_navigation(app));
+}
+
+static ZView detail_screen(ZApp *app, void *props) {
+    Item *it = props;
+    ZAnimated *box_x = z_animated_value(app, 0.0f);
 
     return Background(z_rgba(0x12, 0x16, 0x1c, 0xff),
         VStack(
-            Font(Z_FONT_TITLE,
-                 Foreground(Z_COLOR_TEXT_INV, Text("Hello, Zelto OS"))),
+            // Navbar.
+            Background(z_rgba(0x1c, 0x22, 0x2b, 0xff),
+                HStack(
+                    Foreground(Z_COLOR_TEXT_INV,
+                        Font(Z_FONT_TITLE, Text("%s", it->title))),
+                    Spacer(),
+                    Button(pop_screen, "Back"),
+                    .padding = 16, .spacing = 12, .align = Z_ALIGN_CENTER)),
 
-            // The interactive control. on_tap bumps taps; OnKey makes it the
-            // keyboard focus target (focus ring) and bumps keys on any press.
-            OnKey(on_key,
-                Button(on_tap, "Tap me  (taps: %d)", state->taps)),
+            Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff), Text("%s", it->detail)),
 
-            // A state-driven box: colour follows tap parity, width follows keys.
-            Frame(140.0f + (float)(state->keys % 6) * 40.0f, 96.0f,
-                  Rect(.color = swatch, .radius = 16)),
+            // Animated hero: a box translated by an animated value. Tapping it
+            // springs it between two x positions; the spring advances on the
+            // frame callback and idles when settled.
+            OnTapData(toggle_box, box_x,
+                Offset(box_x, 0.0f,
+                    Frame(120.0f, 120.0f,
+                        Rect(.color = it->color, .radius = 20)))),
 
-            Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
-                       Text("keys pressed: %d", state->keys)),
+            Foreground(z_rgba(0x6b, 0x74, 0x7d, 0xff),
+                Text("tap the box to spring it · Esc / swipe to go back")),
 
             Spacer(),
-            Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
-                       Text("tap the button or press any key")),
-
-            .padding = 48, .spacing = 28, .align = Z_ALIGN_CENTER));
+            .padding = 24, .spacing = 22, .align = Z_ALIGN_LEADING));
 }
 
-Z_APP(HelloState, body)
+// --- list screen ----------------------------------------------------------
+static uint64_t item_key(const void *item, int index) {
+    (void)index;
+    return (uint64_t)(((const Item *)item)->id + 1);  // stable, non-zero
+}
+
+static void open_item(ZApp *app, void *state, void *data) {
+    (void)state;
+    z_nav_push(z_navigation(app), detail_screen, data);  // data = the Item*
+}
+
+static ZView item_row(ZApp *app, const void *item, int index) {
+    (void)app;
+    (void)index;
+    const Item *it = item;
+    return OnTapData(open_item, (void *)it,
+        Background(z_rgba(0x1a, 0x20, 0x28, 0xff),
+            HStack(
+                Frame(40.0f, 40.0f, Rect(.color = it->color, .radius = 10)),
+                Foreground(Z_COLOR_TEXT_INV, Text("%s", it->title)),
+                Spacer(),
+                Foreground(z_rgba(0x6b, 0x74, 0x7d, 0xff), Text("#%d", it->id)),
+                .padding = 14, .spacing = 14, .align = Z_ALIGN_CENTER)));
+}
+
+static ZView list_screen(ZApp *app, void *props) {
+    (void)props;
+    ensure_items();
+    return Background(z_rgba(0x0e, 0x12, 0x17, 0xff),
+        VStack(
+            Background(z_rgba(0x1c, 0x22, 0x2b, 0xff),
+                HStack(
+                    Foreground(Z_COLOR_TEXT_INV,
+                        Font(Z_FONT_TITLE, Text("Zelto · Rows"))),
+                    Spacer(),
+                    .padding = 16)),
+
+            // The scrollable, virtualised list fills the rest of the screen.
+            Grow(1.0f,
+                List(app,
+                    .data = g_items, .stride = sizeof(Item), .count = N_ITEMS,
+                    .row_height = 64.0f, .key = item_key, .row = item_row)),
+            .spacing = 0));
+}
+
+// --- app ------------------------------------------------------------------
+typedef struct AppState {
+    int unused;
+} AppState;
+
+static ZView body(ZApp *app, AppState *state) {
+    (void)state;
+    return Navigator(app, .root = list_screen);
+}
+
+Z_APP(AppState, body)
