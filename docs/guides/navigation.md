@@ -124,6 +124,33 @@ Tag matching views in the source and destination screens:
 
 The navigator animates the element between screens. See [animation.md](animation.md).
 
+## C
+
+A `Navigator` owns the screen stack; screens are `ZView fn(ZApp *app, void *props)`.
+It takes `app` first (it owns persistent stack state). Push from a tap handler,
+passing a pointer that outlives the screen; pop with `z_nav_pop`, the Escape /
+Backspace key, or a left-edge swipe.
+
+```c
+static ZView detail_screen(ZApp *app, void *props) {
+    Item *it = props;
+    return VStack(Text("Item %d", it->id), Button(go_back, "Back"), .padding = 16);
+}
+static void go_back(ZApp *app, void *state) { z_nav_pop(z_navigation(app)); }
+
+static void open_item(ZApp *app, void *state, void *data) {        // OnTapData
+    z_nav_push(z_navigation(app), detail_screen, data);           // data = the Item*
+}
+
+static ZView body(ZApp *app, void *state) {
+    return Navigator(app, .root = list_screen);
+}
+```
+
+Pushes/pops animate with the standard spring as a horizontal slide (the screen
+below parallaxes). See [animation.md](animation.md) and
+[../api-reference/c/ui.md](../api-reference/c/ui.md).
+
 ## Next
 
 - [../ui/components/navbar.md](../ui/components/navbar.md)

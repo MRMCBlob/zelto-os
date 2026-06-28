@@ -88,21 +88,32 @@ Returning `true` allows the back; `false` cancels it. See [navigation.md](naviga
 
 ## C API
 
-In C, gesture handlers are named `ZAction` functions (inline closures are a
-Script-only convenience — see the note in
-[../api-reference/c/ui.md](../api-reference/c/ui.md)). The MVP ships single-tap
-hit-testing via `OnTap` / `Button`; `OnPan` and the other recognizers are
-**Planned**.
+In C, gesture handlers are named functions (inline closures are a Script-only
+convenience — see the note in [../api-reference/c/ui.md](../api-reference/c/ui.md)).
+Live now: `OnTap` / `Button` taps, `OnTapData` (a tap carrying a per-view data
+pointer, for data rows), and `OnPan` drag. A press that moves past the slop
+threshold becomes a pan and cancels the tap. Long-press / swipe recognizers are
+still **Planned**.
 
 ```c
 static void open_card(ZApp *app, void *state) { /* ... */ z_invalidate(app); }
 
+static void on_drag(ZApp *app, void *state, const ZPanEvent *e) {
+    App *s = state;
+    z_animated_set(s->x, e->translation_x);          // follow the finger
+    if (e->phase == Z_PAN_END) {
+        z_animated_spring(s->x, 0.0f);               // settle / fling on release
+    }
+}
+
 // in body():
 OnTap(open_card, Card());
+OnPan(on_drag, Offset(s->x, 0, Card()));
 ```
 
-A pointer tap is dispatched to the deepest `OnTap` view under the cursor; a
-focused control is also activated by Enter/Space from the keyboard. See
+A pointer tap is dispatched to the deepest `OnTap`/`OnTapData` view under the
+cursor; a focused control is also activated by Enter/Space. Inside a `Scroll` /
+`List`, vertical drags scroll (with fling momentum) without any `OnPan`. See
 [../api-reference/c/ui.md](../api-reference/c/ui.md).
 
 ## Next

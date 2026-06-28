@@ -64,9 +64,15 @@ which only builds visible rows.
 
 ## C
 
+`Scroll` takes `app` first (it allocates a persistent `ZScroll` cell — offset +
+fling). It clips one content child to the viewport and scrolls it with the
+pointer wheel and vertical pan drags, settling with momentum on release. Vertical
+only in the MVP (horizontal/paging are Planned).
+
 ```c
-Scroll(.axis = Z_AXIS_VERTICAL,
-  VStack(.spacing = 12, children));
+Scroll(app, .axis = Z_AXIS_VERTICAL,
+  VStack(Text("..."), Text("..."), .spacing = 12, .padding = 16));
 ```
 
-See [../../api-reference/c/ui.md](../../api-reference/c/ui.md).
+For long, data-driven content use [list.md](list.md) — it builds only visible
+rows. See [../../api-reference/c/ui.md](../../api-reference/c/ui.md).

@@ -11,9 +11,14 @@ Conventions: [../conventions.md](../conventions.md).
 > (shm) rendering. Interactivity is now live too: the `Button` view, the `OnTap`
 > and `OnKey` modifiers, `ZAction`/`ZKeyAction` handlers, pointer hit-testing,
 > single-target keyboard focus, and a frame-callback-driven rebuild/repaint loop
-> (input arrives from `zcomp` over `wl_seat`). Still **Planned**: `Grid`, `List`,
-> `Scroll`, presentation/navigation, animation, multi-recognizer gestures
-> (pan/long-press/swipe) and focus traversal beyond the first focusable view.
+> (input arrives from `zcomp` over `wl_seat`). Live as of P5: **`Scroll`**, the
+> virtualised **`List`**, the **`Navigator`** stack with an animated slide
+> transition, the spring **animation** engine (`z_animated_value` / `_spring`,
+> `Offset`, `z_with_animation`), **`OnPan`** drag gestures (tap-vs-pan slop) and
+> wheel/drag scrolling with fling momentum, plus `OnTapData` for data rows. Still
+> **Planned**: `Grid`, `TabView`, sheets/modals, horizontal/paged scrolling,
+> shared-element transitions, long-press/swipe recognizers and focus traversal
+> beyond the first focusable view.
 
 > **C handlers vs. Script closures.** The Script/JS examples on this page pass
 > inline closures (`() => …`). In C, handlers are ordinary named `ZAction` /
@@ -56,9 +61,17 @@ HStack(child1, child2, .spacing = 8);
 ZStack(child1, child2, .align = Z_ALIGN_CENTER);
 Spacer();
 Grid(.columns = 3, .spacing = 8, children...);       // Planned
-Scroll(.axis = Z_AXIS_VERTICAL, child);              // Planned
-List(.data = items, .count = n, .key = key_fn, .row = row_fn);  // Planned
+Scroll(app, .axis = Z_AXIS_VERTICAL, child);         // app first: allocates a ZScroll cell
+List(app, .data = items, .stride = sizeof(Item), .count = n,
+     .row_height = 64, .key = key_fn, .row = row_fn); // virtualised: only visible rows built
 ```
+
+`Scroll`/`List` take `app` first because they allocate a persistent `ZScroll`
+cell (scroll offset + fling) from the current screen by call order. `List`
+virtualises by a fixed `row_height`: it builds only the rows in (and just around)
+the viewport and keys each (`key`) so the reconciler reuses them across scrolls.
+`data`/`stride` let it index any contiguous array — item `i` is
+`(const char *)data + i*stride`; `row(app, item, i)` builds it.
 
 `align`: `Z_ALIGN_LEADING|CENTER|TRAILING`. `axis`: `Z_AXIS_VERTICAL|HORIZONTAL|DEPTH`.
 `Grow(n, view)` weights a child's share of free main-axis space; `Spacer()` is a
@@ -81,12 +94,27 @@ Progress(.value = 0.5f);
 ### Presentation / navigation
 
 ```c
-Navigator(.root = ScreenFn);
-TabView(Tab("Home", "home", HomeFn), ...);
-Sheet(.open = b, .on_close = cb, .detents = Z_DETENT_MEDIUM, child);
-Modal(.open = b, .on_close = cb, child);
-Alert(.open = b, .title = "…", .message = "…", actions...);
+Navigator(app, .root = ScreenFn);                    // app first (owns the stack)
+TabView(Tab("Home", "home", HomeFn), ...);           // Planned
+Sheet(.open = b, .on_close = cb, .detents = Z_DETENT_MEDIUM, child);   // Planned
+Modal(.open = b, .on_close = cb, child);             // Planned
+Alert(.open = b, .title = "…", .message = "…", actions...);            // Planned
 ```
+
+A screen is `ZView screen(ZApp *app, void *props)`. It reaches the stack via
+`z_navigation(app)` and gets the `props` passed at push time (props must outlive
+the screen — point into stable state):
+
+```c
+typedef ZView (*ZScreenFn)(ZApp *app, void *props);
+ZNav *z_navigation(ZApp *app);
+void z_nav_push(ZNav *nav, ZScreenFn screen, void *props);
+void z_nav_pop(ZNav *nav);
+```
+
+Pushes/pops animate with the standard spring (a horizontal slide). The system
+back — the **Escape**/**Backspace** key, or a left-edge swipe — pops the top
+screen automatically.
 
 ## Modifiers
 
@@ -100,9 +128,11 @@ Shadow(Z_ELEVATION_1, view);
 Frame(width, height, view);
 Font(Z_FONT_TITLE, view);
 Foreground(Z_COLOR_TEXT, view);
-Opacity(0.5f, view);
+Opacity(0.5f, view);            // Planned
 OnTap(action, view);
-OnPan(pan_cb, view);
+OnTapData(action, data, view);  // tap handler carrying a per-view data pointer
+OnPan(pan_cb, view);            // drag recognizer (ZPanEvent)
+Offset(animated_x, y, view);    // bind an animated value to a translation
 ```
 
 Tokens: `Z_COLOR_*`, `Z_FONT_*`, `Z_RADIUS_*`, `Z_ELEVATION_*`, `Z_SPACE_*`
@@ -133,30 +163,60 @@ OnKey(on_key, VStack(/* ... */));
 
 Handlers run on the app loop in response to input, not during `body()`, which is
 why they take `app`/`state` as parameters rather than capturing them. Pointer
-taps are routed by hit-testing the laid-out tree (deepest `OnTap` under the
-cursor wins); keys go to the first focusable view (any `Button`/`OnKey`), and
-Enter/Space activates a focused control's `on_tap`. Multi-recognizer pan/gesture
-callbacks (`on_pan`, `ZPanEvent`) remain **Planned**
-([../../guides/gestures.md](../../guides/gestures.md)).
+taps are routed by hit-testing the laid-out tree (deepest `OnTap`/`OnTapData`
+under the cursor wins); keys go to the first focusable view (any `Button`/`OnKey`),
+and Enter/Space activates a focused control's `on_tap`.
+
+A data row can't close over its item in strict C, so `OnTapData` binds a pointer
+that the handler receives as a third argument:
+
+```c
+typedef void (*ZTapAction)(ZApp *app, void *state, void *data);
+static void open_item(ZApp *app, void *state, void *data) {   // data = the Item*
+    z_nav_push(z_navigation(app), detail_screen, data);
+}
+// in a List row: OnTapData(open_item, (void *)item, Row(item))
+```
+
+Pan/drag is a real recognizer now: a press that moves past the slop threshold
+becomes a pan (cancelling the tap). Inside a `Scroll`/`List` vertical drags
+scroll; `OnPan` is for custom drags.
+
+```c
+typedef void (*ZPanHandler)(ZApp *app, void *state, const ZPanEvent *e);
+// e->phase is Z_PAN_BEGIN | _CHANGED | _END; e->translation_x/y since start;
+// e->velocity_x/y (px/s, valid at _END for a fling); e->x/y current position.
+```
 
 ## Animation
 
 ```c
-z_with_animation(ZSpring spring, ZAction change);     // Z_SPRING_STANDARD / _SNAPPY
-ZAnimated *z_animated_value(ZApp *app, float initial);
-void z_animated_set(ZAnimated *v, float to);          // immediate
-void z_animated_spring(ZAnimated *v, float to);       // spring to value
+void z_with_animation(ZApp *app, ZSpring spring, ZAction change);  // _STANDARD / _SNAPPY
+ZAnimated *z_animated_value(ZApp *app, float initial);  // persistent, by call order
+void z_animated_set(ZAnimated *v, float to);          // jump (no animation)
+void z_animated_spring(ZAnimated *v, float to);       // spring toward `to`
+float z_animated_get(const ZAnimated *v);             // current value
 ```
 
-Use `Offset(animated, 0, view)` to bind an animated value to a transform
-([../../guides/animation.md](../../guides/animation.md)).
+An animated value is a **persistent** scalar (it survives rebuilds — allocated
+from the current screen by call order, like a hook). `z_animated_spring` advances
+it on the wl_surface frame callback: the loop repaints continuously while any
+value is in flight and idles once everything settles. Bind one to a transform
+with `Offset(animated_x, y, view)` — the subtree shifts by
+`(z_animated_get(animated_x), y)`. The `Navigator` slide and gesture-driven drags
+are both built on this ([../../guides/animation.md](../../guides/animation.md)).
 
 ## Focus & scroll handles
 
 ```c
-ZFocus *z_focus(ZApp *app);     z_focus_request(focus);
+ZFocus *z_focus(ZApp *app);     z_focus_request(focus);   // ZFocus Planned
 ZScroll *z_scroll(ZApp *app);   z_scroll_to(sc, 0, 0, true);
 ```
+
+`z_scroll(app)` fetches the current screen's next retained `ZScroll` cell — the
+same one a `Scroll`/`List` in that position uses — for programmatic control
+(e.g. scroll-to-top). `ZFocus` traversal beyond the first focusable view is
+**Planned**.
 
 ## See also
 
