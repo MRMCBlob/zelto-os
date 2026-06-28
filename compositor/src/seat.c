@@ -1,0 +1,233 @@
+// zcomp seat/input. Brings up wl_seat, a wlr_cursor for pointer tracking, and
+// per-device keyboard wiring (xkbcommon keymaps). Pointer events are routed to
+// the surface under the cursor; keyboard events to the focused surface.
+#include "zcomp/seat.h"
+
+#include <stdlib.h>
+
+#include <wlr/backend.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_input_device.h>
+#include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/util/log.h>
+#include <xkbcommon/xkbcommon.h>
+
+#include "zcomp/server.h"
+
+struct wlr_surface *zcomp_surface_at(ZcompServer *server, double lx, double ly,
+                                     double *sx, double *sy) {
+    struct wlr_scene_node *node =
+        wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
+    if (!node || node->type != WLR_SCENE_NODE_BUFFER) {
+        return NULL;
+    }
+    struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+    struct wlr_scene_surface *scene_surface =
+        wlr_scene_surface_try_from_buffer(scene_buffer);
+    if (!scene_surface) {
+        return NULL;
+    }
+    return scene_surface->surface;
+}
+
+// --- pointer -------------------------------------------------------------
+
+static void process_cursor_motion(ZcompServer *server, uint32_t time) {
+    double sx, sy;
+    struct wlr_surface *surface =
+        zcomp_surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
+    if (!surface) {
+        // Nothing under the cursor: show the default arrow, drop focus.
+        wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+        wlr_seat_pointer_clear_focus(server->seat);
+        return;
+    }
+    wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+    wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
+}
+
+static void handle_cursor_motion(struct wl_listener *listener, void *data) {
+    ZcompServer *server = wl_container_of(listener, server, cursor_motion);
+    struct wlr_pointer_motion_event *event = data;
+    wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x,
+                    event->delta_y);
+    process_cursor_motion(server, event->time_msec);
+}
+
+static void handle_cursor_motion_absolute(struct wl_listener *listener,
+                                          void *data) {
+    ZcompServer *server =
+        wl_container_of(listener, server, cursor_motion_absolute);
+    struct wlr_pointer_motion_absolute_event *event = data;
+    wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x,
+                             event->y);
+    process_cursor_motion(server, event->time_msec);
+}
+
+static void handle_cursor_button(struct wl_listener *listener, void *data) {
+    ZcompServer *server = wl_container_of(listener, server, cursor_button);
+    struct wlr_pointer_button_event *event = data;
+    wlr_seat_pointer_notify_button(server->seat, event->time_msec,
+                                   event->button, event->state);
+}
+
+static void handle_cursor_axis(struct wl_listener *listener, void *data) {
+    ZcompServer *server = wl_container_of(listener, server, cursor_axis);
+    struct wlr_pointer_axis_event *event = data;
+    wlr_seat_pointer_notify_axis(server->seat, event->time_msec,
+                                 event->orientation, event->delta,
+                                 event->delta_discrete, event->source);
+}
+
+static void handle_cursor_frame(struct wl_listener *listener, void *data) {
+    (void)data;
+    ZcompServer *server = wl_container_of(listener, server, cursor_frame);
+    wlr_seat_pointer_notify_frame(server->seat);
+}
+
+// --- keyboard ------------------------------------------------------------
+
+static void handle_kb_modifiers(struct wl_listener *listener, void *data) {
+    (void)data;
+    ZcompKeyboard *keyboard = wl_container_of(listener, keyboard, modifiers);
+    struct wlr_seat *seat = keyboard->server->seat;
+    wlr_seat_set_keyboard(seat, keyboard->wlr_keyboard);
+    wlr_seat_keyboard_notify_modifiers(seat, &keyboard->wlr_keyboard->modifiers);
+}
+
+static void handle_kb_key(struct wl_listener *listener, void *data) {
+    ZcompKeyboard *keyboard = wl_container_of(listener, keyboard, key);
+    struct wlr_seat *seat = keyboard->server->seat;
+    struct wlr_keyboard_key_event *event = data;
+    // No compositor-level keybindings yet: forward everything to the client.
+    wlr_seat_set_keyboard(seat, keyboard->wlr_keyboard);
+    wlr_seat_keyboard_notify_key(seat, event->time_msec, event->keycode,
+                                 event->state);
+}
+
+static void handle_kb_destroy(struct wl_listener *listener, void *data) {
+    (void)data;
+    ZcompKeyboard *keyboard = wl_container_of(listener, keyboard, destroy);
+    wl_list_remove(&keyboard->modifiers.link);
+    wl_list_remove(&keyboard->key.link);
+    wl_list_remove(&keyboard->destroy.link);
+    wl_list_remove(&keyboard->link);
+    free(keyboard);
+}
+
+static void new_keyboard(ZcompServer *server, struct wlr_input_device *device) {
+    struct wlr_keyboard *wlr_keyboard = wlr_keyboard_from_input_device(device);
+
+    ZcompKeyboard *keyboard = calloc(1, sizeof(*keyboard));
+    keyboard->server = server;
+    keyboard->wlr_keyboard = wlr_keyboard;
+
+    // Default (us) keymap via xkbcommon.
+    struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    struct xkb_keymap *keymap =
+        xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (keymap) {
+        wlr_keyboard_set_keymap(wlr_keyboard, keymap);
+        xkb_keymap_unref(keymap);
+    }
+    xkb_context_unref(context);
+    wlr_keyboard_set_repeat_info(wlr_keyboard, 25, 600);
+
+    keyboard->modifiers.notify = handle_kb_modifiers;
+    wl_signal_add(&wlr_keyboard->events.modifiers, &keyboard->modifiers);
+    keyboard->key.notify = handle_kb_key;
+    wl_signal_add(&wlr_keyboard->events.key, &keyboard->key);
+    keyboard->destroy.notify = handle_kb_destroy;
+    wl_signal_add(&device->events.destroy, &keyboard->destroy);
+
+    wlr_seat_set_keyboard(server->seat, wlr_keyboard);
+    wl_list_insert(&server->keyboards, &keyboard->link);
+}
+
+// --- seat plumbing -------------------------------------------------------
+
+static void update_capabilities(ZcompServer *server) {
+    uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+    if (!wl_list_empty(&server->keyboards)) {
+        caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+    }
+    wlr_seat_set_capabilities(server->seat, caps);
+}
+
+void zcomp_handle_new_input(struct wl_listener *listener, void *data) {
+    ZcompServer *server = wl_container_of(listener, server, new_input);
+    struct wlr_input_device *device = data;
+    switch (device->type) {
+    case WLR_INPUT_DEVICE_KEYBOARD:
+        wlr_log(WLR_INFO, "new keyboard: %s", device->name);
+        new_keyboard(server, device);
+        break;
+    case WLR_INPUT_DEVICE_POINTER:
+    case WLR_INPUT_DEVICE_TOUCH:
+        wlr_log(WLR_INFO, "new pointer device: %s", device->name);
+        wlr_cursor_attach_input_device(server->cursor, device);
+        break;
+    default:
+        break;
+    }
+    update_capabilities(server);
+}
+
+static void handle_request_cursor(struct wl_listener *listener, void *data) {
+    ZcompServer *server = wl_container_of(listener, server, request_cursor);
+    struct wlr_seat_pointer_request_set_cursor_event *event = data;
+    struct wlr_seat_client *focused =
+        server->seat->pointer_state.focused_client;
+    if (focused == event->seat_client) {
+        wlr_cursor_set_surface(server->cursor, event->surface,
+                               event->hotspot_x, event->hotspot_y);
+    }
+}
+
+static void handle_request_set_selection(struct wl_listener *listener,
+                                         void *data) {
+    ZcompServer *server =
+        wl_container_of(listener, server, request_set_selection);
+    struct wlr_seat_request_set_selection_event *event = data;
+    wlr_seat_set_selection(server->seat, event->source, event->serial);
+}
+
+void zcomp_seat_init(ZcompServer *server) {
+    wl_list_init(&server->keyboards);
+
+    // Pointer cursor, tracked against the output layout.
+    server->cursor = wlr_cursor_create();
+    wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
+    server->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+
+    server->cursor_motion.notify = handle_cursor_motion;
+    wl_signal_add(&server->cursor->events.motion, &server->cursor_motion);
+    server->cursor_motion_absolute.notify = handle_cursor_motion_absolute;
+    wl_signal_add(&server->cursor->events.motion_absolute,
+                  &server->cursor_motion_absolute);
+    server->cursor_button.notify = handle_cursor_button;
+    wl_signal_add(&server->cursor->events.button, &server->cursor_button);
+    server->cursor_axis.notify = handle_cursor_axis;
+    wl_signal_add(&server->cursor->events.axis, &server->cursor_axis);
+    server->cursor_frame.notify = handle_cursor_frame;
+    wl_signal_add(&server->cursor->events.frame, &server->cursor_frame);
+
+    // The seat itself + input enumeration.
+    server->seat = wlr_seat_create(server->display, "seat0");
+    server->new_input.notify = zcomp_handle_new_input;
+    wl_signal_add(&server->backend->events.new_input, &server->new_input);
+    server->request_cursor.notify = handle_request_cursor;
+    wl_signal_add(&server->seat->events.request_set_cursor,
+                  &server->request_cursor);
+    server->request_set_selection.notify = handle_request_set_selection;
+    wl_signal_add(&server->seat->events.request_set_selection,
+                  &server->request_set_selection);
+
+    update_capabilities(server);
+}
