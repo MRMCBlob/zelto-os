@@ -25,6 +25,11 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 ZCOMP="${ZCOMP:-$REPO_ROOT/build-arm64/compositor/zcomp}"
 SAMPLE="${SAMPLE:-$REPO_ROOT/build-arm64/samples/hello/zelto-hello}"
+# System UI (status bar + launcher) and the second demo app, plus the P5 list
+# app (SAMPLE) which the launcher exec's as "Rows".
+BAR="${BAR:-$REPO_ROOT/build-arm64/system/bar/zelto-bar}"
+LAUNCHER="${LAUNCHER:-$REPO_ROOT/build-arm64/system/launcher/zelto-launcher}"
+CARDS="${CARDS:-$REPO_ROOT/build-arm64/system/apps/cards/zelto-cards}"
 FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
@@ -69,14 +74,22 @@ chmod +x "$ROOT/init"
 cp "$ZCOMP" "$ROOT/usr/bin/zcomp"
 chmod +x "$ROOT/usr/bin/zcomp"
 
-# --- libzelto sample app + bundled font -------------------------------------
-if [ -x "$SAMPLE" ]; then
-    echo "    sample: $SAMPLE"
-    cp "$SAMPLE" "$ROOT/usr/bin/zelto-hello"
-    chmod +x "$ROOT/usr/bin/zelto-hello"
-else
-    echo "WARN: sample app not found at $SAMPLE (booting compositor only)"
-fi
+# --- libzelto System UI + apps + bundled font -------------------------------
+# Install a binary into the image at /usr/bin/<name> if it exists.
+install_bin() {
+    local src="$1" name="$2"
+    if [ -x "$src" ]; then
+        echo "    app: $name ($src)"
+        cp "$src" "$ROOT/usr/bin/$name"
+        chmod +x "$ROOT/usr/bin/$name"
+    else
+        echo "WARN: $name not found at $src"
+    fi
+}
+install_bin "$SAMPLE"   zelto-hello      # app #1 ("Rows"), launched by a tile
+install_bin "$CARDS"    zelto-cards      # app #2 ("Cards"), launched by a tile
+install_bin "$BAR"      zelto-bar        # status bar (layer-shell)
+install_bin "$LAUNCHER" zelto-launcher   # app launcher (back toplevel)
 if [ -f "$FONT_SRC" ]; then
     mkdir -p "$ROOT/usr/share/zelto/fonts"
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
@@ -188,9 +201,12 @@ if is_dynamic "$ZCOMP"; then
     # 1. zcomp's own closure (pulls libwlroots, libwayland, libEGL/glvnd, ...).
     bundle_with_closure "$ZCOMP"
 
-    # 1b. the sample app's closure (libwayland-client, libharfbuzz, libfreetype,
-    #     and their transitive deps: glib, png, brotli, z, ...).
-    [ -x "$SAMPLE" ] && bundle_with_closure "$SAMPLE"
+    # 1b. the libzelto apps' closure (libwayland-client, libharfbuzz,
+    #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
+    #     a closure, but bundle each so a future divergence can't break boot.
+    for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER"; do
+        [ -x "$binp" ] && bundle_with_closure "$binp"
+    done
 
     # 1c. udevadm (== systemd-udevd) and seatd closures, for input bring-up.
     [ -n "$UDEVADM" ] && bundle_with_closure "$UDEVADM"

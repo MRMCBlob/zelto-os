@@ -47,6 +47,7 @@ if have_graphics
     'src/server.c',
     'src/output.c',
     'src/toplevel.c',
+    'src/layer.c',
     'src/seat.c',
   )
 

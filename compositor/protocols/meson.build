@@ -17,7 +17,19 @@ xdg_shell_h = custom_target(
   command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+# Server-side header for wlr-layer-shell-unstable-v1 (System UI: status bar /
+# launcher anchored layers). wlroots ships the marshalling inside libwlroots (the
+# zwlr_layer_shell_v1_interface symbol), so — exactly like xdg-shell — only the
+# generated header is needed; <wlr/types/wlr_layer_shell_v1.h> #includes it. The
+# XML is vendored in protocols/ because no wlr-protocols package is installed.
+layer_shell_h = custom_target(
+  'wlr-layer-shell-unstable-v1-protocol.h',
+  input : meson.project_source_root() / 'protocols/wlr-layer-shell-unstable-v1.xml',
+  output : 'wlr-layer-shell-unstable-v1-protocol.h',
+  command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
 # Listed in the executable's sources so Ninja generates it before compiling.
 # include_directories('protocols') (in the parent build file) puts the build-tree
 # copy on the include path.
-protocol_src = [xdg_shell_h]
+protocol_src = [xdg_shell_h, layer_shell_h]

@@ -30,3 +30,4 @@ add_project_arguments(
 subdir('compositor')
 subdir('sdk')
 subdir('samples')
+subdir('system')

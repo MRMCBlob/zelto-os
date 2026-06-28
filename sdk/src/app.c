@@ -14,6 +14,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "internal.h"
+#include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #define Z_DEFAULT_FONT "/usr/share/zelto/fonts/ZeltoSans.ttf"
@@ -34,6 +35,7 @@ struct ZApp {
     void *state;
     ZBodyFn body;
     const char *title;
+    const char *app_id;
     ZArena arenas[2];    // double arena: keep last build's tree for diffing
     int cur_arena;
     ZText *text;
@@ -51,6 +53,14 @@ struct ZApp {
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *xdg_toplevel;
+
+    // Layer-shell role (System UI). When is_layer, the surface is a layer
+    // surface anchored per `layer_opts` instead of an xdg_toplevel.
+    struct zwlr_layer_shell_v1 *layer_shell;
+    struct zwlr_layer_surface_v1 *layer_surface;
+    bool is_layer;
+    ZLayerOpts layer_opts;
+
     struct wl_callback *frame_cb;   // in-flight frame throttle (NULL = idle)
     ZBuf bufs[2];                   // retained double-buffer pool
 
@@ -442,6 +452,34 @@ static const struct xdg_toplevel_listener toplevel_listener = {
     .close = toplevel_close,
 };
 
+// --- layer-shell (System UI surface role) ---------------------------------
+static void layer_surface_configure(void *data,
+                                    struct zwlr_layer_surface_v1 *ls,
+                                    uint32_t serial, uint32_t width,
+                                    uint32_t height) {
+    ZApp *app = data;
+    zwlr_layer_surface_v1_ack_configure(ls, serial);
+    // The compositor resolves our anchors/size into a concrete size (e.g. a
+    // top-anchored bar gets the full output width and our requested height).
+    if (width > 0) {
+        app->width = (int)width;
+    }
+    if (height > 0) {
+        app->height = (int)height;
+    }
+    app->configured = true;
+    app->dirty = true;
+}
+static void layer_surface_closed(void *data,
+                                 struct zwlr_layer_surface_v1 *ls) {
+    (void)ls;
+    ((ZApp *)data)->running = false;
+}
+static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
+    .configure = layer_surface_configure,
+    .closed = layer_surface_closed,
+};
+
 // --- output (to learn the display size) -----------------------------------
 static void output_geometry(void *data, struct wl_output *o, int32_t x,
                             int32_t y, int32_t pw, int32_t ph, int32_t sub,
@@ -780,6 +818,10 @@ static void registry_global(void *data, struct wl_registry *registry,
         app->wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface,
                                         version < 3 ? version : 3);
         xdg_wm_base_add_listener(app->wm_base, &wm_base_listener, app);
+    } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
+        app->layer_shell = wl_registry_bind(
+            registry, name, &zwlr_layer_shell_v1_interface,
+            version < 4 ? version : 4);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (!app->output) {
             app->output = wl_registry_bind(registry, name, &wl_output_interface,
@@ -804,80 +846,151 @@ static const struct wl_registry_listener registry_listener = {
 };
 
 // --- entry ----------------------------------------------------------------
-int z_app_main(void *state, ZBodyFn body, const char *title) {
-    ZApp app = {0};
-    app.state = state;
-    app.body = body;
-    app.title = title ? title : "Zelto App";
-    app.running = true;
+// Create the surface with the role chosen at launch: an xdg_toplevel (normal
+// app) or a wlr-layer-shell surface (System UI). Both feed the same render loop.
+static void create_surface(ZApp *app) {
+    app->surface = wl_compositor_create_surface(app->compositor);
+
+    if (app->is_layer) {
+        // Anchor a layer surface (status bar / launcher background). The output
+        // is left NULL so the compositor assigns its only output.
+        app->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+            app->layer_shell, app->surface, NULL,
+            (enum zwlr_layer_shell_v1_layer)app->layer_opts.layer, app->title);
+        zwlr_layer_surface_v1_set_anchor(app->layer_surface,
+                                         app->layer_opts.anchor);
+        zwlr_layer_surface_v1_set_exclusive_zone(app->layer_surface,
+                                                 app->layer_opts.exclusive_zone);
+        zwlr_layer_surface_v1_set_size(app->layer_surface,
+                                       (uint32_t)(app->layer_opts.width > 0
+                                                      ? app->layer_opts.width
+                                                      : 0),
+                                       (uint32_t)(app->layer_opts.height > 0
+                                                      ? app->layer_opts.height
+                                                      : 0));
+        // System UI does not steal keyboard focus from apps.
+        zwlr_layer_surface_v1_set_keyboard_interactivity(
+            app->layer_surface, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+        zwlr_layer_surface_v1_add_listener(app->layer_surface,
+                                           &layer_surface_listener, app);
+        // Seed a size; the configure event delivers the authoritative one.
+        if (app->layer_opts.width > 0) {
+            app->width = app->layer_opts.width;
+        }
+        if (app->layer_opts.height > 0) {
+            app->height = app->layer_opts.height;
+        }
+        // Commit with no buffer to trigger the first configure.
+        wl_surface_commit(app->surface);
+        return;
+    }
+
+    app->xdg_surface = xdg_wm_base_get_xdg_surface(app->wm_base, app->surface);
+    xdg_surface_add_listener(app->xdg_surface, &xdg_surface_listener, app);
+    app->xdg_toplevel = xdg_surface_get_toplevel(app->xdg_surface);
+    xdg_toplevel_add_listener(app->xdg_toplevel, &toplevel_listener, app);
+    xdg_toplevel_set_title(app->xdg_toplevel, app->title);
+    xdg_toplevel_set_app_id(app->xdg_toplevel, app->app_id);
+    wl_surface_commit(app->surface);
+}
+
+// Shared runtime: open resources, bind globals, create the surface for the
+// chosen role, run the build->paint loop, tear down. Caller pre-fills state/
+// body/title/app_id and (for the layer role) is_layer + layer_opts.
+static int app_run(ZApp *app) {
+    app->running = true;
 
     const char *font = getenv("ZELTO_FONT");
-    app.text = z_text_open(font ? font : Z_DEFAULT_FONT);
-    if (!app.text) {
+    app->text = z_text_open(font ? font : Z_DEFAULT_FONT);
+    if (!app->text) {
         fprintf(stderr, "zelto: warning: could not open font (text disabled)\n");
     }
 
-    app.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    if (!app.xkb_ctx) {
+    app->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!app->xkb_ctx) {
         fprintf(stderr, "zelto: warning: no xkb context (keyboard disabled)\n");
     }
 
-    app.display = wl_display_connect(NULL);
-    if (!app.display) {
+    app->display = wl_display_connect(NULL);
+    if (!app->display) {
         fprintf(stderr, "zelto: cannot connect to Wayland display\n");
         return 1;
     }
-    app.registry = wl_display_get_registry(app.display);
-    wl_registry_add_listener(app.registry, &registry_listener, &app);
+    app->registry = wl_display_get_registry(app->display);
+    wl_registry_add_listener(app->registry, &registry_listener, app);
     // Round-trip once to bind globals, again to receive the output mode.
-    wl_display_roundtrip(app.display);
-    wl_display_roundtrip(app.display);
+    wl_display_roundtrip(app->display);
+    wl_display_roundtrip(app->display);
 
-    if (!app.compositor || !app.shm || !app.wm_base) {
-        fprintf(stderr, "zelto: compositor missing required globals\n");
+    bool need_shell = app->is_layer ? (app->layer_shell != NULL)
+                                    : (app->wm_base != NULL);
+    if (!app->compositor || !app->shm || !need_shell) {
+        fprintf(stderr, "zelto: compositor missing required globals%s\n",
+                app->is_layer ? " (wlr-layer-shell?)" : "");
         return 1;
     }
 
     // Default surface size: fill the output if we learned its mode.
-    app.width = app.out_width > 0 ? app.out_width : 800;
-    app.height = app.out_height > 0 ? app.out_height : 600;
+    app->width = app->out_width > 0 ? app->out_width : 800;
+    app->height = app->out_height > 0 ? app->out_height : 600;
 
-    app.surface = wl_compositor_create_surface(app.compositor);
-    app.xdg_surface = xdg_wm_base_get_xdg_surface(app.wm_base, app.surface);
-    xdg_surface_add_listener(app.xdg_surface, &xdg_surface_listener, &app);
-    app.xdg_toplevel = xdg_surface_get_toplevel(app.xdg_surface);
-    xdg_toplevel_add_listener(app.xdg_toplevel, &toplevel_listener, &app);
-    xdg_toplevel_set_title(app.xdg_toplevel, app.title);
-    xdg_toplevel_set_app_id(app.xdg_toplevel, "os.zelto.sample");
-    wl_surface_commit(app.surface);
+    create_surface(app);
 
-    while (app.running && wl_display_dispatch(app.display) != -1) {
+    while (app->running && wl_display_dispatch(app->display) != -1) {
         // Render when state is dirty and no frame is in flight; render() then
         // arms a frame callback, so the next paint waits for vsync. Input
         // handlers set dirty via z_invalidate.
-        if (app.configured && app.dirty && !app.frame_cb) {
-            app.dirty = false;
-            render(&app);
-            wl_display_flush(app.display);
+        if (app->configured && app->dirty && !app->frame_cb) {
+            app->dirty = false;
+            render(app);
+            wl_display_flush(app->display);
         }
     }
 
-    if (app.xkb_state) {
-        xkb_state_unref(app.xkb_state);
+    if (app->xkb_state) {
+        xkb_state_unref(app->xkb_state);
     }
-    if (app.xkb_keymap) {
-        xkb_keymap_unref(app.xkb_keymap);
+    if (app->xkb_keymap) {
+        xkb_keymap_unref(app->xkb_keymap);
     }
-    if (app.xkb_ctx) {
-        xkb_context_unref(app.xkb_ctx);
+    if (app->xkb_ctx) {
+        xkb_context_unref(app->xkb_ctx);
     }
-    z_text_close(app.text);
-    buf_free(&app.bufs[0]);
-    buf_free(&app.bufs[1]);
-    z_arena_free(&app.arenas[0]);
-    z_arena_free(&app.arenas[1]);
-    wl_display_disconnect(app.display);
+    z_text_close(app->text);
+    buf_free(&app->bufs[0]);
+    buf_free(&app->bufs[1]);
+    z_arena_free(&app->arenas[0]);
+    z_arena_free(&app->arenas[1]);
+    wl_display_disconnect(app->display);
     return 0;
+}
+
+int z_app_main_id(void *state, ZBodyFn body, const char *title,
+                  const char *app_id) {
+    ZApp app = {0};
+    app.state = state;
+    app.body = body;
+    app.title = title ? title : "Zelto App";
+    app.app_id = app_id ? app_id : "os.zelto.app";
+    return app_run(&app);
+}
+
+int z_app_main(void *state, ZBodyFn body, const char *title) {
+    return z_app_main_id(state, body, title, "os.zelto.app");
+}
+
+int z_layer_app_main(void *state, ZBodyFn body, const char *title,
+                     const ZLayerOpts *opts) {
+    ZApp app = {0};
+    app.state = state;
+    app.body = body;
+    app.title = title ? title : "Zelto Layer";
+    app.app_id = "os.zelto.layer";
+    app.is_layer = true;
+    if (opts) {
+        app.layer_opts = *opts;
+    }
+    return app_run(&app);
 }
 
 void z_invalidate(ZApp *app) { app->dirty = true; }

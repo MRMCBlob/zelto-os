@@ -34,6 +34,11 @@ static void handle_request_state(struct wl_listener *listener, void *data) {
     ZcompOutput *output = wl_container_of(listener, output, request_state);
     const struct wlr_output_event_request_state *event = data;
     wlr_output_commit_state(output->wlr_output, event->state);
+    // A mode change resizes the usable area; re-anchor layers and apps.
+    wlr_scene_rect_set_size(output->server->background,
+                            output->wlr_output->width,
+                            output->wlr_output->height);
+    zcomp_arrange(output->server);
 }
 
 static void handle_destroy(struct wl_listener *listener, void *data) {
@@ -101,6 +106,10 @@ void zcomp_output_create(ZcompServer *server, struct wlr_output *wlr_output) {
 
     wlr_log(WLR_INFO, "output %s online: %dx%d", wlr_output->name,
             wlr_output->width, wlr_output->height);
+
+    // Now that an output exists, the usable area = full output (no layers yet);
+    // arrange seeds server->usable so the first app gets a correct initial size.
+    zcomp_arrange(server);
 
     // Prime the render loop. Thereafter the scene schedules frames itself
     // whenever its content changes (damage tracking).

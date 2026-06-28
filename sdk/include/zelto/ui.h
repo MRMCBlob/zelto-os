@@ -292,6 +292,11 @@ typedef ZView (*ZBodyFn)(ZApp *app, void *state);
 // Implementation entry used by Z_APP. Connects to Wayland, runs the loop.
 int z_app_main(void *state, ZBodyFn body, const char *title);
 
+// Like z_app_main but also sets the xdg app_id (used by Z_APP_ID). The System UI
+// launcher sets "os.zelto.launcher" so the compositor's Home chord can find it.
+int z_app_main_id(void *state, ZBodyFn body, const char *title,
+                  const char *app_id);
+
 // Z_APP(StateType, bodyFn) generates main(). bodyFn has signature:
 //   ZView bodyFn(ZApp *app, StateType *state);
 #define Z_APP(T, BODYFN)                                                  \
@@ -301,6 +306,69 @@ int z_app_main(void *state, ZBodyFn body, const char *title);
     int main(void) {                                                      \
         static T z__state;                                                \
         return z_app_main(&z__state, z__body_trampoline, #BODYFN);        \
+    }
+
+// Like Z_APP but with an explicit xdg app_id string.
+#define Z_APP_ID(T, BODYFN, APP_ID)                                       \
+    static ZView z__body_trampoline(ZApp *app, void *state) {             \
+        return BODYFN(app, (T *)state);                                   \
+    }                                                                     \
+    int main(void) {                                                      \
+        static T z__state;                                                \
+        return z_app_main_id(&z__state, z__body_trampoline, #BODYFN,      \
+                             (APP_ID));                                   \
+    }
+
+// ---------------------------------------------------------------------------
+// Layer-shell role (System UI).
+//
+// A normal app maps an xdg_toplevel and is window-managed by the compositor. A
+// layer-shell app (the status bar, a launcher background, a notification shade)
+// instead anchors itself to a screen edge in a fixed layer with an optional
+// exclusive zone that reserves space the compositor keeps clear of app windows.
+// Same declarative body()/layout/paint/input loop; only the surface role differs.
+// ---------------------------------------------------------------------------
+typedef enum ZLayer {
+    Z_LAYER_BACKGROUND = 0,   // wallpaper, behind everything
+    Z_LAYER_BOTTOM,           // below app windows
+    Z_LAYER_TOP,              // above app windows (status bar)
+    Z_LAYER_OVERLAY,          // above everything (shade, lock screen)
+} ZLayer;
+
+// Anchor bitmask (matches the wlr-layer-shell anchor edges). Anchoring to two
+// opposite edges stretches the surface along that axis.
+enum {
+    Z_ANCHOR_TOP = 1,
+    Z_ANCHOR_BOTTOM = 2,
+    Z_ANCHOR_LEFT = 4,
+    Z_ANCHOR_RIGHT = 8,
+};
+
+typedef struct ZLayerOpts {
+    ZLayer layer;             // which layer to live in
+    uint32_t anchor;          // Z_ANCHOR_* bitmask (0 = centered)
+    int32_t exclusive_zone;   // px reserved from the app area (-1 = ignore others)
+    int32_t width, height;    // desired size; 0 on an axis = size from anchors
+} ZLayerOpts;
+
+// Run an app as a layer-shell surface. Returns when the surface is closed.
+int z_layer_app_main(void *state, ZBodyFn body, const char *title,
+                     const ZLayerOpts *opts);
+
+// Z_LAYER_APP(StateType, bodyFn, layerOptsLiteral) generates main() for a
+// layer-shell System-UI app, e.g.
+//   Z_LAYER_APP(BarState, bar_body,
+//       .layer = Z_LAYER_TOP, .anchor = Z_ANCHOR_TOP | Z_ANCHOR_LEFT |
+//       Z_ANCHOR_RIGHT, .exclusive_zone = 40, .height = 40);
+#define Z_LAYER_APP(T, BODYFN, ...)                                       \
+    static ZView z__body_trampoline(ZApp *app, void *state) {             \
+        return BODYFN(app, (T *)state);                                   \
+    }                                                                     \
+    int main(void) {                                                      \
+        static T z__state;                                                \
+        ZLayerOpts z__opts = {__VA_ARGS__};                               \
+        return z_layer_app_main(&z__state, z__body_trampoline, #BODYFN,   \
+                                &z__opts);                                \
     }
 
 // Request a rebuild (like setState). Schedules a new body()/layout/paint.

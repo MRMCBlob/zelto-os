@@ -125,17 +125,20 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     sleep 1
     to_png "$OUT/frame.ppm" "$OUT/frame.png"
 
-    # Optional: drive the P5 list/navigation sample over QMP input-send-event and
-    # capture a *sequence* of frames proving each stage. The flow is one path (no
-    # fork): wheel-scroll the list, pan-drag it (multi-step, releases into a
-    # fling), tap a row to push the detail screen (slide transition), then press
-    # Escape (system back) to pop it. Each stage dumps a PNG. Coordinates are
-    # on-screen pixels mapped into the 0..32767 absolute input range.
+    # Optional: drive the System UI over QMP input-send-event and capture a
+    # *sequence* of frames proving the shell works. Flow: the shell boots to the
+    # launcher + status bar; tap the "Rows" tile (fork/exec app #1, clipped under
+    # the bar); press Home (reveal launcher) and tap the "Cards" tile (app #2);
+    # press Switch (Tab — cycle the foreground); press Home (back to launcher).
+    # Each stage dumps a PNG. Coordinates are on-screen pixels mapped into the
+    # 0..32767 absolute input range.
     if [ "${INJECT:-0}" = "1" ]; then
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        CX="${CX:-640}"                   # horizontal centre (over the list)
-        ROW_Y="${ROW_Y:-150}"             # y of a row to tap (just below navbar)
-        BACK_KEY="${BACK_KEY:-esc}"       # system-back key (Escape / backspace)
+        TILE_X="${TILE_X:-300}"           # x over a launcher tile (tiles are wide)
+        TILE1_Y="${TILE1_Y:-170}"         # "Rows" tile centre (below the bar)
+        TILE2_Y="${TILE2_Y:-275}"         # "Cards" tile centre
+        HOME_KEY="${HOME_KEY:-home}"      # compositor Home chord -> launcher
+        SWITCH_KEY="${SWITCH_KEY:-tab}"   # compositor Switch chord -> cycle apps
         ax() { echo $(( $1 * 32767 / OUTW )); }
         ay() { echo $(( $1 * 32767 / OUTH )); }
 
@@ -147,9 +150,8 @@ if [ "${HEADLESS:-0}" = "1" ]; then
             local d=true; [ "$1" = up ] && d=false
             qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
         }
-        wheel() {  # wheel-down|wheel-up
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"$1\"}}]}}"
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"$1\"}}]}}"
+        tap() {  # tap X Y : press + release at one spot (a tap, no drag)
+            move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up
         }
         keypress() {
             qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":true,\"key\":{\"type\":\"qcode\",\"data\":\"$1\"}}}]}}"
@@ -162,26 +164,28 @@ if [ "${HEADLESS:-0}" = "1" ]; then
             to_png "$OUT/$1.ppm" "$OUT/$1.png"
         }
 
-        echo "==> [inject 1/4] wheel-scroll the list"
-        move "$CX" 400
-        for _ in 1 2 3 4 5; do wheel wheel-down; sleep 0.2; done
-        sleep 1; shot frame-scroll
+        echo "==> [inject 0/5] shell: launcher + status bar"
+        shot frame-launcher
 
-        echo "==> [inject 2/4] pan-drag (multi-step) -> fling"
-        move "$CX" 540; btn down
-        for yy in 480 420 360 300 240 180; do move "$CX" "$yy"; sleep 0.12; done
-        btn up
-        sleep 2; shot frame-drag       # captures mid-fling / settled scroll
+        echo "==> [inject 1/5] tap the 'Rows' tile -> launch app #1"
+        tap "$TILE_X" "$TILE1_Y"
+        sleep 4; shot frame-app1        # app #1 mapped, clipped under the bar
 
-        echo "==> [inject 3/4] tap a row -> push detail (slide transition)"
-        move "$CX" "$ROW_Y"; btn down; btn up
-        sleep 1; shot frame-detail-mid # mid slide-in
-        sleep 2; shot frame-detail     # settled detail screen
+        echo "==> [inject 2/5] Home -> reveal launcher"
+        keypress "$HOME_KEY"
+        sleep 2; shot frame-home
 
-        echo "==> [inject 4/4] system back ('$BACK_KEY') -> pop"
-        keypress "$BACK_KEY"
-        sleep 1; shot frame-back-mid   # mid slide-out
-        sleep 2; shot frame-after      # back on the list (settled)
+        echo "==> [inject 3/5] tap the 'Cards' tile -> launch app #2"
+        tap "$TILE_X" "$TILE2_Y"
+        sleep 4; shot frame-app2        # app #2 mapped in front, under the bar
+
+        echo "==> [inject 4/5] Switch (cycle foreground)"
+        keypress "$SWITCH_KEY"
+        sleep 2; shot frame-switch
+
+        echo "==> [inject 5/5] Home -> back to the launcher"
+        keypress "$HOME_KEY"
+        sleep 2; shot frame-after
     fi
 
     kill "$QPID" 2>/dev/null || true

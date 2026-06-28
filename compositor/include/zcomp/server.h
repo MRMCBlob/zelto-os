@@ -6,6 +6,7 @@
 
 #include <stdbool.h>
 #include <wayland-server-core.h>
+#include <wlr/util/box.h>
 
 struct wlr_backend;
 struct wlr_session;
@@ -18,6 +19,8 @@ struct wlr_output_layout;
 struct wlr_scene;
 struct wlr_scene_output_layout;
 struct wlr_scene_rect;
+struct wlr_scene_tree;
+struct wlr_layer_shell_v1;
 struct wlr_xdg_shell;
 struct wlr_seat;
 struct wlr_cursor;
@@ -42,10 +45,31 @@ typedef struct ZcompServer {
     struct wlr_scene_output_layout *scene_layout;
     struct wlr_scene_rect *background;           // bottom-most fill
 
+    // Named scene sub-trees, created once as direct children of scene->tree, in
+    // z-order (child order in a wlr_scene tree IS the z-order). Apps (xdg
+    // toplevels + launcher) sit between the bottom and top shell layers, so the
+    // status bar (layer_top) always composites over them and raise-to-top within
+    // `apps` can never lift an app above the bar.
+    struct wlr_scene_tree *layer_bg;            // ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND
+    struct wlr_scene_tree *layer_bottom;        // ...BOTTOM
+    struct wlr_scene_tree *apps;                // xdg toplevels + launcher
+    struct wlr_scene_tree *layer_top;           // ...TOP (status bar)
+    struct wlr_scene_tree *layer_overlay;       // ...OVERLAY
+
     // xdg-shell: the window-management protocol native apps use.
     struct wlr_xdg_shell *xdg_shell;            // xdg_wm_base
     struct wl_listener new_xdg_surface;
-    struct wl_list toplevels;                   // ZcompToplevel.link
+    struct wl_list toplevels;                   // ZcompToplevel.link (strict MRU; front = focused)
+
+    // wlr-layer-shell: System UI (status bar / launcher background) anchored
+    // surfaces with exclusive zones.
+    struct wlr_layer_shell_v1 *layer_shell;
+    struct wl_listener new_layer_surface;
+    struct wl_list layer_surfaces;              // ZcompLayerSurface.link
+
+    // Area left for app windows after subtracting layer exclusive zones.
+    // Recomputed by zcomp_arrange().
+    struct wlr_box usable;
 
     // Seat + input.
     struct wlr_seat *seat;                      // wl_seat ("seat0")
@@ -81,5 +105,14 @@ void zcomp_server_finish(ZcompServer *server);
 // pointer to route motion/button events. Returns NULL if nothing is there.
 struct wlr_surface *zcomp_surface_at(ZcompServer *server, double lx, double ly,
                                      double *sx, double *sy);
+
+// Recompute the usable app area: anchor every layer surface against the output
+// and subtract its exclusive zone, then position/size every app toplevel to fill
+// what's left. Call on every layer-surface map/unmap/state change and on output
+// mode change. Safe to call with no outputs (no-op).
+void zcomp_arrange(ZcompServer *server);
+
+// Bring up the named scene layer sub-trees and the wlr-layer-shell global.
+void zcomp_layer_shell_init(ZcompServer *server);
 
 #endif  // ZCOMP_SERVER_H

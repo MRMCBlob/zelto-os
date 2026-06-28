@@ -18,6 +18,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
+#include "zcomp/layer.h"
 #include "zcomp/output.h"
 #include "zcomp/seat.h"
 #include "zcomp/toplevel.h"
@@ -91,6 +92,11 @@ bool zcomp_server_init(ZcompServer *server) {
     server->new_xdg_surface.notify = zcomp_handle_new_xdg_surface;
     wl_signal_add(&server->xdg_shell->events.new_surface,
                   &server->new_xdg_surface);
+
+    // --- wlr-layer-shell + the layered scene -------------------------------
+    // Builds the background/bottom/apps/top/overlay scene sub-trees (apps adopt
+    // the `apps` tree, above) and advertises the layer-shell global for System UI.
+    zcomp_layer_shell_init(server);
 
     // --- Seat + input ------------------------------------------------------
     zcomp_seat_init(server);

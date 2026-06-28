@@ -3,6 +3,7 @@
 #include "zcomp/toplevel.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
@@ -10,6 +11,9 @@
 #include <wlr/util/log.h>
 
 #include "zcomp/server.h"
+
+// app_id the launcher sets (libzelto Z_APP_ID). Lets Home reveal it.
+#define ZCOMP_LAUNCHER_APP_ID "os.zelto.launcher"
 
 void zcomp_focus_toplevel(ZcompToplevel *toplevel) {
     if (!toplevel) {
@@ -37,10 +41,16 @@ void zcomp_focus_toplevel(ZcompToplevel *toplevel) {
 static void handle_map(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompToplevel *toplevel = wl_container_of(listener, toplevel, map);
+    const char *app_id = toplevel->xdg_toplevel->app_id;
+    toplevel->is_launcher =
+        app_id && strcmp(app_id, ZCOMP_LAUNCHER_APP_ID) == 0;
     wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
-    wlr_log(WLR_INFO, "toplevel mapped: %s",
+    wlr_log(WLR_INFO, "toplevel mapped: %s%s",
             toplevel->xdg_toplevel->title ? toplevel->xdg_toplevel->title
-                                          : "(untitled)");
+                                          : "(untitled)",
+            toplevel->is_launcher ? " [launcher]" : "");
+    // Place it in the usable app area (below the bar) and size it to fill.
+    zcomp_arrange(toplevel->server);
     zcomp_focus_toplevel(toplevel);
 }
 
@@ -54,9 +64,15 @@ static void handle_commit(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompToplevel *toplevel = wl_container_of(listener, toplevel, commit);
     // The very first commit needs a configure reply before the client can map.
-    // Setting size 0,0 lets the client choose its own size.
+    // Hand the client the usable app area (below the bar) so it never paints
+    // over the layer surfaces. server->usable is set by zcomp_arrange once the
+    // output (and any always-on bar) is up; fall back to the full output if a
+    // toplevel somehow races ahead of it.
     if (toplevel->xdg_toplevel->base->initial_commit) {
-        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
+        struct wlr_box *u = &toplevel->server->usable;
+        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+                                  u->width > 0 ? u->width : 0,
+                                  u->height > 0 ? u->height : 0);
     }
 }
 
@@ -97,8 +113,10 @@ void zcomp_handle_new_xdg_surface(struct wl_listener *listener, void *data) {
     }
     toplevel->server = server;
     toplevel->xdg_toplevel = xdg_surface->toplevel;
+    // Apps live in the dedicated `apps` sub-tree (between the bottom and top
+    // shell layers), so raising within it can never lift a window over the bar.
     toplevel->scene_tree =
-        wlr_scene_xdg_surface_create(&server->scene->tree, xdg_surface);
+        wlr_scene_xdg_surface_create(server->apps, xdg_surface);
     // Back-reference used to parent popups (above) and for hit-testing.
     toplevel->scene_tree->node.data = toplevel;
     xdg_surface->data = toplevel->scene_tree;
@@ -112,4 +130,28 @@ void zcomp_handle_new_xdg_surface(struct wl_listener *listener, void *data) {
     wl_signal_add(&surface->events.commit, &toplevel->commit);
     toplevel->destroy.notify = handle_destroy;
     wl_signal_add(&xdg_surface->events.destroy, &toplevel->destroy);
+}
+
+void zcomp_home(ZcompServer *server) {
+    // Reveal the launcher: find the launcher toplevel and raise+focus it. Since
+    // apps are opaque and fill the usable area, raising the launcher to the top
+    // of `apps` covers whatever app was foreground.
+    ZcompToplevel *toplevel;
+    wl_list_for_each(toplevel, &server->toplevels, link) {
+        if (toplevel->is_launcher) {
+            zcomp_focus_toplevel(toplevel);
+            return;
+        }
+    }
+}
+
+void zcomp_switch(ZcompServer *server) {
+    // Cycle the foreground: focus the least-recently-used toplevel (the tail of
+    // the MRU list), which rotates through every window on repeated presses.
+    if (wl_list_empty(&server->toplevels)) {
+        return;
+    }
+    ZcompToplevel *tail =
+        wl_container_of(server->toplevels.prev, tail, link);
+    zcomp_focus_toplevel(tail);
 }

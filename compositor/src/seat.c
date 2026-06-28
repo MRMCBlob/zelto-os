@@ -19,6 +19,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "zcomp/server.h"
+#include "zcomp/toplevel.h"
 
 struct wlr_surface *zcomp_surface_at(ZcompServer *server, double lx, double ly,
                                      double *sx, double *sy) {
@@ -101,11 +102,38 @@ static void handle_kb_modifiers(struct wl_listener *listener, void *data) {
     wlr_seat_keyboard_notify_modifiers(seat, &keyboard->wlr_keyboard->modifiers);
 }
 
+// Compositor-level chords, recognized before app delivery (System UI gestures):
+//   Home -> reveal the launcher;  Tab ("Switch") -> cycle foreground app.
+// Returns true if the key was consumed and must not reach the client.
+static bool handle_chord(ZcompServer *server, xkb_keysym_t sym) {
+    switch (sym) {
+    case XKB_KEY_Home:
+        zcomp_home(server);
+        return true;
+    case XKB_KEY_Tab:
+        zcomp_switch(server);
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void handle_kb_key(struct wl_listener *listener, void *data) {
     ZcompKeyboard *keyboard = wl_container_of(listener, keyboard, key);
     struct wlr_seat *seat = keyboard->server->seat;
     struct wlr_keyboard_key_event *event = data;
-    // No compositor-level keybindings yet: forward everything to the client.
+
+    // Intercept global window-management chords on press; forward everything
+    // else to the focused client. evdev keycodes are +8 in xkb.
+    if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED &&
+        keyboard->wlr_keyboard->xkb_state) {
+        xkb_keysym_t sym = xkb_state_key_get_one_sym(
+            keyboard->wlr_keyboard->xkb_state, event->keycode + 8);
+        if (handle_chord(keyboard->server, sym)) {
+            return;
+        }
+    }
+
     wlr_seat_set_keyboard(seat, keyboard->wlr_keyboard);
     wlr_seat_keyboard_notify_key(seat, event->time_msec, event->keycode,
                                  event->state);
