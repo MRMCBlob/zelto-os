@@ -203,6 +203,62 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         sleep 3; shot frame-closed      # app #2 terminated, gone from the list
     fi
 
+    # Optional: drive the P8 system-service flow over QMP and capture a sequence
+    # proving the permission broker + consent modal end-to-end:
+    #   - launch the Cards app (it declares `permissions=camera`);
+    #   - tap "Use camera" -> z_perm_request -> zsysd has no stored grant, so it
+    #     shows the System-UI consent dialog (an OVERLAY layer-shell modal);
+    #   - tap Allow -> zsysd records the grant, returns granted, the dialog
+    #     dismisses and the app flips to its granted ("Camera ready") state;
+    #   - re-tap "Use camera" -> the cached grant returns immediately, NO dialog.
+    # Each stage dumps a PNG. Element coordinates are overridable so they can be
+    # retuned to the rendered layout from a captured frame without a rebuild
+    # (run again with SKIP_BUILD=1 and the overrides).
+    if [ "${PERM:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        TILE_X="${TILE_X:-300}"           # x over a launcher tile
+        CARDS_Y="${CARDS_Y:-275}"         # "Cards" tile centre (below the bar)
+        CAM_X="${CAM_X:-640}"             # x over the "Use camera" button
+        CAM_Y="${CAM_Y:-470}"             # y of the "Use camera" button
+        ALLOW_X="${ALLOW_X:-820}"         # x over the consent dialog's Allow
+        ALLOW_Y="${ALLOW_Y:-500}"         # y of the consent dialog's Allow
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+
+        echo "==> [perm 0/4] shell: launcher + status bar"
+        shot frame-perm-launcher
+
+        echo "==> [perm 1/4] tap 'Cards' tile -> launch the camera-demo app"
+        tap "$TILE_X" "$CARDS_Y"
+        sleep 4; shot frame-perm-app        # Cards: "camera: prompt" + Use camera
+
+        echo "==> [perm 2/4] tap 'Use camera' -> zsysd shows the consent modal"
+        tap "$CAM_X" "$CAM_Y"
+        sleep 4; shot frame-perm-consent    # overlay modal: Allow / Deny
+
+        echo "==> [perm 3/4] tap Allow -> grant recorded, app flips to granted"
+        tap "$ALLOW_X" "$ALLOW_Y"
+        sleep 4; shot frame-perm-granted    # "camera: granted" + Camera ready
+
+        echo "==> [perm 4/4] re-tap 'Use camera' -> cached grant, NO dialog"
+        tap "$CAM_X" "$CAM_Y"
+        sleep 3; shot frame-perm-recheck    # still granted, no overlay (fast path)
+    fi
+
     kill "$QPID" 2>/dev/null || true
 else
     echo "==> launching QEMU with GTK display (WSLg)"

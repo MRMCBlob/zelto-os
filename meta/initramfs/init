@@ -111,6 +111,11 @@ launch_shell() {
     done
     if [ -e "$XDG_RUNTIME_DIR/wayland-0" ]; then
         echo "[zelto-init] launching System UI (bar + launcher)..."
+        # The system-service broker (zsysd): the permission authority. Started
+        # before the shell so an app's z_perm_request reaches it; it inherits
+        # WAYLAND_DISPLAY + ZELTO_FONT so the consent dialog it spawns on a
+        # prompt can connect to the compositor and render.
+        [ -x /usr/bin/zsysd ] && /usr/bin/zsysd &
         [ -x /usr/bin/zelto-bar ] && /usr/bin/zelto-bar &
         # Small stagger so the bar's exclusive zone is applied before the
         # launcher's initial size is computed (cosmetic; arrange re-runs anyway).

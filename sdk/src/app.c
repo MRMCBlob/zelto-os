@@ -3,10 +3,14 @@
 // the build -> layout -> paint -> commit loop, submitting an shm buffer to its
 // surface. See docs/contributing/sdk-internals.md ("Pipeline").
 // (_GNU_SOURCE for memfd_create comes from the project-wide build args.)
+#include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <linux/input-event-codes.h>
@@ -92,6 +96,14 @@ struct ZApp {
     struct wl_callback *frame_cb;   // in-flight frame throttle (NULL = idle)
     ZBuf bufs[2];                   // retained double-buffer pool
 
+    // Permission broker (zsysd) client. perm_fd is the socket of an in-flight
+    // z_perm_request, watched in the app loop alongside the wayland fd; when the
+    // reply arrives (after the user answers the consent dialog) the callback
+    // fires. -1 when no request is outstanding (z_perm_status is synchronous).
+    int perm_fd;
+    ZPermCallback perm_cb;
+    void *perm_ud;
+
     // Keyboard translation (raw keycodes -> keysyms) via xkbcommon.
     struct xkb_context *xkb_ctx;
     struct xkb_keymap *xkb_keymap;
@@ -134,6 +146,12 @@ void *z_app_state(ZApp *app) { return app->state; }
 static ZApp *rec_app(ZTaskRec *rec) { return rec->app; }
 int z_app_width(ZApp *app) { return app->width; }
 int z_app_height(ZApp *app) { return app->height; }
+
+// The active app, set for the lifetime of app_run(). The permission API
+// (z_perm_status/z_perm_request) takes no ZApp to match the platform docs, so it
+// resolves the single per-process app through this. Defined below.
+static ZApp *z_active_app;
+static void perm_handle_reply(ZApp *app);
 
 // --- shm buffer pool ------------------------------------------------------
 // The compositor finished reading a buffer: free it for reuse.
@@ -1045,9 +1063,13 @@ static void create_surface(ZApp *app) {
                                        (uint32_t)(app->layer_opts.height > 0
                                                       ? app->layer_opts.height
                                                       : 0));
-        // System UI does not steal keyboard focus from apps.
+        // A passive surface (status bar) takes no keyboard focus; a modal dialog
+        // requests EXCLUSIVE so the compositor routes the keyboard to it.
         zwlr_layer_surface_v1_set_keyboard_interactivity(
-            app->layer_surface, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+            app->layer_surface,
+            app->layer_opts.keyboard
+                ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
+                : ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
         zwlr_layer_surface_v1_add_listener(app->layer_surface,
                                            &layer_surface_listener, app);
         // Seed a size; the configure event delivers the authoritative one.
@@ -1076,6 +1098,8 @@ static void create_surface(ZApp *app) {
 // body/title/app_id and (for the layer role) is_layer + layer_opts.
 static int app_run(ZApp *app) {
     app->running = true;
+    app->perm_fd = -1;
+    z_active_app = app;
 
     const char *font = getenv("ZELTO_FONT");
     app->text = z_text_open(font ? font : Z_DEFAULT_FONT);
@@ -1113,16 +1137,68 @@ static int app_run(ZApp *app) {
 
     create_surface(app);
 
-    while (app->running && wl_display_dispatch(app->display) != -1) {
-        // Render when state is dirty and no frame is in flight; render() then
-        // arms a frame callback, so the next paint waits for vsync. Input
-        // handlers set dirty via z_invalidate.
+    // Multi-fd loop: poll the wayland fd plus (when a request is in flight) the
+    // zsysd perm socket, so a broker reply wakes us without blocking on wayland.
+    // The wl_display_prepare_read/read_events dance is the canonical way to mix a
+    // wayland fd with other fds in one poll without losing events.
+    struct wl_display *dpy = app->display;
+    while (app->running) {
+        while (wl_display_prepare_read(dpy) != 0) {
+            wl_display_dispatch_pending(dpy);
+        }
+        wl_display_flush(dpy);
+
+        struct pollfd pfds[2];
+        pfds[0].fd = wl_display_get_fd(dpy);
+        pfds[0].events = POLLIN;
+        pfds[0].revents = 0;
+        nfds_t nf = 1;
+        if (app->perm_fd >= 0) {
+            pfds[1].fd = app->perm_fd;
+            pfds[1].events = POLLIN;
+            pfds[1].revents = 0;
+            nf = 2;
+        }
+
+        if (poll(pfds, nf, -1) < 0) {
+            wl_display_cancel_read(dpy);
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        // Wayland: complete the armed read if data came, else cancel it.
+        if (pfds[0].revents & POLLIN) {
+            if (wl_display_read_events(dpy) < 0) {
+                break;
+            }
+        } else {
+            wl_display_cancel_read(dpy);
+        }
+        if (wl_display_dispatch_pending(dpy) < 0) {
+            break;
+        }
+
+        // Perm broker reply (cached fast-path or post-prompt decision).
+        if (nf == 2 && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+            perm_handle_reply(app);
+        }
+
+        // Render when state is dirty and no frame is in flight; render() arms a
+        // frame callback so the next paint waits for vsync. Input handlers and
+        // the perm callback set dirty via z_invalidate.
         if (app->configured && app->dirty && !app->frame_cb) {
             app->dirty = false;
             render(app);
-            wl_display_flush(app->display);
         }
     }
+
+    if (app->perm_fd >= 0) {
+        close(app->perm_fd);
+        app->perm_fd = -1;
+    }
+    z_active_app = NULL;
 
     if (app->xkb_state) {
         xkb_state_unref(app->xkb_state);
@@ -1172,6 +1248,138 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 
 void z_invalidate(ZApp *app) { app->dirty = true; }
 void z_app_quit(ZApp *app) { app->running = false; }
+
+// --- permission broker (zsysd) client -------------------------------------
+// zsysd speaks a newline-delimited JSON-ish protocol over a SOCK_STREAM unix
+// socket at $XDG_RUNTIME_DIR/zsysd.sock. The client sends one request line —
+// {"op":"perm_status"|"perm_request","app_id":..,"perm":..} — and reads back one
+// reply line — {"status":"granted|denied|prompt"}. status is a fast round-trip;
+// request may block on a user prompt, so its socket is parked in the app loop.
+//
+// z_active_app is declared near the top of this file (set for app_run's life).
+static int zsysd_connect(void) {
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    if (!runtime) {
+        runtime = "/run";
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/zsysd.sock", runtime);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static ZPermStatus zsysd_parse_status(const char *line) {
+    if (strstr(line, "granted")) {
+        return Z_PERM_GRANTED;
+    }
+    if (strstr(line, "denied")) {
+        return Z_PERM_DENIED;
+    }
+    return Z_PERM_PROMPT;
+}
+
+// Read one newline-terminated reply line (blocking). False on EOF/error.
+static bool zsysd_read_line(int fd, char *buf, size_t n) {
+    size_t len = 0;
+    while (len + 1 < n) {
+        char c;
+        ssize_t r = read(fd, &c, 1);
+        if (r <= 0) {
+            return false;
+        }
+        if (c == '\n') {
+            break;
+        }
+        buf[len++] = c;
+    }
+    buf[len] = '\0';
+    return true;
+}
+
+static int zsysd_send(int fd, const char *op, const char *app_id,
+                      const char *perm) {
+    char msg[256];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"%s\",\"app_id\":\"%s\",\"perm\":\"%s\"}\n", op,
+                     app_id ? app_id : "", perm);
+    if (m <= 0 || m >= (int)sizeof(msg)) {
+        return -1;
+    }
+    return write(fd, msg, (size_t)m) == m ? 0 : -1;
+}
+
+ZPermStatus z_perm_status(const char *name) {
+    ZApp *app = z_active_app;
+    if (!app || !name) {
+        return Z_PERM_PROMPT;
+    }
+    int fd = zsysd_connect();
+    if (fd < 0) {
+        return Z_PERM_PROMPT;   // no broker reachable: behave as "may request"
+    }
+    ZPermStatus st = Z_PERM_PROMPT;
+    if (zsysd_send(fd, "perm_status", app->app_id, name) == 0) {
+        char line[256];
+        if (zsysd_read_line(fd, line, sizeof(line))) {
+            st = zsysd_parse_status(line);
+        }
+    }
+    close(fd);
+    return st;
+}
+
+void z_perm_request(const char *name, ZPermCallback cb, void *ud) {
+    ZApp *app = z_active_app;
+    // Deny if there is no app, no name, or a request is already outstanding
+    // (one at a time keeps the loop integration trivial).
+    if (!app || !name || app->perm_fd >= 0) {
+        if (cb) {
+            cb(app, Z_PERM_DENIED, ud);
+        }
+        return;
+    }
+    int fd = zsysd_connect();
+    if (fd < 0 || zsysd_send(fd, "perm_request", app->app_id, name) != 0) {
+        if (fd >= 0) {
+            close(fd);
+        }
+        if (cb) {
+            cb(app, Z_PERM_DENIED, ud);
+        }
+        return;
+    }
+    // Park the fd; poll() in the loop wakes when zsysd replies (which may be
+    // after the user answers a consent dialog), then dispatches the callback.
+    app->perm_fd = fd;
+    app->perm_cb = cb;
+    app->perm_ud = ud;
+}
+
+// The perm socket is readable: read the decision and fire the callback.
+static void perm_handle_reply(ZApp *app) {
+    char line[256];
+    ZPermStatus st = Z_PERM_DENIED;
+    if (zsysd_read_line(app->perm_fd, line, sizeof(line))) {
+        st = zsysd_parse_status(line);
+    }
+    close(app->perm_fd);
+    app->perm_fd = -1;
+    ZPermCallback cb = app->perm_cb;
+    void *ud = app->perm_ud;
+    app->perm_cb = NULL;
+    app->perm_ud = NULL;
+    if (cb) {
+        cb(app, st, ud);
+    }
+}
 
 // --- lifecycle + task-switcher public API ---------------------------------
 void z_on_lifecycle(ZApp *app, ZLifecycleHandler handler) {

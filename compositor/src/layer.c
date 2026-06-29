@@ -11,9 +11,11 @@
 
 #include <stdlib.h>
 
+#include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
@@ -79,17 +81,56 @@ void zcomp_arrange(ZcompServer *server) {
     }
 }
 
+// --- keyboard focus for modal layer surfaces ------------------------------
+// A layer surface that asks for EXCLUSIVE keyboard interactivity (the consent
+// dialog) is a modal: hand it the keyboard so typed input goes to it, not the
+// app behind. Pointer routing already works via the scene graph (the overlay
+// composites on top), so this is purely the keyboard half of "modal".
+static void layer_sync_keyboard(ZcompLayerSurface *ls) {
+    struct wlr_layer_surface_v1 *l = ls->layer_surface;
+    ZcompServer *server = ls->server;
+    if (l->current.keyboard_interactive !=
+        ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+        return;
+    }
+    struct wlr_seat *seat = server->seat;
+    struct wlr_keyboard *kb = wlr_seat_get_keyboard(seat);
+    if (kb) {
+        wlr_seat_keyboard_notify_enter(seat, l->surface, kb->keycodes,
+                                       kb->num_keycodes, &kb->modifiers);
+    } else {
+        wlr_seat_keyboard_notify_enter(seat, l->surface, NULL, 0, NULL);
+    }
+    server->focused_layer = l;
+}
+
+// The modal went away: return the keyboard to the front app toplevel.
+static void layer_release_keyboard(ZcompLayerSurface *ls) {
+    ZcompServer *server = ls->server;
+    if (server->focused_layer != ls->layer_surface) {
+        return;
+    }
+    server->focused_layer = NULL;
+    if (!wl_list_empty(&server->toplevels)) {
+        ZcompToplevel *front =
+            wl_container_of(server->toplevels.next, front, link);
+        zcomp_focus_toplevel(front);
+    }
+}
+
 // --- layer-surface lifecycle ---------------------------------------------
 
 static void handle_layer_map(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompLayerSurface *ls = wl_container_of(listener, ls, map);
     zcomp_arrange(ls->server);
+    layer_sync_keyboard(ls);
 }
 
 static void handle_layer_unmap(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompLayerSurface *ls = wl_container_of(listener, ls, unmap);
+    layer_release_keyboard(ls);
     zcomp_arrange(ls->server);
 }
 
@@ -100,11 +141,16 @@ static void handle_layer_commit(struct wl_listener *listener, void *data) {
     // later commit may change anchors/exclusive zone. Re-arrange either way.
     // (wlr_scene_layer_surface_v1_configure sends the configure for us.)
     zcomp_arrange(ls->server);
+    // A commit may be where keyboard-interactivity first becomes EXCLUSIVE.
+    if (ls->layer_surface->surface->mapped) {
+        layer_sync_keyboard(ls);
+    }
 }
 
 static void handle_layer_destroy(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompLayerSurface *ls = wl_container_of(listener, ls, destroy);
+    layer_release_keyboard(ls);
     wl_list_remove(&ls->map.link);
     wl_list_remove(&ls->unmap.link);
     wl_list_remove(&ls->surface_commit.link);

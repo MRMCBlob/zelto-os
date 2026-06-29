@@ -21,6 +21,7 @@ struct wlr_scene_output_layout;
 struct wlr_scene_rect;
 struct wlr_scene_tree;
 struct wlr_layer_shell_v1;
+struct wlr_layer_surface_v1;
 struct wlr_foreign_toplevel_manager_v1;
 struct wlr_xdg_shell;
 struct wlr_seat;
@@ -67,6 +68,11 @@ typedef struct ZcompServer {
     struct wlr_layer_shell_v1 *layer_shell;
     struct wl_listener new_layer_surface;
     struct wl_list layer_surfaces;              // ZcompLayerSurface.link
+
+    // A layer surface that grabbed EXCLUSIVE keyboard focus (a modal dialog,
+    // e.g. the permission consent overlay). NULL when no modal holds the
+    // keyboard; on its teardown focus returns to the front app toplevel.
+    struct wlr_layer_surface_v1 *focused_layer;
 
     // wlr-foreign-toplevel-management: publishes a handle per mapped app window
     // so the launcher (a client) can list running apps and request activate/close

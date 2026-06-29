@@ -30,6 +30,10 @@ SAMPLE="${SAMPLE:-$REPO_ROOT/build-arm64/samples/hello/zelto-hello}"
 BAR="${BAR:-$REPO_ROOT/build-arm64/system/bar/zelto-bar}"
 LAUNCHER="${LAUNCHER:-$REPO_ROOT/build-arm64/system/launcher/zelto-launcher}"
 CARDS="${CARDS:-$REPO_ROOT/build-arm64/system/apps/cards/zelto-cards}"
+# P8 system services: the permission broker (a plain daemon) + the consent
+# dialog (a libzelto overlay app zsysd spawns on a prompt).
+ZSYSD="${ZSYSD:-$REPO_ROOT/build-arm64/system/zsysd/zsysd}"
+CONSENT="${CONSENT:-$REPO_ROOT/build-arm64/system/consent/zelto-consent}"
 FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
@@ -90,6 +94,8 @@ install_bin "$SAMPLE"   zelto-hello      # app #1 ("Rows"), launched by a tile
 install_bin "$CARDS"    zelto-cards      # app #2 ("Cards"), launched by a tile
 install_bin "$BAR"      zelto-bar        # status bar (layer-shell)
 install_bin "$LAUNCHER" zelto-launcher   # app launcher (back toplevel)
+install_bin "$ZSYSD"    zsysd            # system-service broker (permissions)
+install_bin "$CONSENT"  zelto-consent    # permission consent dialog (overlay)
 if [ -f "$FONT_SRC" ]; then
     mkdir -p "$ROOT/usr/share/zelto/fonts"
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
@@ -219,7 +225,7 @@ if is_dynamic "$ZCOMP"; then
     # 1b. the libzelto apps' closure (libwayland-client, libharfbuzz,
     #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
     #     a closure, but bundle each so a future divergence can't break boot.
-    for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER"; do
+    for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER" "$ZSYSD" "$CONSENT"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
 

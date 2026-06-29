@@ -349,6 +349,7 @@ typedef struct ZLayerOpts {
     uint32_t anchor;          // Z_ANCHOR_* bitmask (0 = centered)
     int32_t exclusive_zone;   // px reserved from the app area (-1 = ignore others)
     int32_t width, height;    // desired size; 0 on an axis = size from anchors
+    bool keyboard;            // grab EXCLUSIVE keyboard focus (a modal dialog)
 } ZLayerOpts;
 
 // Run an app as a layer-shell surface. Returns when the surface is closed.
@@ -402,6 +403,36 @@ void z_on_lifecycle(ZApp *app, ZLifecycleHandler handler);
 
 // True while the app is the foreground (activated) window.
 bool z_app_active(ZApp *app);
+
+// ---------------------------------------------------------------------------
+// Permissions.
+//
+// Sensitive capabilities (camera, location, ...) are declared in the app's
+// manifest and granted at runtime by the user. The grant is brokered by the
+// zsysd system daemon over a unix socket; libzelto wraps it so the app never
+// touches the IPC. z_perm_status is a quick synchronous query; z_perm_request
+// may show a system consent dialog, so it is asynchronous — the reply (after the
+// user answers) is delivered to the callback from the app loop, not inline.
+// Re-requesting an already-granted permission returns immediately (no dialog).
+// See docs/platform/permissions.md + docs/api-reference/c/platform.md.
+// ---------------------------------------------------------------------------
+typedef enum ZPermStatus {
+    Z_PERM_GRANTED = 0,   // the user granted it (cached)
+    Z_PERM_DENIED,        // denied (cached) or not declared in the manifest
+    Z_PERM_PROMPT,        // declared, no decision yet — request to prompt
+} ZPermStatus;
+
+// Delivered the outcome of z_perm_request. `app`/`ud` are the live app and the
+// pointer passed to z_perm_request (typically the app's state struct).
+typedef void (*ZPermCallback)(ZApp *app, ZPermStatus status, void *ud);
+
+// Current status of a permission for this app (synchronous round-trip).
+ZPermStatus z_perm_status(const char *name);   // "camera", "location", ...
+
+// Request a permission. If a decision is cached the callback fires almost
+// immediately with it; otherwise the system shows a consent dialog and the
+// callback fires once the user answers. Does not block the render loop.
+void z_perm_request(const char *name, ZPermCallback cb, void *ud);
 
 // ---------------------------------------------------------------------------
 // Task switcher (running apps).
