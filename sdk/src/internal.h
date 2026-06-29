@@ -156,6 +156,17 @@ const char *z_active_app_id(void);
 bool z_anim_tick(ZApp *app, float dt);
 double z_now_seconds(void);
 
+// --- Networking event-loop integration (net.c) ----------------------------
+// The async HTTP/WebSocket clients live in net.c with their own in-flight
+// tables; the app loop (app.c) hosts their sockets. z_net_collect_fds appends up
+// to `max` pollfd entries for the active sockets (with the right POLLIN/POLLOUT
+// events) and returns how many; z_net_handle_ready advances each whose revents
+// fired. Cap so they fit the loop's fixed poll array.
+#include <poll.h>
+#define Z_NET_POLL_MAX 12
+int z_net_collect_fds(struct pollfd *pfds, int max);
+void z_net_handle_ready(struct pollfd *pfds, int count);
+
 // --- Scroll input (called from the app loop's pointer handling) -----------
 void z_scroll_begin_drag(ZScroll *sc);              // pan begin: stop any fling
 void z_scroll_drag_by(ZScroll *sc, float dy);       // wheel / pan delta (clamped)

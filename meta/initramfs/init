@@ -52,6 +52,31 @@ mkdir -p "$ZELTO_DATA_DIR/apps"
 # every write too; this is belt-and-suspenders for the two-boot persistence test.
 ( while true; do sync; sleep 2; done ) &
 
+# Networking (P12): QEMU user-mode networking (-netdev user) provides a virtio-net
+# NIC with NAT to the host. The host is reachable at 10.0.2.2, the guest gets
+# 10.0.2.15. We configure the interface statically (deterministic — no DHCP round
+# trip) so apps with the `network` permission can reach a host endpoint. udev may
+# rename the NIC (enp0s* etc.), so we pick the first non-loopback interface.
+# Best-effort: failure must not block boot (apps just can't reach the network).
+NET_IF=""
+for nif in /sys/class/net/*; do
+    dev=$(basename "$nif")
+    [ "$dev" = "lo" ] && continue
+    NET_IF="$dev"
+    break
+done
+ifconfig lo 127.0.0.1 up 2>/dev/null
+if [ -n "$NET_IF" ]; then
+    if ifconfig "$NET_IF" 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
+        route add default gw 10.0.2.2 2>/dev/null
+        echo "[zelto-init] network up: $NET_IF = 10.0.2.15 (gw 10.0.2.2)"
+    else
+        echo "[zelto-init] WARNING: could not configure $NET_IF; no network"
+    fi
+else
+    echo "[zelto-init] WARNING: no virtio-net interface found; no network"
+fi
+
 # binderfs: Android-container IPC (docs/overview/how-it-runs-apks.md). Best-effort
 # now (Waydroid is a later phase); failure must not block boot.
 mkdir -p /dev/binderfs

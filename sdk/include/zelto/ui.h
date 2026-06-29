@@ -701,6 +701,78 @@ const char *z_rows_str(ZRows *r, int col);           // valid until next/free
 void        z_rows_free(ZRows *r);
 
 // ---------------------------------------------------------------------------
+// Networking.
+//
+// Apps make asynchronous HTTP requests and open WebSockets, gated by the
+// `network` permission (declared in the manifest; the first send with no stored
+// grant shows the system consent dialog, like any permission). Nothing blocks
+// the render loop: the socket is driven from the app loop and the callback fires
+// once the response is complete. The MVP is plain HTTP/1.x over TCP to a numeric
+// IPv4 host; DNS and TLS/https are Planned.
+// See docs/guides/networking.md + docs/api-reference/c/system.md.
+// ---------------------------------------------------------------------------
+
+// A heap request builder + in-flight handle. Created by z_net_get/z_net_request,
+// configured with the setters, consumed by z_net_send (which owns and frees it
+// once the callback fires) or released by z_net_cancel.
+typedef struct ZNetRequest ZNetRequest;
+
+// A completed response, passed to the callback. Valid only for the duration of
+// the call — copy what you keep. Read `status` (HTTP status code; 0 on a
+// transport error) and `ok` (true for 2xx) directly; reach the body/headers
+// through z_net_body / z_net_header. The trailing fields are framework-internal.
+typedef struct ZNetResponse {
+    int status;
+    bool ok;
+    char *raw;          // owns the whole response (headers + body); internal
+    size_t raw_len;
+    char *body;         // into raw (NUL-terminated); internal
+    size_t body_len;
+    char *hdr_end;      // points at the CRLFCRLF; internal
+    char scratch[256];  // z_net_header return storage; internal
+} ZNetResponse;
+
+// Result callback: `res` is the response; `ud` is the pointer passed to send.
+typedef void (*ZNetCallback)(ZNetResponse *res, void *ud);
+
+// Build a GET / arbitrary-method request to `url` ("http://10.0.2.2:8080/x").
+// Returns NULL on a malformed URL.
+ZNetRequest *z_net_get(const char *url);
+ZNetRequest *z_net_request(const char *method, const char *url);
+
+// Add a request header / set the request body (both copied).
+void z_net_set_header(ZNetRequest *r, const char *k, const char *v);
+void z_net_set_body(ZNetRequest *r, const void *data, size_t len);
+
+// Send asynchronously. Checks the `network` permission first (showing the
+// consent dialog if undecided); on grant it connects, sends, and fires `cb` from
+// the app loop when the response is complete (or on error, with res->status==0).
+// Frees the request after the callback returns.
+void z_net_send(ZNetRequest *r, ZNetCallback cb, void *ud);
+
+// Cancel an in-flight (or unsent) request; no callback fires. Frees it.
+void z_net_cancel(ZNetRequest *r);
+
+// Response accessors, valid only until the callback returns. z_net_body returns
+// the body bytes (NUL-terminated for convenience); z_net_header looks up a
+// response header by name (case-insensitive), NULL if absent.
+ZBytes      z_net_body(ZNetResponse *res);
+const char *z_net_header(ZNetResponse *res, const char *name);
+
+// WebSockets (unfragmented text frames; binary/fragmented are Planned). Gated by
+// the `network` permission (typically already granted via a prior z_net_send).
+typedef struct ZWebSocket ZWebSocket;
+typedef void (*ZWsMessageCb)(ZWebSocket *ws, const char *text, size_t len,
+                             void *ud);
+
+// Open a WebSocket to `url` ("ws://10.0.2.2:8081/echo"): performs the HTTP/1.1
+// Upgrade handshake and parks the socket in the app loop. NULL on failure.
+ZWebSocket *z_ws_open(const char *url);
+void z_ws_on_message(ZWebSocket *ws, ZWsMessageCb cb, void *ud);
+void z_ws_send(ZWebSocket *ws, const void *data, size_t len);  // masked text frame
+void z_ws_close(ZWebSocket *ws);
+
+// ---------------------------------------------------------------------------
 // Task switcher (running apps).
 //
 // A client (the launcher) can list every other running app window and switch to

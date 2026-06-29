@@ -1205,12 +1205,12 @@ static int app_run(ZApp *app) {
         }
         wl_display_flush(dpy);
 
-        struct pollfd pfds[3];
+        struct pollfd pfds[3 + Z_NET_POLL_MAX];
         pfds[0].fd = wl_display_get_fd(dpy);
         pfds[0].events = POLLIN;
         pfds[0].revents = 0;
         nfds_t nf = 1;
-        int perm_slot = -1, ctrl_slot = -1;
+        int perm_slot = -1, ctrl_slot = -1, net_slot = -1, net_n = 0;
         if (app->perm_fd >= 0) {
             perm_slot = (int)nf;
             pfds[nf].fd = app->perm_fd;
@@ -1225,6 +1225,10 @@ static int app_run(ZApp *app) {
             pfds[nf].revents = 0;
             nf++;
         }
+        // Async HTTP/WebSocket sockets (net.c) contribute their in-flight fds.
+        net_slot = (int)nf;
+        net_n = z_net_collect_fds(&pfds[nf], Z_NET_POLL_MAX);
+        nf += (nfds_t)net_n;
 
         if (poll(pfds, nf, -1) < 0) {
             wl_display_cancel_read(dpy);
@@ -1255,6 +1259,10 @@ static int app_run(ZApp *app) {
         if (ctrl_slot >= 0 &&
             (pfds[ctrl_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
             ctrl_handle_read(app);
+        }
+        // Drive any ready HTTP/WebSocket sockets (callbacks fire from here).
+        if (net_n > 0) {
+            z_net_handle_ready(&pfds[net_slot], net_n);
         }
 
         // Render when state is dirty and no frame is in flight; render() arms a

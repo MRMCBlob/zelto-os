@@ -88,6 +88,11 @@ common=(
     # image opens on a WSL drvfs (/mnt/c) mount, whose 9p layer lacks OFD locks.
     -drive "file=$DATA_IMG,if=none,format=raw,id=data,file.locking=off,cache=writeback"
     -device virtio-blk-pci,drive=data
+    # Networking (P12): QEMU user-mode (slirp) NAT. Guest gets 10.0.2.15, host is
+    # 10.0.2.2. Always present (harmless when unused); the NET=1 harness starts a
+    # host HTTP endpoint the Fetch app GETs through 10.0.2.2.
+    -netdev user,id=net0
+    -device virtio-net-pci,netdev=net0
     -no-reboot
 )
 
@@ -536,6 +541,87 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         echo "==> [notify 6/6] tap banner body -> deep link routes to Notes"
         tap "$BANNER_BODY_X" "$BANNER_BODY_Y"
         sleep 5; shot frame-notify-deeplink   # Notes shows Opened: zelto://note/7
+    fi
+
+    # Optional: drive the P12 networking flow over QMP and capture a sequence
+    # proving HTTP fetch through the network-permission consent end-to-end:
+    #   - start a tiny HTTP server on the HOST (python3 -m http.server) serving a
+    #     known file; under QEMU user-mode networking the guest reaches it at
+    #     http://10.0.2.2:8080/ (fully offline, deterministic);
+    #   - launch the "Fetch" app (it declares `permissions=network`);
+    #   - tap "Fetch" -> z_net_send -> no stored grant, so zsysd shows the P8
+    #     consent modal;
+    #   - tap Allow -> the request connects, the callback fires on the app loop,
+    #     and the fetched body renders in the app;
+    #   - tap "Fetch" again -> cached grant returns immediately, NO dialog, the
+    #     body refreshes.
+    # The non-blocking connect/send/recv state machine lives in the app loop, so
+    # the render loop never stalls. Coordinates are overridable so they can be
+    # retuned to the rendered layout from a captured frame without a rebuild
+    # (rerun with SKIP_BUILD=1 + overrides). Boot is slow under TCG: SHOT_DELAY
+    # high; give the fetch generous time too.
+    if [ "${NET:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        TILE_X="${TILE_X:-300}"               # x over a launcher tile
+        FETCH_TILE_Y="${FETCH_TILE_Y:-688}"   # "Fetch" tile centre (retune!)
+        FETCH_BTN_X="${FETCH_BTN_X:-640}"     # "Fetch" button in the app
+        FETCH_BTN_Y="${FETCH_BTN_Y:-392}"
+        ALLOW_X="${ALLOW_X:-894}"             # consent dialog's Allow
+        ALLOW_Y="${ALLOW_Y:-527}"
+        NET_PORT="${NET_PORT:-8080}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+
+        # --- host HTTP endpoint (reachable from the guest at 10.0.2.2) --------
+        NET_SRV_PID=""
+        if command -v python3 >/dev/null 2>&1; then
+            SERVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zelto-www.XXXXXX")"
+            printf 'Hello from the Zelto host! (P12 networking works)\n' \
+                > "$SERVE_DIR/hello.txt"
+            echo "==> [net] starting host HTTP server on :$NET_PORT ($SERVE_DIR)"
+            ( cd "$SERVE_DIR" && python3 -m http.server "$NET_PORT" ) \
+                >/dev/null 2>&1 &
+            NET_SRV_PID=$!
+            sleep 1
+        else
+            echo "WARN: python3 not found; cannot start the host HTTP endpoint"
+        fi
+
+        echo "==> [net 0/5] shell: launcher with the Fetch tile"
+        shot frame-net-launcher              # read the Fetch tile y off this
+
+        echo "==> [net 1/5] tap 'Fetch' tile -> launch the networking demo app"
+        tap "$TILE_X" "$FETCH_TILE_Y"
+        sleep 4; shot frame-net-app          # Fetch app before sending (button)
+
+        echo "==> [net 2/5] tap 'Fetch' -> z_net_send -> consent modal"
+        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
+        sleep 4; shot frame-net-consent      # overlay modal: Allow / Deny
+
+        echo "==> [net 3/5] tap Allow -> request completes, body renders"
+        tap "$ALLOW_X" "$ALLOW_Y"
+        sleep 6; shot frame-net-fetched      # fetched body shown in the app
+
+        echo "==> [net 4/5] tap 'Fetch' again -> cached grant, NO modal"
+        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
+        sleep 6; shot frame-net-cached       # body refreshes, no consent overlay
+
+        echo "==> [net 5/5] done; stopping host HTTP server"
+        [ -n "$NET_SRV_PID" ] && kill "$NET_SRV_PID" 2>/dev/null || true
     fi
 
     kill "$QPID" 2>/dev/null || true
