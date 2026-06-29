@@ -117,6 +117,9 @@ launch_shell() {
         # prompt can connect to the compositor and render.
         [ -x /usr/bin/zsysd ] && /usr/bin/zsysd &
         [ -x /usr/bin/zelto-bar ] && /usr/bin/zelto-bar &
+        # The notification shade: an OVERLAY layer-shell sink that subscribes to
+        # zsysd and renders heads-up banners. Always-running like the bar.
+        [ -x /usr/bin/zelto-shade ] && /usr/bin/zelto-shade &
         # Small stagger so the bar's exclusive zone is applied before the
         # launcher's initial size is computed (cosmetic; arrange re-runs anyway).
         sleep 1

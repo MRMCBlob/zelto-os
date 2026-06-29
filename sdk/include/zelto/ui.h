@@ -350,6 +350,9 @@ typedef struct ZLayerOpts {
     int32_t exclusive_zone;   // px reserved from the app area (-1 = ignore others)
     int32_t width, height;    // desired size; 0 on an axis = size from anchors
     bool keyboard;            // grab EXCLUSIVE keyboard focus (a modal dialog)
+    // Margins (px) inset from the anchored edges, e.g. margin_top to float a
+    // surface below the status bar instead of over it.
+    int32_t margin_top, margin_right, margin_bottom, margin_left;
 } ZLayerOpts;
 
 // Run an app as a layer-shell surface. Returns when the surface is closed.
@@ -478,6 +481,108 @@ void z_share(ZShareItem *items, int count);
 // is registered, so an app launched to handle an intent never misses it.
 void z_on_open_url(ZApp *app, ZUrlCb cb, void *ud);
 void z_on_share_target(ZApp *app, ZShareCb cb, void *ud);
+
+// ---------------------------------------------------------------------------
+// Notifications.
+//
+// An app posts a notification to the Zelto shade (heads-up banner) via the
+// zsysd notification broker; it requires the `notifications` permission (the
+// first post with no stored grant shows the system consent dialog, exactly like
+// any other permission). A notification carries a title + body, an optional
+// channel (importance grouping), an optional tap_route deep link delivered
+// through z_open_url when the banner body is tapped, and optional action
+// buttons. Tapping an action routes back to the poster's
+// z_on_notification_action handler. Build with z_notify_new + the setters, then
+// z_notify_post (a synchronous round-trip that returns the assigned id and frees
+// the builder). See docs/guides/notifications.md + docs/api-reference/c/system.md.
+// ---------------------------------------------------------------------------
+
+// Channel importance (how prominently the shade presents the notification). The
+// shade's per-channel tuning is Planned; the MVP records the channel and treats
+// every banner as a heads-up card.
+typedef enum ZImportance {
+    Z_IMPORTANCE_MIN = 0,
+    Z_IMPORTANCE_LOW,
+    Z_IMPORTANCE_DEFAULT,
+    Z_IMPORTANCE_HIGH,
+} ZImportance;
+
+// Opaque notification builder. Allocated by z_notify_new, mutated by the
+// setters, consumed (and freed) by z_notify_post.
+typedef struct ZNotification ZNotification;
+
+// Register a channel (importance grouping). MVP: recorded by the broker; the
+// per-channel importance routing in the shade is Planned.
+void z_notify_define_channel(const char *id, const char *name, ZImportance imp);
+
+// Build a notification. Copies title + body; returns a builder to configure and
+// post. The MVP supports a single action button (the last z_notify_add_action
+// wins).
+ZNotification *z_notify_new(const char *title, const char *body);
+void z_notify_set_channel(ZNotification *n, const char *channel_id);
+void z_notify_set_tap_route(ZNotification *n, const char *url);   // deep link on body tap
+void z_notify_add_action(ZNotification *n, const char *id, const char *title);
+
+// Post the notification (synchronous: blocks until the broker — possibly after a
+// consent prompt — assigns an id). Returns the global notification id, or -1 if
+// the permission was denied / the broker is unreachable. Frees the builder.
+int64_t z_notify_post(ZNotification *n);
+
+// Cancel a posted notification by id (removes its banner from the shade).
+void z_notify_cancel(int64_t id);
+
+// Set the app-icon badge count (0 clears). Forwarding to the bar/shade is
+// Planned; the broker currently records it only.
+void z_notify_set_badge(int count);
+
+// An action / body tap delivered back to the poster. action_id is NULL or empty
+// when the notification body itself was tapped (the tap_route already routed via
+// z_open_url); a non-empty action_id is the id of the action button tapped.
+typedef struct ZNotifyActionEvent {
+    int64_t notification_id;
+    const char *action_id;
+} ZNotifyActionEvent;
+
+typedef void (*ZNotifyActionCb)(ZApp *app, const ZNotifyActionEvent *e,
+                                void *ud);
+
+// Register this app's notification-action handler (one per app). A queued action
+// that arrived before the handler was set fires as soon as it is registered (an
+// app launched to handle its own action never misses it).
+void z_on_notification_action(ZApp *app, ZNotifyActionCb cb, void *ud);
+
+// ---------------------------------------------------------------------------
+// Notification shade sink (System UI).
+//
+// The shade is an ordinary libzelto OVERLAY layer-shell app that subscribes as
+// the single notification sink. The broker pushes a notify_show for every posted
+// notification (post-grant) and a notify_hide when one is cancelled/dismissed.
+// On a banner body tap the shade opens the tap_route itself (z_open_url) and
+// reports the tap so the broker drops the banner; on an action tap it reports
+// the action so the broker routes it to the poster, then drops the banner.
+// ---------------------------------------------------------------------------
+typedef struct ZShownNotification {
+    int64_t id;
+    const char *app_id;
+    const char *title;
+    const char *body;
+    const char *tap_route;
+    const char *action_id;
+    const char *action_title;
+} ZShownNotification;
+
+typedef void (*ZNotifyShowCb)(ZApp *app, const ZShownNotification *n, void *ud);
+typedef void (*ZNotifyHideCb)(ZApp *app, int64_t id, void *ud);
+
+// Subscribe this app as the notification sink (last subscriber wins). The
+// callbacks fire from the app loop when the broker pushes a show/hide.
+void z_notify_subscribe(ZApp *app, ZNotifyShowCb on_show, ZNotifyHideCb on_hide,
+                        void *ud);
+
+// Report a banner body tap (the shade drops the banner; the deep link is routed
+// separately via z_open_url) or an action-button tap (routed to the poster).
+void z_notify_report_tap(int64_t id);
+void z_notify_report_action(int64_t id, const char *action_id);
 
 // ---------------------------------------------------------------------------
 // Task switcher (running apps).

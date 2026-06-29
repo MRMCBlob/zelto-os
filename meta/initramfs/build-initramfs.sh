@@ -39,6 +39,9 @@ CONSENT="${CONSENT:-$REPO_ROOT/build-arm64/system/consent/zelto-consent}"
 CHOOSER="${CHOOSER:-$REPO_ROOT/build-arm64/system/chooser/zelto-chooser}"
 SHARE_APP="${SHARE_APP:-$REPO_ROOT/build-arm64/system/share/zelto-share}"
 NOTES="${NOTES:-$REPO_ROOT/build-arm64/system/apps/notes/zelto-notes}"
+# P10 notifications: the shade (overlay layer-shell sink) + the Pinger source app.
+SHADE="${SHADE:-$REPO_ROOT/build-arm64/system/shade/zelto-shade}"
+PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
 FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
@@ -104,6 +107,8 @@ install_bin "$CONSENT"  zelto-consent    # permission consent dialog (overlay)
 install_bin "$CHOOSER"  zelto-chooser    # share-sheet / intent chooser (overlay)
 install_bin "$SHARE_APP" zelto-share     # intent-source demo app ("Share")
 install_bin "$NOTES"    zelto-notes      # intent-target demo app ("Notes")
+install_bin "$SHADE"    zelto-shade      # notification shade (overlay sink)
+install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
 if [ -f "$FONT_SRC" ]; then
     mkdir -p "$ROOT/usr/share/zelto/fonts"
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
@@ -117,7 +122,8 @@ mkdir -p "$ROOT/usr/share/zelto/apps"
 for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/cards/zelto-cards.app" \
          "$REPO_ROOT/system/share/zelto-share.app" \
-         "$REPO_ROOT/system/apps/notes/zelto-notes.app"; do
+         "$REPO_ROOT/system/apps/notes/zelto-notes.app" \
+         "$REPO_ROOT/system/apps/pinger/zelto-pinger.app"; do
     if [ -f "$m" ]; then
         echo "    manifest: $(basename "$m")"
         cp "$m" "$ROOT/usr/share/zelto/apps/"
@@ -236,7 +242,7 @@ if is_dynamic "$ZCOMP"; then
     #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
     #     a closure, but bundle each so a future divergence can't break boot.
     for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER" "$ZSYSD" "$CONSENT" \
-                "$CHOOSER" "$SHARE_APP" "$NOTES"; do
+                "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" "$PINGER"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
 

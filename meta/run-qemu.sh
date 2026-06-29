@@ -343,6 +343,83 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         sleep 4; shot frame-share-delivered   # Notes: Shared text + Opened link
     fi
 
+    # Optional: drive the P10 notifications flow over QMP and capture a sequence
+    # proving heads-up banners + tap-route + action routing end-to-end:
+    #   - launch "Pinger" (declares permissions=notifications);
+    #   - tap "Post" -> z_notify_post -> no stored grant, so zsysd shows the P8
+    #     consent modal;
+    #   - tap Allow -> zsysd assigns an id, stores it, and pushes notify_show to
+    #     the shade, which renders a heads-up banner card (app + title + body +
+    #     the "Ack" action) as an OVERLAY layer-shell strip over the apps;
+    #   - tap the banner's "Ack" action -> zsysd routes it to Pinger's mailbox,
+    #     z_on_notification_action fires and Pinger (still in front) shows
+    #     "last action: ack"; the banner is dropped;
+    #   - tap "Post" again (grant cached -> no consent, banner at once);
+    #   - tap the banner body -> the shade opens its tap_route (zelto://note/7)
+    #     via z_open_url -> Notes launches and z_on_open_url shows the URL.
+    # z_notify_post pumps the Wayland connection while it waits for the broker, so
+    # Pinger survives the (multi-second) consent and stays the foreground app for
+    # the whole flow — no launcher round-trip needed. Coordinates overridable so
+    # they can be retuned to the rendered layout from a captured frame without a
+    # rebuild (rerun with SKIP_BUILD=1 + overrides). Boot is slow under TCG:
+    # keep SHOT_DELAY high.
+    if [ "${NOTIFY:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        TILE_X="${TILE_X:-300}"               # x over a launcher tile
+        PINGER_TILE_Y="${PINGER_TILE_Y:-265}" # "Pinger" tile centre (2nd tile)
+        POST_X="${POST_X:-640}"               # "Post" button in Pinger
+        POST_Y="${POST_Y:-392}"
+        ALLOW_X="${ALLOW_X:-894}"             # consent dialog's Allow
+        ALLOW_Y="${ALLOW_Y:-527}"
+        BANNER_BODY_X="${BANNER_BODY_X:-300}" # banner card body (left column)
+        BANNER_BODY_Y="${BANNER_BODY_Y:-97}"
+        BANNER_ACT_X="${BANNER_ACT_X:-1224}"  # banner card action button (right)
+        BANNER_ACT_Y="${BANNER_ACT_Y:-97}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+
+        echo "==> [notify 0/6] shell: launcher with the Pinger tile"
+        shot frame-notify-launcher
+
+        echo "==> [notify 1/6] tap 'Pinger' tile -> launch the source app"
+        tap "$TILE_X" "$PINGER_TILE_Y"
+        sleep 4; shot frame-notify-pinger     # Pinger before posting (Post button)
+
+        echo "==> [notify 2/6] tap 'Post' -> zsysd shows the consent modal"
+        tap "$POST_X" "$POST_Y"
+        sleep 4; shot frame-notify-consent    # overlay modal: Allow / Deny
+
+        echo "==> [notify 3/6] tap Allow -> grant + banner pushed to the shade"
+        tap "$ALLOW_X" "$ALLOW_Y"
+        sleep 4; shot frame-notify-banner     # heads-up banner card (top strip)
+
+        echo "==> [notify 4/6] tap the 'Ack' action -> routed back to Pinger"
+        tap "$BANNER_ACT_X" "$BANNER_ACT_Y"
+        sleep 4; shot frame-notify-action     # Pinger: last action: ack
+
+        echo "==> [notify 5/6] tap 'Post' again -> banner (grant cached, no modal)"
+        tap "$POST_X" "$POST_Y"
+        sleep 4; shot frame-notify-banner2
+
+        echo "==> [notify 6/6] tap banner body -> deep link routes to Notes"
+        tap "$BANNER_BODY_X" "$BANNER_BODY_Y"
+        sleep 5; shot frame-notify-deeplink   # Notes shows Opened: zelto://note/7
+    fi
+
     kill "$QPID" 2>/dev/null || true
 else
     echo "==> launching QEMU with GTK display (WSLg)"

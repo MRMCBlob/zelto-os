@@ -125,6 +125,21 @@ struct ZApp {
     char pend_mime[64];
     char pend_text[256];
 
+    // Notifications. Poster side: the action receiver fired when an action this
+    // app posted is tapped in the shade (pushed over ctrl_fd as a deliver of
+    // kind "notify_action"); buffered like an intent if it arrives before the
+    // handler is registered (an app relaunched to handle its action).
+    ZNotifyActionCb notify_action_cb;
+    void *notify_action_ud;
+    bool pend_action;
+    int64_t pend_action_id;
+    char pend_action_buf[64];
+    // Shade side: this app (zelto-shade) subscribed as the notification sink, so
+    // zsysd pushes notify_show / notify_hide on ctrl_fd.
+    ZNotifyShowCb notify_show_cb;
+    ZNotifyHideCb notify_hide_cb;
+    void *notify_sink_ud;
+
     // Keyboard translation (raw keycodes -> keysyms) via xkbcommon.
     struct xkb_context *xkb_ctx;
     struct xkb_keymap *xkb_keymap;
@@ -175,6 +190,7 @@ static ZApp *z_active_app;
 static void perm_handle_reply(ZApp *app);
 static void ctrl_handle_read(ZApp *app);
 static void ctrl_connect_register(ZApp *app);
+static void deliver_action(ZApp *app, int64_t id, const char *action_id);
 
 // --- shm buffer pool ------------------------------------------------------
 // The compositor finished reading a buffer: free it for reuse.
@@ -1086,6 +1102,12 @@ static void create_surface(ZApp *app) {
                                        (uint32_t)(app->layer_opts.height > 0
                                                       ? app->layer_opts.height
                                                       : 0));
+        // Inset margins from the anchored edges (e.g. float the shade below the
+        // status bar). The set_margin request exists since layer-shell v1.
+        zwlr_layer_surface_v1_set_margin(
+            app->layer_surface, app->layer_opts.margin_top,
+            app->layer_opts.margin_right, app->layer_opts.margin_bottom,
+            app->layer_opts.margin_left);
         // A passive surface (status bar) takes no keyboard focus; a modal dialog
         // requests EXCLUSIVE so the compositor routes the keyboard to it.
         zwlr_layer_surface_v1_set_keyboard_interactivity(
@@ -1508,10 +1530,42 @@ static void deliver_url(ZApp *app, const char *url) {
     z_invalidate(app);
 }
 
-// Parse and act on one pushed control line ({"op":"deliver",..}).
+// Parse and act on one pushed control line. zsysd pushes intent deliveries
+// ({"op":"deliver",..}) to a mailbox app, and notification show/hide to the
+// shade sink ({"op":"notify_show"|"notify_hide",..}).
 static void ctrl_dispatch_line(ZApp *app, const char *line) {
     char op[24] = {0};
     if (!ctrl_json_get(line, "op", op, sizeof(op))) {
+        return;
+    }
+    if (strcmp(op, "notify_show") == 0 && app->notify_show_cb) {
+        char id[24] = {0}, app_id[96] = {0}, title[128] = {0}, body[192] = {0},
+             tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0};
+        ctrl_json_get(line, "id", id, sizeof(id));
+        ctrl_json_get(line, "app_id", app_id, sizeof(app_id));
+        ctrl_json_get(line, "title", title, sizeof(title));
+        ctrl_json_get(line, "body", body, sizeof(body));
+        ctrl_json_get(line, "tap_route", tap_route, sizeof(tap_route));
+        ctrl_json_get(line, "action_id", action_id, sizeof(action_id));
+        ctrl_json_get(line, "action_title", action_title, sizeof(action_title));
+        ZShownNotification n = {
+            .id = (int64_t)atoll(id),
+            .app_id = app_id,
+            .title = title,
+            .body = body,
+            .tap_route = tap_route,
+            .action_id = action_id,
+            .action_title = action_title,
+        };
+        app->notify_show_cb(app, &n, app->notify_sink_ud);
+        z_invalidate(app);
+        return;
+    }
+    if (strcmp(op, "notify_hide") == 0 && app->notify_hide_cb) {
+        char id[24] = {0};
+        ctrl_json_get(line, "id", id, sizeof(id));
+        app->notify_hide_cb(app, (int64_t)atoll(id), app->notify_sink_ud);
+        z_invalidate(app);
         return;
     }
     if (strcmp(op, "deliver") != 0) {
@@ -1528,6 +1582,11 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
         char url[256] = {0};
         ctrl_json_get(line, "url", url, sizeof(url));
         deliver_url(app, url);
+    } else if (strcmp(kind, "notify_action") == 0) {
+        char id[24] = {0}, action[64] = {0};
+        ctrl_json_get(line, "id", id, sizeof(id));
+        ctrl_json_get(line, "action", action, sizeof(action));
+        deliver_action(app, (int64_t)atoll(id), action);
     }
 }
 
@@ -1614,6 +1673,256 @@ void z_on_share_target(ZApp *app, ZShareCb cb, void *ud) {
         ZShareItem it = {app->pend_mime, app->pend_text};
         cb(app, &it, 1, ud);
         z_invalidate(app);
+    }
+}
+
+// --- notifications (zsysd) client ------------------------------------------
+// An app posts a notification over a transient zsysd connection (like
+// z_perm_status): it sends one {"op":"notify_post",..} line and blocks reading
+// the {"id":"N"} reply — synchronous because the broker may show the consent
+// dialog first, exactly as the perm path does. The poster's action receiver and
+// the shade's show/hide sink ride the persistent ctrl_fd instead (pushed by
+// zsysd), folded into ctrl_dispatch_line above. All numeric ids travel as quoted
+// strings so the one json_get parser handles every field.
+
+// The builder ZNotification holds the fields until z_notify_post sends them.
+struct ZNotification {
+    char title[128];
+    char body[192];
+    char channel[64];
+    char tap_route[256];
+    char action_id[64];
+    char action_title[64];
+};
+
+ZNotification *z_notify_new(const char *title, const char *body) {
+    ZNotification *n = calloc(1, sizeof(*n));
+    if (!n) {
+        return NULL;
+    }
+    snprintf(n->title, sizeof(n->title), "%s", title ? title : "");
+    snprintf(n->body, sizeof(n->body), "%s", body ? body : "");
+    return n;
+}
+
+void z_notify_set_channel(ZNotification *n, const char *channel_id) {
+    if (n && channel_id) {
+        snprintf(n->channel, sizeof(n->channel), "%s", channel_id);
+    }
+}
+
+void z_notify_set_tap_route(ZNotification *n, const char *url) {
+    if (n && url) {
+        snprintf(n->tap_route, sizeof(n->tap_route), "%s", url);
+    }
+}
+
+void z_notify_add_action(ZNotification *n, const char *id, const char *title) {
+    if (n && id && title) {
+        snprintf(n->action_id, sizeof(n->action_id), "%s", id);
+        snprintf(n->action_title, sizeof(n->action_title), "%s", title);
+    }
+}
+
+// Wait for the one-line reply on `fd` while keeping the app's Wayland connection
+// serviced. z_notify_post is synchronous (it returns the assigned id), but the
+// broker may sit on the request for seconds while the consent dialog is up; a
+// plain blocking read would stop draining the Wayland socket and the compositor
+// would drop the client. So we pump wayland (the same prepare_read/poll/
+// read_events dance as the main loop) until the reply fd is readable.
+static bool notify_wait_reply(ZApp *app, int fd, char *buf, size_t n) {
+    struct wl_display *dpy = app->display;
+    for (;;) {
+        while (wl_display_prepare_read(dpy) != 0) {
+            wl_display_dispatch_pending(dpy);
+        }
+        wl_display_flush(dpy);
+        struct pollfd pfds[2];
+        pfds[0].fd = wl_display_get_fd(dpy);
+        pfds[0].events = POLLIN;
+        pfds[0].revents = 0;
+        pfds[1].fd = fd;
+        pfds[1].events = POLLIN;
+        pfds[1].revents = 0;
+        if (poll(pfds, 2, -1) < 0) {
+            wl_display_cancel_read(dpy);
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if (pfds[0].revents & POLLIN) {
+            if (wl_display_read_events(dpy) < 0) {
+                return false;
+            }
+        } else {
+            wl_display_cancel_read(dpy);
+        }
+        wl_display_dispatch_pending(dpy);
+        if (pfds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            return zsysd_read_line(fd, buf, n);
+        }
+    }
+}
+
+int64_t z_notify_post(ZNotification *n) {
+    if (!n) {
+        return -1;
+    }
+    ZApp *app = z_active_app;
+    int64_t id = -1;
+    int fd = (app) ? zsysd_connect() : -1;
+    if (fd >= 0) {
+        char msg[1024];
+        int m = snprintf(
+            msg, sizeof(msg),
+            "{\"op\":\"notify_post\",\"app_id\":\"%s\",\"title\":\"%s\","
+            "\"body\":\"%s\",\"channel\":\"%s\",\"tap_route\":\"%s\","
+            "\"action_id\":\"%s\",\"action_title\":\"%s\"}\n",
+            app->app_id ? app->app_id : "", n->title, n->body, n->channel,
+            n->tap_route, n->action_id, n->action_title);
+        if (m > 0 && m < (int)sizeof(msg) &&
+            write(fd, msg, (size_t)m) == m) {
+            char line[64];
+            // Pump wayland while waiting if we have a display (an app); a
+            // display-less caller (CLI/test) just blocks on the read.
+            bool ok = app->display
+                          ? notify_wait_reply(app, fd, line, sizeof(line))
+                          : zsysd_read_line(fd, line, sizeof(line));
+            if (ok) {
+                char idbuf[24] = {0};
+                if (ctrl_json_get(line, "id", idbuf, sizeof(idbuf))) {
+                    id = (int64_t)atoll(idbuf);
+                }
+            }
+        }
+        close(fd);
+    }
+    free(n);
+    return id;
+}
+
+void z_notify_cancel(int64_t id) {
+    int fd = zsysd_connect();
+    if (fd < 0) {
+        return;
+    }
+    char msg[64];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"notify_cancel\",\"id\":\"%lld\"}\n",
+                     (long long)id);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(fd, msg, (size_t)m);
+        (void)w;
+    }
+    close(fd);
+}
+
+void z_notify_define_channel(const char *id, const char *name,
+                             ZImportance imp) {
+    int fd = zsysd_connect();
+    if (fd < 0) {
+        return;
+    }
+    char msg[256];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"notify_channel\",\"id\":\"%s\",\"name\":\"%s\","
+                     "\"importance\":\"%d\"}\n",
+                     id ? id : "", name ? name : "", (int)imp);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(fd, msg, (size_t)m);
+        (void)w;
+    }
+    close(fd);
+}
+
+void z_notify_set_badge(int count) {
+    ZApp *app = z_active_app;
+    int fd = (app) ? zsysd_connect() : -1;
+    if (fd < 0) {
+        return;
+    }
+    char msg[128];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"notify_badge\",\"app_id\":\"%s\",\"count\":\"%d\"}\n",
+                     app->app_id ? app->app_id : "", count);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(fd, msg, (size_t)m);
+        (void)w;
+    }
+    close(fd);
+}
+
+// A notify_action pushed back to the poster: stash it (so it survives until the
+// handler is registered) and fire now if a handler already exists.
+static void deliver_action(ZApp *app, int64_t id, const char *action_id) {
+    app->pend_action_id = id;
+    snprintf(app->pend_action_buf, sizeof(app->pend_action_buf), "%s",
+             action_id ? action_id : "");
+    app->pend_action = true;
+    if (app->notify_action_cb) {
+        ZNotifyActionEvent e = {.notification_id = id,
+                                .action_id = app->pend_action_buf};
+        app->notify_action_cb(app, &e, app->notify_action_ud);
+        app->pend_action = false;
+    }
+    z_invalidate(app);
+}
+
+void z_on_notification_action(ZApp *app, ZNotifyActionCb cb, void *ud) {
+    app->notify_action_cb = cb;
+    app->notify_action_ud = ud;
+    if (cb && app->pend_action) {
+        app->pend_action = false;
+        ZNotifyActionEvent e = {.notification_id = app->pend_action_id,
+                                .action_id = app->pend_action_buf};
+        cb(app, &e, ud);
+        z_invalidate(app);
+    }
+}
+
+// --- notification shade sink (System UI) -----------------------------------
+// The shade subscribes as the single notification sink over its persistent
+// ctrl_fd; zsysd then pushes notify_show / notify_hide (handled in
+// ctrl_dispatch_line). The shade reports body / action taps back on the same fd.
+void z_notify_subscribe(ZApp *app, ZNotifyShowCb on_show, ZNotifyHideCb on_hide,
+                        void *ud) {
+    app->notify_show_cb = on_show;
+    app->notify_hide_cb = on_hide;
+    app->notify_sink_ud = ud;
+    if (app->ctrl_fd >= 0) {
+        const char *msg = "{\"op\":\"notify_subscribe\"}\n";
+        ssize_t w = write(app->ctrl_fd, msg, strlen(msg));
+        (void)w;
+    }
+}
+
+void z_notify_report_tap(int64_t id) {
+    ZApp *app = z_active_app;
+    if (!app || app->ctrl_fd < 0) {
+        return;
+    }
+    char msg[64];
+    int m = snprintf(msg, sizeof(msg), "{\"op\":\"notify_tap\",\"id\":\"%lld\"}\n",
+                     (long long)id);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(app->ctrl_fd, msg, (size_t)m);
+        (void)w;
+    }
+}
+
+void z_notify_report_action(int64_t id, const char *action_id) {
+    ZApp *app = z_active_app;
+    if (!app || app->ctrl_fd < 0) {
+        return;
+    }
+    char msg[128];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"notify_action\",\"id\":\"%lld\",\"action\":\"%s\"}\n",
+                     (long long)id, action_id ? action_id : "");
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(app->ctrl_fd, msg, (size_t)m);
+        (void)w;
     }
 }
 
