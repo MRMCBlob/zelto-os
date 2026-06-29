@@ -32,6 +32,9 @@ ACCEL="${ACCEL:-tcg,thread=multi,tb-size=1024}"
 
 KERNEL="$OUT/Image"
 INITRD="$OUT/initramfs.cpio.gz"
+# Persistent data disk (P11): a virtio-blk image the guest mounts at /var/zelto.
+# It lives in out/ so it persists across runs (and across the STORAGE two-boot).
+DATA_IMG="${DATA_IMG:-$OUT/data.img}"
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     echo "==> [1/3] cross-build zcomp (aarch64)"
@@ -47,6 +50,9 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     echo "==> [3/3] initramfs"
     "$REPO_ROOT/meta/initramfs/build-initramfs.sh"
 fi
+
+# Ensure the persistent data disk exists (idempotent; created+formatted once).
+"$REPO_ROOT/meta/mkdata.sh" "$DATA_IMG"
 
 [ -f "$KERNEL" ] || { echo "ERROR: kernel missing ($KERNEL); run device/qemu-virt/build-kernel.sh"; exit 1; }
 [ -f "$INITRD" ] || { echo "ERROR: initramfs missing ($INITRD)"; exit 1; }
@@ -78,6 +84,10 @@ common=(
     -device virtio-gpu-pci
     -device virtio-keyboard-pci
     -device virtio-tablet-pci
+    # Persistent data disk -> /dev/vda in the guest (P11). file.locking=off so the
+    # image opens on a WSL drvfs (/mnt/c) mount, whose 9p layer lacks OFD locks.
+    -drive "file=$DATA_IMG,if=none,format=raw,id=data,file.locking=off,cache=writeback"
+    -device virtio-blk-pci,drive=data
     -no-reboot
 )
 
@@ -86,6 +96,114 @@ KCMD="console=ttyAMA0 rdinit=/init loglevel=7"
 if [ "${HEADLESS:-0}" = "1" ]; then
     echo "==> launching QEMU headless; frame -> $OUT/frame.ppm after ${SHOT_DELAY}s"
     rm -f "$OUT/frame.ppm" "$OUT/frame-after.ppm"
+
+    # ---------------------------------------------------------------------
+    # P11 persistent-storage flow (STORAGE=1): a TWO-BOOT test against the same
+    # virtio-blk data.img. Boot #1 launches Notepad and taps "Add note" a few
+    # times (each tap bumps a prefs counter AND inserts a SQLite row in the app's
+    # private dir on /var/zelto), captures count = N, syncs, and kills QEMU.
+    # Boot #2 is a *fresh* QEMU process on the SAME disk image: it relaunches
+    # Notepad, which reads the counter back via z_prefs_get_int + the rows via
+    # z_db_query and shows the value survived (still N, not 0). This is the whole
+    # success criterion for the phase. Self-contained (its own two launches), so
+    # it runs and exits before the single-boot path below. Coordinates are
+    # overridable to retune to the rendered layout from a captured frame (rerun
+    # with SKIP_BUILD=1 + overrides). Boot is slow under TCG: keep SHOT_DELAY high.
+    if [ "${STORAGE:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        TILE_X="${TILE_X:-300}"                 # x over a launcher tile
+        NOTEPAD_TILE_Y="${NOTEPAD_TILE_Y:-265}" # "Notepad" tile centre (retune!)
+        ADD_X="${ADD_X:-640}"                   # "Add note" button
+        ADD_Y="${ADD_Y:-470}"
+        TAPS="${TAPS:-3}"                       # how many notes to add on boot #1
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        # qmp uses the current $QMP_SOCK (set by storage_boot for each boot).
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        # Launch one fresh QEMU bound to a new QMP socket; sets QMP_SOCK + QPID.
+        storage_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        storage_kill() {
+            sync                                   # flush host page cache too
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [storage boot 1/2] launch; write counter + SQLite rows"
+        storage_boot
+        sleep "$SHOT_DELAY"
+        shot frame-storage-launcher               # read the Notepad tile y off this
+        echo "==> [storage 1] tap 'Notepad' tile"
+        tap "$TILE_X" "$NOTEPAD_TILE_Y"
+        sleep 5; shot frame-storage-app           # Notepad: loaded count=0 (first run)
+        i=0
+        while [ "$i" -lt "$TAPS" ]; do
+            echo "==> [storage 1] tap 'Add note' ($((i + 1))/$TAPS)"
+            tap "$ADD_X" "$ADD_Y"
+            sleep 2
+            i=$((i + 1))
+        done
+        shot frame-storage-write                  # count = N, rows listed
+        echo "==> [storage 1] sync + shutdown"
+        sleep 3                                    # let the periodic sync flush
+        storage_kill
+
+        echo "==> [storage boot 2/2] REBOOT same disk; read persisted value back"
+        storage_boot
+        sleep "$SHOT_DELAY"
+        shot frame-storage-reboot-launcher
+        echo "==> [storage 2] relaunch 'Notepad'"
+        tap "$TILE_X" "$NOTEPAD_TILE_Y"
+        sleep 5
+        shot frame-storage-persisted              # loaded count=N (survived!) + rows
+        shot frame-storage-rows                   # same frame; the DB query result
+        storage_kill
+        echo "==> storage two-boot test done; frames in $OUT/frame-storage-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

@@ -30,6 +30,28 @@ mount -t tmpfs    none /dev/shm   2>/dev/null
 mkdir -p /dev/dri /dev/pts
 mount -t devpts none /dev/pts 2>/dev/null
 
+# Persistent storage (P11): a virtio-blk disk (QEMU -device virtio-blk-pci,
+# drive=data) appears as /dev/vda. We mount it (ext4) at /var/zelto, the writable
+# data root each app's private dir lives under. Unlike the RAM-only initramfs,
+# this survives a reboot, so prefs / files / SQLite written by apps persist.
+# Best-effort: if the device or the filesystem is missing we fall back to a
+# tmpfs with a loud warning so boot never hangs (data just won't persist).
+ZELTO_DATA_DIR=/var/zelto
+export ZELTO_DATA_DIR
+mkdir -p "$ZELTO_DATA_DIR"
+if [ -b /dev/vda ] && mount -t ext4 /dev/vda "$ZELTO_DATA_DIR" 2>/dev/null; then
+    echo "[zelto-init] mounted /dev/vda (ext4) at $ZELTO_DATA_DIR (persistent)"
+else
+    echo "[zelto-init] WARNING: no virtio-blk ext4 disk at /dev/vda;"
+    echo "[zelto-init] WARNING: falling back to tmpfs — storage will NOT persist!"
+    mount -t tmpfs none "$ZELTO_DATA_DIR" 2>/dev/null
+fi
+mkdir -p "$ZELTO_DATA_DIR/apps"
+# Periodic flush: push the page cache through virtio-blk to the host image so a
+# write is durable even if QEMU is killed without a clean unmount. Apps fsync on
+# every write too; this is belt-and-suspenders for the two-boot persistence test.
+( while true; do sync; sleep 2; done ) &
+
 # binderfs: Android-container IPC (docs/overview/how-it-runs-apks.md). Best-effort
 # now (Waydroid is a later phase); failure must not block boot.
 mkdir -p /dev/binderfs

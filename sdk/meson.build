@@ -11,10 +11,13 @@ wayland_client = dependency('wayland-client', required : false)
 harfbuzz       = dependency('harfbuzz', required : false)
 freetype       = dependency('freetype2', required : false)
 xkbcommon      = dependency('xkbcommon', required : false)
+# Persistent storage (P11): the prefs/files store needs nothing extra, but the
+# z_db_* SQLite wrapper links the system sqlite3.
+sqlite3        = dependency('sqlite3', required : false)
 
 if not (wayland_client.found() and harfbuzz.found() and freetype.found()
-        and xkbcommon.found())
-  warning('libzelto: wayland-client / harfbuzz / freetype2 / xkbcommon missing; skipping SDK')
+        and xkbcommon.found() and sqlite3.found())
+  warning('libzelto: wayland-client / harfbuzz / freetype2 / xkbcommon / sqlite3 missing; skipping SDK')
   libzelto = disabler()
   zelto_dep = disabler()
   subdir_done()
@@ -40,11 +43,12 @@ libzelto = static_library(
     'src/scroll.c',
     'src/navigation.c',
     'src/app.c',
+    'src/storage.c',
   ),
   sdk_protocol_src,
   include_directories : [zelto_inc, include_directories('src', 'protocols')],
   dependencies : [
-    wayland_client, harfbuzz, freetype, xkbcommon,
+    wayland_client, harfbuzz, freetype, xkbcommon, sqlite3,
     cc.find_library('m', required : false),
   ],
   install : true,
@@ -54,7 +58,7 @@ libzelto = static_library(
 zelto_dep = declare_dependency(
   link_with : libzelto,
   include_directories : zelto_inc,
-  dependencies : [wayland_client, harfbuzz, freetype, xkbcommon],
+  dependencies : [wayland_client, harfbuzz, freetype, xkbcommon, sqlite3],
 )
 
 # Bundle the default UI font into the image at the path libzelto looks for

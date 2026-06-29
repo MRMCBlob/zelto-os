@@ -585,6 +585,122 @@ void z_notify_report_tap(int64_t id);
 void z_notify_report_action(int64_t id, const char *action_id);
 
 // ---------------------------------------------------------------------------
+// Persistent storage: preferences, files, and SQLite — all scoped to the app's
+// private data directory under $ZELTO_DATA_DIR (/var/zelto), keyed by app_id.
+//
+// Each app gets /var/zelto/apps/<app_id>/{documents,cache}. Preferences live in
+// a small key=value store inside documents; SQLite databases are ordinary files
+// in documents; cache is the same shape but the system may evict it. The paths
+// are created on first use. Storage is direct filesystem access (no zsysd
+// round-trip) on a real writable disk, so it survives a reboot.
+// See docs/guides/storage.md + docs/api-reference/c/system.md.
+// ---------------------------------------------------------------------------
+
+// A read result. ok == false on failure (missing file, denied); data is a
+// heap buffer (NUL-terminated for convenience) the caller frees with free().
+typedef struct ZBytes {
+    void *data;
+    size_t len;
+    bool ok;
+} ZBytes;
+
+// A directory listing. Free with z_list_free. Each name is a basename within
+// the listed directory (not a full path).
+typedef struct ZList {
+    char **items;
+    int count;
+} ZList;
+
+void z_list_free(ZList *list);
+
+// --- Preferences (small key/value settings) -------------------------------
+bool        z_prefs_set_str(const char *key, const char *value);
+const char *z_prefs_get_str(const char *key, const char *fallback);
+bool        z_prefs_set_int(const char *key, int64_t value);
+int64_t     z_prefs_get_int(const char *key, int64_t fallback);
+bool        z_prefs_remove(const char *key);
+
+// --- Files (paths relative to the app's private directory) ----------------
+bool   z_file_write(const char *path, const void *data, size_t len);
+ZBytes z_file_read(const char *path);          // .ok == false on failure
+bool   z_file_delete(const char *path);
+ZList *z_file_list(const char *dir);
+char  *z_path_documents(const char *rel);      // persistent;  caller frees
+char  *z_path_cache(const char *rel);          // evictable;   caller frees
+
+// --- Database (SQLite) -----------------------------------------------------
+typedef struct ZDatabase ZDatabase;            // opaque connection handle
+typedef struct ZRows ZRows;                    // opaque cursor over a query
+
+// A single bound parameter (int or text). Built via the z_args macro; users
+// never construct these directly.
+typedef struct ZArg {
+    int is_text;          // 0 = integer (i), 1 = text (s)
+    int64_t i;
+    const char *s;
+} ZArg;
+
+// The parameter list passed to z_db_run / z_db_query. Built by z_args(...),
+// which tags each argument by type (int vs. string) at the call site.
+typedef struct ZArgs {
+    int n;
+    ZArg v[8];            // up to 8 bound parameters (MVP)
+} ZArgs;
+
+// Internal helpers behind the z_args macro (do not call directly).
+ZArg  z_arg_int_(int64_t x);
+ZArg  z_arg_str_(const char *x);
+ZArgs z_args_make_(int n, const ZArg *v);
+
+// Tag one argument by its C type. `+0` forces array-to-pointer decay so a string
+// literal (char[N]) selects the text branch; integers fall through to default.
+#define Z_ARG_(x) _Generic((x) + 0,           \
+        char *:       z_arg_str_,             \
+        const char *: z_arg_str_,             \
+        default:      z_arg_int_)((x) + 0)
+
+#define Z_CAT_(a, b) a##b
+#define Z_CAT(a, b) Z_CAT_(a, b)
+
+// Count 1..6 macro arguments. (We can't count zero: invoking a `...` macro with
+// no arguments is itself ill-formed under -std=c17 -Wpedantic, so the no-binding
+// case is spelled Z_NO_ARGS instead of z_args().)
+#define Z_NTH6_(_1, _2, _3, _4, _5, _6, N, ...) N
+#define Z_NARG1(...) Z_NTH6_(__VA_ARGS__, 6, 5, 4, 3, 2, 1)
+
+// Map each argument through Z_ARG_ (trailing comma so the sentinel follows).
+#define Z_MAP1(a) Z_ARG_(a),
+#define Z_MAP2(a, b) Z_ARG_(a), Z_ARG_(b),
+#define Z_MAP3(a, b, c) Z_ARG_(a), Z_ARG_(b), Z_ARG_(c),
+#define Z_MAP4(a, b, c, d) Z_ARG_(a), Z_ARG_(b), Z_ARG_(c), Z_ARG_(d),
+#define Z_MAP5(a, b, c, d, e) Z_ARG_(a), Z_ARG_(b), Z_ARG_(c), Z_ARG_(d), Z_ARG_(e),
+#define Z_MAP6(a, b, c, d, e, f) \
+    Z_ARG_(a), Z_ARG_(b), Z_ARG_(c), Z_ARG_(d), Z_ARG_(e), Z_ARG_(f),
+
+// z_args("Buy milk", 0) -> a ZArgs binding text then integer parameters (1..6).
+// The trailing {0,0,0} keeps the compound-literal array non-empty (valid ISO C);
+// z_args_make_ copies only the first Z_NARG1 entries. For a query/statement with
+// no bound parameters, pass Z_NO_ARGS.
+#define z_args(...)                                                     \
+    z_args_make_(Z_NARG1(__VA_ARGS__),                                  \
+                 (ZArg[]){Z_CAT(Z_MAP, Z_NARG1(__VA_ARGS__))(__VA_ARGS__){0, 0, 0}})
+
+// No bound parameters (object-like, so it sidesteps the zero-arg variadic-macro
+// restriction). Use where the docs show z_args(): z_db_query(db, sql, Z_NO_ARGS).
+#define Z_NO_ARGS (z_args_make_(0, (const ZArg *)0))
+
+ZDatabase *z_db_open(const char *name);              // <documents>/<name>(.db)
+bool       z_db_exec(ZDatabase *db, const char *sql);          // schema / DDL
+bool       z_db_run(ZDatabase *db, const char *sql, ZArgs args);   // writes
+ZRows     *z_db_query(ZDatabase *db, const char *sql, ZArgs args); // reads
+void       z_db_close(ZDatabase *db);
+
+bool        z_rows_next(ZRows *r);                   // advance; false at end
+int64_t     z_rows_int(ZRows *r, int col);
+const char *z_rows_str(ZRows *r, int col);           // valid until next/free
+void        z_rows_free(ZRows *r);
+
+// ---------------------------------------------------------------------------
 // Task switcher (running apps).
 //
 // A client (the launcher) can list every other running app window and switch to

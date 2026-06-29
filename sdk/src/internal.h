@@ -146,6 +146,9 @@ ZUI *z_app_ui(ZApp *app);
 void *z_app_state(ZApp *app);
 int z_app_width(ZApp *app);
 int z_app_height(ZApp *app);
+// The active app's app_id (set for app_run's lifetime). Used by storage.c to
+// scope each app's private data directory.
+const char *z_active_app_id(void);
 
 // --- Animation ------------------------------------------------------------
 // Advance every retained spring + scroll fling by dt seconds. Returns true if

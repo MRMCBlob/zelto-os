@@ -187,6 +187,11 @@ int z_app_height(ZApp *app) { return app->height; }
 // (z_perm_status/z_perm_request) takes no ZApp to match the platform docs, so it
 // resolves the single per-process app through this. Defined below.
 static ZApp *z_active_app;
+// The active app's app_id, for the storage client (storage.c), which scopes the
+// per-app private data dir by it just as the perm/intent client keys its mailbox.
+const char *z_active_app_id(void) {
+    return z_active_app ? z_active_app->app_id : NULL;
+}
 static void perm_handle_reply(ZApp *app);
 static void ctrl_handle_read(ZApp *app);
 static void ctrl_connect_register(ZApp *app);

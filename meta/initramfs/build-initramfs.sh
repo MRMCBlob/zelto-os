@@ -42,6 +42,8 @@ NOTES="${NOTES:-$REPO_ROOT/build-arm64/system/apps/notes/zelto-notes}"
 # P10 notifications: the shade (overlay layer-shell sink) + the Pinger source app.
 SHADE="${SHADE:-$REPO_ROOT/build-arm64/system/shade/zelto-shade}"
 PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
+# P11 persistent storage: the Notepad demo (prefs + SQLite on the virtio-blk disk).
+NOTEPAD="${NOTEPAD:-$REPO_ROOT/build-arm64/system/apps/notepad/zelto-notepad}"
 FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
@@ -74,7 +76,7 @@ chmod +x "$ROOT/bin/busybox"
 
 # Install busybox applet symlinks.
 for app in sh ls mount umount mkdir cat echo ln cp mv rm ps dmesg sleep \
-           switch_root mknod chmod insmod modprobe find head tail; do
+           switch_root mknod chmod insmod modprobe find head tail sync; do
     ln -sf busybox "$ROOT/bin/$app"
 done
 
@@ -109,6 +111,7 @@ install_bin "$SHARE_APP" zelto-share     # intent-source demo app ("Share")
 install_bin "$NOTES"    zelto-notes      # intent-target demo app ("Notes")
 install_bin "$SHADE"    zelto-shade      # notification shade (overlay sink)
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
+install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
 if [ -f "$FONT_SRC" ]; then
     mkdir -p "$ROOT/usr/share/zelto/fonts"
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
@@ -123,7 +126,8 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/cards/zelto-cards.app" \
          "$REPO_ROOT/system/share/zelto-share.app" \
          "$REPO_ROOT/system/apps/notes/zelto-notes.app" \
-         "$REPO_ROOT/system/apps/pinger/zelto-pinger.app"; do
+         "$REPO_ROOT/system/apps/pinger/zelto-pinger.app" \
+         "$REPO_ROOT/system/apps/notepad/zelto-notepad.app"; do
     if [ -f "$m" ]; then
         echo "    manifest: $(basename "$m")"
         cp "$m" "$ROOT/usr/share/zelto/apps/"
@@ -242,9 +246,12 @@ if is_dynamic "$ZCOMP"; then
     #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
     #     a closure, but bundle each so a future divergence can't break boot.
     for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER" "$ZSYSD" "$CONSENT" \
-                "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" "$PINGER"; do
+                "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" "$PINGER" "$NOTEPAD"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
+    # Notepad pulls libsqlite3 (the z_db_* wrapper); bundle it + its closure
+    # explicitly too, in case --as-needed trimmed it from a NEEDED walk.
+    bundle_with_closure "$ARM64_LIBDIR/libsqlite3.so.0"
 
     # 1c. udevadm (== systemd-udevd) and seatd closures, for input bring-up.
     [ -n "$UDEVADM" ] && bundle_with_closure "$UDEVADM"
