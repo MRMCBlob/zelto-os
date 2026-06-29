@@ -259,6 +259,90 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         sleep 3; shot frame-perm-recheck    # still granted, no overlay (fast path)
     fi
 
+    # Optional: drive the P9 app-to-app intents flow over QMP and capture a
+    # sequence proving deep links + the share sheet end-to-end:
+    #   - launch the "Share" source app;
+    #   - tap "Open note link" -> z_open_url("zelto://note/42") -> zsysd resolves
+    #     the single "zelto" handler (Notes), launches it (it isn't running) and
+    #     pushes the deliver; Notes' z_on_open_url fires and it shows the URL;
+    #   - switch back to Share via the launcher's Running list;
+    #   - tap "Share text" -> z_share(text/plain) -> zsysd resolves the apps that
+    #     accept text/* and the System UI shows the share-sheet chooser (overlay);
+    #   - tap the Notes row -> zsysd delivers to the already-running Notes; its
+    #     z_on_share_target fires and it shows the shared text, the sheet dismisses.
+    # Each stage dumps a PNG. Coordinates are overridable so they can be retuned
+    # to the rendered layout from a captured frame without a rebuild (rerun with
+    # SKIP_BUILD=1 and the overrides). Boot is slow under TCG: SHOT_DELAY high.
+    if [ "${SHARE:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        TILE_X="${TILE_X:-300}"           # x over a launcher tile
+        SHARE_TILE_Y="${SHARE_TILE_Y:-158}"   # "Share" tile centre (1st tile)
+        LINK_X="${LINK_X:-640}"           # "Open note link" button
+        LINK_Y="${LINK_Y:-490}"
+        SHARE_BTN_X="${SHARE_BTN_X:-640}" # "Share text" button
+        SHARE_BTN_Y="${SHARE_BTN_Y:-425}"
+        RUN_X="${RUN_X:-260}"             # x over a Running card body (switch)
+        RUNSHARE_Y="${RUNSHARE_Y:-620}"   # Share's Running card centre
+        RUNNOTES_Y="${RUNNOTES_Y:-718}"   # Notes' Running card centre
+        SHEET_X="${SHEET_X:-640}"         # x over a share-sheet row
+        SHEET_ROW_Y="${SHEET_ROW_Y:-342}" # first candidate row centre in the sheet
+        HOME_KEY="${HOME_KEY:-home}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        keypress() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":true,\"key\":{\"type\":\"qcode\",\"data\":\"$1\"}}}]}}"
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":false,\"key\":{\"type\":\"qcode\",\"data\":\"$1\"}}}]}}"
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+
+        echo "==> [share 0/6] shell: launcher with Share + Notes tiles"
+        shot frame-share-launcher
+
+        echo "==> [share 1/6] tap 'Share' tile -> launch the intent-source app"
+        tap "$TILE_X" "$SHARE_TILE_Y"
+        sleep 4; shot frame-share-source     # Share app: Share text / Open note link
+
+        echo "==> [share 2/6] tap 'Open note link' -> deep link launches Notes"
+        tap "$LINK_X" "$LINK_Y"
+        sleep 5; shot frame-share-deeplink   # Notes shows Opened: zelto://note/42
+
+        echo "==> [share 3/6] Home -> launcher; switch back to Share (Running list)"
+        keypress "$HOME_KEY"
+        sleep 2
+        tap "$RUN_X" "$RUNSHARE_Y"
+        sleep 3; shot frame-share-back        # Share app in front again
+
+        echo "==> [share 4/6] tap 'Share text' -> share sheet (chooser overlay)"
+        tap "$SHARE_BTN_X" "$SHARE_BTN_Y"
+        sleep 4; shot frame-share-sheet       # overlay sheet listing Notes
+
+        echo "==> [share 5/6] tap the Notes row -> delivered to running Notes"
+        tap "$SHEET_X" "$SHEET_ROW_Y"
+        sleep 4; shot frame-share-picked      # sheet dismissed, Share back in front
+
+        # Notes received the share while backgrounded; raise it to capture the
+        # delivered text (it now shows BOTH the deep-linked URL and the shared
+        # text — the proof that both intents reached the same running target).
+        echo "==> [share 6/6] Home -> raise Notes (Running list) to show payloads"
+        keypress "$HOME_KEY"
+        sleep 2
+        tap "$RUN_X" "$RUNNOTES_Y"
+        sleep 4; shot frame-share-delivered   # Notes: Shared text + Opened link
+    fi
+
     kill "$QPID" 2>/dev/null || true
 else
     echo "==> launching QEMU with GTK display (WSLg)"

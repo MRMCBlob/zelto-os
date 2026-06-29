@@ -9,5 +9,8 @@ if zelto_dep.found()
   subdir('bar')
   subdir('launcher')
   subdir('apps/cards')
+  subdir('apps/notes')
   subdir('consent')
+  subdir('chooser')
+  subdir('share')
 endif

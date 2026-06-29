@@ -104,6 +104,27 @@ struct ZApp {
     ZPermCallback perm_cb;
     void *perm_ud;
 
+    // Intents (zsysd) client. ctrl_fd is a persistent connection registered at
+    // startup ({"op":"register"}) and parked in the app loop for the app's life:
+    // it is the app's mailbox into which zsysd pushes delivered intents
+    // ({"op":"deliver",..}), and the channel z_share/z_open_url send resolve
+    // requests on. ctrl_buf accumulates a partial pushed line across reads.
+    int ctrl_fd;
+    char ctrl_buf[512];
+    size_t ctrl_len;
+    ZUrlCb url_cb;
+    void *url_ud;
+    ZShareCb share_cb;
+    void *share_ud;
+    // A delivered intent that arrived before its handler was registered (an app
+    // launched to handle an intent gets the push before its first body() runs).
+    // It is dispatched the moment z_on_open_url / z_on_share_target is called.
+    bool pend_url;
+    char pend_url_buf[256];
+    bool pend_share;
+    char pend_mime[64];
+    char pend_text[256];
+
     // Keyboard translation (raw keycodes -> keysyms) via xkbcommon.
     struct xkb_context *xkb_ctx;
     struct xkb_keymap *xkb_keymap;
@@ -152,6 +173,8 @@ int z_app_height(ZApp *app) { return app->height; }
 // resolves the single per-process app through this. Defined below.
 static ZApp *z_active_app;
 static void perm_handle_reply(ZApp *app);
+static void ctrl_handle_read(ZApp *app);
+static void ctrl_connect_register(ZApp *app);
 
 // --- shm buffer pool ------------------------------------------------------
 // The compositor finished reading a buffer: free it for reuse.
@@ -1099,6 +1122,7 @@ static void create_surface(ZApp *app) {
 static int app_run(ZApp *app) {
     app->running = true;
     app->perm_fd = -1;
+    app->ctrl_fd = -1;
     z_active_app = app;
 
     const char *font = getenv("ZELTO_FONT");
@@ -1137,8 +1161,14 @@ static int app_run(ZApp *app) {
 
     create_surface(app);
 
-    // Multi-fd loop: poll the wayland fd plus (when a request is in flight) the
-    // zsysd perm socket, so a broker reply wakes us without blocking on wayland.
+    // Open the persistent intents control connection and register this app_id as
+    // a mailbox, so zsysd can push delivered deep links / shares to us (and we
+    // can send resolve requests on it). Best-effort: no broker -> no intents.
+    ctrl_connect_register(app);
+
+    // Multi-fd loop: poll the wayland fd plus (when present) the zsysd perm
+    // socket of an in-flight request and the persistent intents control socket,
+    // so a broker reply or a pushed intent wakes us without blocking on wayland.
     // The wl_display_prepare_read/read_events dance is the canonical way to mix a
     // wayland fd with other fds in one poll without losing events.
     struct wl_display *dpy = app->display;
@@ -1148,16 +1178,25 @@ static int app_run(ZApp *app) {
         }
         wl_display_flush(dpy);
 
-        struct pollfd pfds[2];
+        struct pollfd pfds[3];
         pfds[0].fd = wl_display_get_fd(dpy);
         pfds[0].events = POLLIN;
         pfds[0].revents = 0;
         nfds_t nf = 1;
+        int perm_slot = -1, ctrl_slot = -1;
         if (app->perm_fd >= 0) {
-            pfds[1].fd = app->perm_fd;
-            pfds[1].events = POLLIN;
-            pfds[1].revents = 0;
-            nf = 2;
+            perm_slot = (int)nf;
+            pfds[nf].fd = app->perm_fd;
+            pfds[nf].events = POLLIN;
+            pfds[nf].revents = 0;
+            nf++;
+        }
+        if (app->ctrl_fd >= 0) {
+            ctrl_slot = (int)nf;
+            pfds[nf].fd = app->ctrl_fd;
+            pfds[nf].events = POLLIN;
+            pfds[nf].revents = 0;
+            nf++;
         }
 
         if (poll(pfds, nf, -1) < 0) {
@@ -1181,8 +1220,14 @@ static int app_run(ZApp *app) {
         }
 
         // Perm broker reply (cached fast-path or post-prompt decision).
-        if (nf == 2 && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+        if (perm_slot >= 0 &&
+            (pfds[perm_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
             perm_handle_reply(app);
+        }
+        // Intents control socket: a pushed deliver (or its EOF).
+        if (ctrl_slot >= 0 &&
+            (pfds[ctrl_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ctrl_handle_read(app);
         }
 
         // Render when state is dirty and no frame is in flight; render() arms a
@@ -1197,6 +1242,10 @@ static int app_run(ZApp *app) {
     if (app->perm_fd >= 0) {
         close(app->perm_fd);
         app->perm_fd = -1;
+    }
+    if (app->ctrl_fd >= 0) {
+        close(app->ctrl_fd);
+        app->ctrl_fd = -1;
     }
     z_active_app = NULL;
 
@@ -1378,6 +1427,193 @@ static void perm_handle_reply(ZApp *app) {
     app->perm_ud = NULL;
     if (cb) {
         cb(app, st, ud);
+    }
+}
+
+// --- intents (zsysd) client -----------------------------------------------
+// A persistent control connection to zsysd is the app's intents mailbox. At
+// startup the app registers its app_id on it; zsysd then pushes deep links and
+// shares destined for this app as one-line {"op":"deliver",..} messages, which
+// the app loop reads and dispatches to z_on_open_url / z_on_share_target. The
+// same socket carries this app's own z_share/z_open_url resolve requests up to
+// the broker. The protocol is the same newline-delimited JSON-ish framing the
+// perm path uses; a tiny json_get extracts quoted string values.
+static bool ctrl_json_get(const char *buf, const char *key, char *out,
+                          size_t n) {
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(buf, pat);
+    if (!p) {
+        return false;
+    }
+    p = strchr(p + strlen(pat), ':');
+    if (!p) {
+        return false;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p != '"') {
+        return false;
+    }
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < n) {
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return true;
+}
+
+// Connect the persistent control socket and register this app_id as its mailbox.
+static void ctrl_connect_register(ZApp *app) {
+    int fd = zsysd_connect();
+    if (fd < 0) {
+        return;   // no broker: app simply receives/sends no intents
+    }
+    char msg[160];
+    int m = snprintf(msg, sizeof(msg), "{\"op\":\"register\",\"app_id\":\"%s\"}\n",
+                     app->app_id ? app->app_id : "");
+    if (m <= 0 || write(fd, msg, (size_t)m) != m) {
+        close(fd);
+        return;
+    }
+    app->ctrl_fd = fd;
+    app->ctrl_len = 0;
+}
+
+// Deliver a shared item to the app: stash it (so it survives until the handler
+// is registered) and dispatch now if a handler already exists.
+static void deliver_share(ZApp *app, const char *mime, const char *text) {
+    snprintf(app->pend_mime, sizeof(app->pend_mime), "%s", mime ? mime : "");
+    snprintf(app->pend_text, sizeof(app->pend_text), "%s", text ? text : "");
+    app->pend_share = true;
+    if (app->share_cb) {
+        ZShareItem it = {app->pend_mime, app->pend_text};
+        app->share_cb(app, &it, 1, app->share_ud);
+        app->pend_share = false;
+    }
+    z_invalidate(app);
+}
+
+// Deliver an opened URL to the app (same stash-then-dispatch rule).
+static void deliver_url(ZApp *app, const char *url) {
+    snprintf(app->pend_url_buf, sizeof(app->pend_url_buf), "%s", url ? url : "");
+    app->pend_url = true;
+    if (app->url_cb) {
+        app->url_cb(app, app->pend_url_buf, app->url_ud);
+        app->pend_url = false;
+    }
+    z_invalidate(app);
+}
+
+// Parse and act on one pushed control line ({"op":"deliver",..}).
+static void ctrl_dispatch_line(ZApp *app, const char *line) {
+    char op[24] = {0};
+    if (!ctrl_json_get(line, "op", op, sizeof(op))) {
+        return;
+    }
+    if (strcmp(op, "deliver") != 0) {
+        return;
+    }
+    char kind[16] = {0};
+    ctrl_json_get(line, "kind", kind, sizeof(kind));
+    if (strcmp(kind, "share") == 0) {
+        char mime[64] = {0}, payload[256] = {0};
+        ctrl_json_get(line, "mime", mime, sizeof(mime));
+        ctrl_json_get(line, "payload", payload, sizeof(payload));
+        deliver_share(app, mime, payload);
+    } else if (strcmp(kind, "open_url") == 0) {
+        char url[256] = {0};
+        ctrl_json_get(line, "url", url, sizeof(url));
+        deliver_url(app, url);
+    }
+}
+
+// The control socket is readable: accumulate and dispatch every complete line.
+static void ctrl_handle_read(ZApp *app) {
+    if (app->ctrl_len >= sizeof(app->ctrl_buf) - 1) {
+        app->ctrl_len = 0;   // overlong line: drop (our messages are small)
+    }
+    ssize_t r = read(app->ctrl_fd, app->ctrl_buf + app->ctrl_len,
+                     sizeof(app->ctrl_buf) - 1 - app->ctrl_len);
+    if (r <= 0) {
+        close(app->ctrl_fd);
+        app->ctrl_fd = -1;
+        return;
+    }
+    app->ctrl_len += (size_t)r;
+    app->ctrl_buf[app->ctrl_len] = '\0';
+    char *start = app->ctrl_buf;
+    char *nl;
+    while ((nl = strchr(start, '\n')) != NULL) {
+        *nl = '\0';
+        ctrl_dispatch_line(app, start);
+        start = nl + 1;
+    }
+    // Shift any partial trailing line to the front of the buffer.
+    size_t rem = app->ctrl_len - (size_t)(start - app->ctrl_buf);
+    memmove(app->ctrl_buf, start, rem);
+    app->ctrl_len = rem;
+}
+
+// Senders. Both resolve through the broker over the persistent control socket;
+// the broker shows the chooser (if a choice), launches/activates the target and
+// pushes the deliver to it. Fire-and-forget: the sender expects no reply.
+void z_open_url(const char *url) {
+    ZApp *app = z_active_app;
+    if (!app || app->ctrl_fd < 0 || !url) {
+        return;
+    }
+    char msg[320];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"intent_resolve\",\"action\":\"open_url\","
+                     "\"url\":\"%s\"}\n",
+                     url);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(app->ctrl_fd, msg, (size_t)m);
+        (void)w;
+    }
+}
+
+void z_share(ZShareItem *items, int count) {
+    ZApp *app = z_active_app;
+    if (!app || app->ctrl_fd < 0 || !items || count < 1) {
+        return;
+    }
+    // The MVP shares a single text item; resolve it by its MIME type.
+    const char *mime = items[0].mime ? items[0].mime : "text/plain";
+    const char *text = items[0].text ? items[0].text : "";
+    char msg[384];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"intent_resolve\",\"action\":\"share\","
+                     "\"mime\":\"%s\",\"payload\":\"%s\"}\n",
+                     mime, text);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(app->ctrl_fd, msg, (size_t)m);
+        (void)w;
+    }
+}
+
+void z_on_open_url(ZApp *app, ZUrlCb cb, void *ud) {
+    app->url_cb = cb;
+    app->url_ud = ud;
+    if (cb && app->pend_url) {
+        app->pend_url = false;
+        cb(app, app->pend_url_buf, ud);
+        z_invalidate(app);
+    }
+}
+
+void z_on_share_target(ZApp *app, ZShareCb cb, void *ud) {
+    app->share_cb = cb;
+    app->share_ud = ud;
+    if (cb && app->pend_share) {
+        app->pend_share = false;
+        ZShareItem it = {app->pend_mime, app->pend_text};
+        cb(app, &it, 1, ud);
+        z_invalidate(app);
     }
 }
 

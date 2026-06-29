@@ -435,6 +435,51 @@ ZPermStatus z_perm_status(const char *name);   // "camera", "location", ...
 void z_perm_request(const char *name, ZPermCallback cb, void *ud);
 
 // ---------------------------------------------------------------------------
+// App-to-app intents: deep links + share targets.
+//
+// An app hands content to another app without knowing which: z_open_url hands a
+// URL to whichever installed app registered that scheme (a deep link), and
+// z_share presents a share sheet of apps that accept the payload's MIME type.
+// Both are brokered by zsysd, which resolves candidate handlers from manifests
+// (the `[links] schemes=` and `[capabilities] share-targets=` fields), shows the
+// System-UI chooser when there is a choice, then launches/activates the target
+// and delivers the payload to it. The receiving app registers a handler that
+// fires when an intent arrives (even if it had to be launched to handle it).
+// See docs/platform/ipc-and-intents.md + docs/api-reference/c/platform.md.
+// ---------------------------------------------------------------------------
+
+// One item being shared. `mime` is its MIME type (e.g. "text/plain"); `text`
+// carries the payload for text MIME types. (Binary payloads are Planned.)
+typedef struct ZShareItem {
+    const char *mime;
+    const char *text;
+} ZShareItem;
+
+// Incoming-deep-link handler: the URL another app (or the system) opened on us.
+typedef void (*ZUrlCb)(ZApp *app, const char *url, void *ud);
+
+// Incoming-share handler: the items another app shared to us. `items` is valid
+// only for the duration of the call (copy what you keep).
+typedef void (*ZShareCb)(ZApp *app, const ZShareItem *items, int count,
+                         void *ud);
+
+// Hand a URL to the system: zsysd resolves the scheme to its registered handler
+// app, launching or activating it, and fires that app's z_on_open_url. No-op if
+// no app handles the scheme or the broker is unreachable.
+void z_open_url(const char *url);
+
+// Present the share sheet for `items`: zsysd resolves the apps that accept the
+// MIME type, the System UI shows a chooser, and the picked app receives the
+// payload via z_on_share_target (launched first if it was not running).
+void z_share(ZShareItem *items, int count);
+
+// Register this app's incoming-deep-link / incoming-share handlers (one each).
+// A queued intent that arrived before the handler was set fires as soon as it
+// is registered, so an app launched to handle an intent never misses it.
+void z_on_open_url(ZApp *app, ZUrlCb cb, void *ud);
+void z_on_share_target(ZApp *app, ZShareCb cb, void *ud);
+
+// ---------------------------------------------------------------------------
 // Task switcher (running apps).
 //
 // A client (the launcher) can list every other running app window and switch to
