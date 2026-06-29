@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -14,6 +15,27 @@
 
 // app_id the launcher sets (libzelto Z_APP_ID). Lets Home reveal it.
 #define ZCOMP_LAUNCHER_APP_ID "os.zelto.launcher"
+
+// Broadcast the xdg "activated" state so exactly the front toplevel is active
+// and every other mapped toplevel is cleared. libzelto reads this state and
+// drives its lifecycle hook (Active/Inactive). The foreign-toplevel handle's
+// activated state is kept in lockstep so the task switcher highlights the same
+// window. This is the whole of app lifecycle: no custom protocol, just the
+// standard xdg activated state plus the foreign-toplevel mirror.
+static void zcomp_update_activation(ZcompServer *server,
+                                    ZcompToplevel *focused) {
+    ZcompToplevel *t;
+    wl_list_for_each(t, &server->toplevels, link) {
+        bool active = (t == focused);
+        wlr_xdg_toplevel_set_activated(t->xdg_toplevel, active);
+        if (t->ftl_handle) {
+            wlr_foreign_toplevel_handle_v1_set_activated(t->ftl_handle, active);
+        }
+        wlr_log(WLR_INFO, "activation: %s -> %s",
+                t->xdg_toplevel->app_id ? t->xdg_toplevel->app_id : "(no id)",
+                active ? "ACTIVE" : "inactive");
+    }
+}
 
 void zcomp_focus_toplevel(ZcompToplevel *toplevel) {
     if (!toplevel) {
@@ -36,28 +58,106 @@ void zcomp_focus_toplevel(ZcompToplevel *toplevel) {
     } else {
         wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
     }
+
+    // The front app is now "activated"; clear everyone else.
+    zcomp_update_activation(server, toplevel);
+}
+
+// A foreign-toplevel client (the launcher's Running list) asked to focus this
+// window: route it through the normal focus path, which also re-broadcasts the
+// activated state so the previously-front app pauses.
+static void handle_ftl_request_activate(struct wl_listener *listener,
+                                        void *data) {
+    (void)data;
+    ZcompToplevel *toplevel =
+        wl_container_of(listener, toplevel, ftl_request_activate);
+    zcomp_focus_toplevel(toplevel);
+}
+
+// ...or asked to close it: send the xdg close so the client exits, which unmaps
+// and drops the window (and its handle) from the Running list.
+static void handle_ftl_request_close(struct wl_listener *listener, void *data) {
+    (void)data;
+    ZcompToplevel *toplevel =
+        wl_container_of(listener, toplevel, ftl_request_close);
+    wlr_xdg_toplevel_send_close(toplevel->xdg_toplevel);
+}
+
+// Mirror an xdg title change onto the foreign-toplevel handle so the task
+// switcher's labels stay current.
+static void handle_set_title(struct wl_listener *listener, void *data) {
+    (void)data;
+    ZcompToplevel *toplevel = wl_container_of(listener, toplevel, set_title);
+    if (toplevel->ftl_handle && toplevel->xdg_toplevel->title) {
+        wlr_foreign_toplevel_handle_v1_set_title(toplevel->ftl_handle,
+                                                 toplevel->xdg_toplevel->title);
+    }
 }
 
 static void handle_map(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompToplevel *toplevel = wl_container_of(listener, toplevel, map);
+    ZcompServer *server = toplevel->server;
     const char *app_id = toplevel->xdg_toplevel->app_id;
     toplevel->is_launcher =
         app_id && strcmp(app_id, ZCOMP_LAUNCHER_APP_ID) == 0;
-    wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
+    wl_list_insert(&server->toplevels, &toplevel->link);
     wlr_log(WLR_INFO, "toplevel mapped: %s%s",
             toplevel->xdg_toplevel->title ? toplevel->xdg_toplevel->title
                                           : "(untitled)",
             toplevel->is_launcher ? " [launcher]" : "");
+
+    // Publish a foreign-toplevel handle so taskbar clients (the launcher) see
+    // this window. The client filters its own app_id out of the Running list.
+    toplevel->ftl_handle =
+        wlr_foreign_toplevel_handle_v1_create(server->foreign_toplevel_manager);
+    if (toplevel->ftl_handle) {
+        if (toplevel->xdg_toplevel->title) {
+            wlr_foreign_toplevel_handle_v1_set_title(
+                toplevel->ftl_handle, toplevel->xdg_toplevel->title);
+        }
+        if (app_id) {
+            wlr_foreign_toplevel_handle_v1_set_app_id(toplevel->ftl_handle,
+                                                      app_id);
+        }
+        toplevel->ftl_request_activate.notify = handle_ftl_request_activate;
+        wl_signal_add(&toplevel->ftl_handle->events.request_activate,
+                      &toplevel->ftl_request_activate);
+        toplevel->ftl_request_close.notify = handle_ftl_request_close;
+        wl_signal_add(&toplevel->ftl_handle->events.request_close,
+                      &toplevel->ftl_request_close);
+    }
+
     // Place it in the usable app area (below the bar) and size it to fill.
-    zcomp_arrange(toplevel->server);
+    zcomp_arrange(server);
     zcomp_focus_toplevel(toplevel);
 }
 
 static void handle_unmap(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompToplevel *toplevel = wl_container_of(listener, toplevel, unmap);
+    ZcompServer *server = toplevel->server;
+    bool was_front = (!wl_list_empty(&server->toplevels) &&
+                      server->toplevels.next == &toplevel->link);
+
     wl_list_remove(&toplevel->link);
+
+    // Drop the foreign-toplevel handle (sends `closed` to taskbar clients, so
+    // the window leaves the Running list) and unhook its request listeners.
+    if (toplevel->ftl_handle) {
+        wl_list_remove(&toplevel->ftl_request_activate.link);
+        wl_list_remove(&toplevel->ftl_request_close.link);
+        wlr_foreign_toplevel_handle_v1_destroy(toplevel->ftl_handle);
+        toplevel->ftl_handle = NULL;
+    }
+
+    // If the front app went away, reveal + activate the new MRU front so the
+    // exposed app resumes (Active) instead of lingering paused.
+    if (was_front && !wl_list_empty(&server->toplevels)) {
+        ZcompToplevel *front =
+            wl_container_of(server->toplevels.next, front, link);
+        zcomp_focus_toplevel(front);
+    }
 }
 
 static void handle_commit(struct wl_listener *listener, void *data) {
@@ -83,6 +183,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
     wl_list_remove(&toplevel->unmap.link);
     wl_list_remove(&toplevel->commit.link);
     wl_list_remove(&toplevel->destroy.link);
+    wl_list_remove(&toplevel->set_title.link);
     free(toplevel);
 }
 
@@ -130,6 +231,9 @@ void zcomp_handle_new_xdg_surface(struct wl_listener *listener, void *data) {
     wl_signal_add(&surface->events.commit, &toplevel->commit);
     toplevel->destroy.notify = handle_destroy;
     wl_signal_add(&xdg_surface->events.destroy, &toplevel->destroy);
+    toplevel->set_title.notify = handle_set_title;
+    wl_signal_add(&xdg_surface->toplevel->events.set_title,
+                  &toplevel->set_title);
 }
 
 void zcomp_home(ZcompServer *server) {

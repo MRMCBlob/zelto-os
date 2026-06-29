@@ -126,19 +126,28 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     to_png "$OUT/frame.ppm" "$OUT/frame.png"
 
     # Optional: drive the System UI over QMP input-send-event and capture a
-    # *sequence* of frames proving the shell works. Flow: the shell boots to the
-    # launcher + status bar; tap the "Rows" tile (fork/exec app #1, clipped under
-    # the bar); press Home (reveal launcher) and tap the "Cards" tile (app #2);
-    # press Switch (Tab — cycle the foreground); press Home (back to launcher).
+    # *sequence* of frames proving the P7 app model works:
+    #   - the launcher builds its tiles from on-disk manifests;
+    #   - launching app #1 makes it Active (xdg activated-state lifecycle);
+    #   - launching app #2 backgrounds app #1 (it shows "PAUSED");
+    #   - the launcher's "Running" section (wlr-foreign-toplevel-management)
+    #     lists both apps; tapping app #1 there switches to it (it resumes,
+    #     app #2 pauses) via foreign-toplevel activate;
+    #   - tapping the × on app #2's card closes it (it drops out of the list).
     # Each stage dumps a PNG. Coordinates are on-screen pixels mapped into the
-    # 0..32767 absolute input range.
+    # 0..32767 absolute input range. The "Running" card coordinates are
+    # overridable (RUN_X / RUN1_Y / RUN2_Y / CLOSE_X) so they can be retuned to
+    # the rendered layout without a rebuild (SKIP_BUILD=1).
     if [ "${INJECT:-0}" = "1" ]; then
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         TILE_X="${TILE_X:-300}"           # x over a launcher tile (tiles are wide)
         TILE1_Y="${TILE1_Y:-170}"         # "Rows" tile centre (below the bar)
         TILE2_Y="${TILE2_Y:-275}"         # "Cards" tile centre
+        RUN_X="${RUN_X:-260}"             # x over a Running card body (switch)
+        RUN1_Y="${RUN1_Y:-430}"           # first Running card (app #1) centre
+        RUN2_Y="${RUN2_Y:-540}"           # second Running card (app #2) centre
+        CLOSE_X="${CLOSE_X:-1230}"        # x over a Running card's × button
         HOME_KEY="${HOME_KEY:-home}"      # compositor Home chord -> launcher
-        SWITCH_KEY="${SWITCH_KEY:-tab}"   # compositor Switch chord -> cycle apps
         ax() { echo $(( $1 * 32767 / OUTW )); }
         ay() { echo $(( $1 * 32767 / OUTH )); }
 
@@ -164,28 +173,34 @@ if [ "${HEADLESS:-0}" = "1" ]; then
             to_png "$OUT/$1.ppm" "$OUT/$1.png"
         }
 
-        echo "==> [inject 0/5] shell: launcher + status bar"
+        echo "==> [inject 0/6] shell: launcher with manifest tiles + status bar"
         shot frame-launcher
 
-        echo "==> [inject 1/5] tap the 'Rows' tile -> launch app #1"
+        echo "==> [inject 1/6] tap 'Rows' tile -> launch app #1 (-> Active)"
         tap "$TILE_X" "$TILE1_Y"
-        sleep 4; shot frame-app1        # app #1 mapped, clipped under the bar
+        sleep 4; shot frame-app1        # app #1 mapped, Active banner, under bar
 
-        echo "==> [inject 2/5] Home -> reveal launcher"
+        echo "==> [inject 2/6] Home -> launcher (app #1 now in Running list)"
         keypress "$HOME_KEY"
-        sleep 2; shot frame-home
+        sleep 2
 
-        echo "==> [inject 3/5] tap the 'Cards' tile -> launch app #2"
+        echo "==> [inject 3/6] tap 'Cards' tile -> launch app #2 (app #1 pauses)"
         tap "$TILE_X" "$TILE2_Y"
-        sleep 4; shot frame-app2        # app #2 mapped in front, under the bar
+        sleep 4; shot frame-app2        # app #2 Active in front, under the bar
 
-        echo "==> [inject 4/5] Switch (cycle foreground)"
-        keypress "$SWITCH_KEY"
-        sleep 2; shot frame-switch
-
-        echo "==> [inject 5/5] Home -> back to the launcher"
+        echo "==> [inject 4/6] Home -> launcher Running list (app1 paused + app2)"
         keypress "$HOME_KEY"
-        sleep 2; shot frame-after
+        sleep 2; shot frame-running
+
+        echo "==> [inject 5/6] tap app #1 in Running list -> switch (it resumes)"
+        tap "$RUN_X" "$RUN1_Y"
+        sleep 3; shot frame-resumed     # app #1 back in front, Active again
+
+        echo "==> [inject 6/6] Home -> launcher; close app #2 via its × button"
+        keypress "$HOME_KEY"
+        sleep 2
+        tap "$CLOSE_X" "$RUN2_Y"        # × on app #2's Running card
+        sleep 3; shot frame-closed      # app #2 terminated, gone from the list
     fi
 
     kill "$QPID" 2>/dev/null || true

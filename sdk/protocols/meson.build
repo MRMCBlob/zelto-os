@@ -41,7 +41,28 @@ layer_client_code = custom_target(
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# wlr-foreign-toplevel-management-unstable-v1 client bindings (the launcher binds
+# the manager to list running app windows and request activate/close on them).
+# libwayland-client ships no marshalling for it, so generate both the header and
+# the private code. XML vendored in protocols/ (no wlr-protocols package).
+foreign_toplevel_xml = meson.project_source_root() / 'protocols/wlr-foreign-toplevel-management-unstable-v1.xml'
+
+foreign_toplevel_client_header = custom_target(
+  'wlr-foreign-toplevel-management-unstable-v1-client-protocol.h',
+  input : foreign_toplevel_xml,
+  output : 'wlr-foreign-toplevel-management-unstable-v1-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+
+foreign_toplevel_client_code = custom_target(
+  'wlr-foreign-toplevel-management-unstable-v1-protocol.c',
+  input : foreign_toplevel_xml,
+  output : 'wlr-foreign-toplevel-management-unstable-v1-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 sdk_protocol_src = [
   xdg_client_header, xdg_client_code,
   layer_client_header, layer_client_code,
+  foreign_toplevel_client_header, foreign_toplevel_client_code,
 ]

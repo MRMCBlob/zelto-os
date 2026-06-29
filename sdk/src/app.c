@@ -14,10 +14,25 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "internal.h"
+#include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #define Z_DEFAULT_FONT "/usr/share/zelto/fonts/ZeltoSans.ttf"
+
+// Max running-app windows tracked by the foreign-toplevel client list.
+#define Z_MAX_TASKS 32
+
+// A retained record of one running app window, mirroring a foreign-toplevel
+// handle. Strings are owned (strdup'd from the handle's title/app_id events).
+typedef struct ZTaskRec {
+    struct zwlr_foreign_toplevel_handle_v1 *handle;
+    ZApp *app;            // back-pointer (records live in a fixed app array)
+    char *title;
+    char *app_id;
+    bool active;
+    bool used;
+} ZTaskRec;
 
 // A retained shm buffer in the double-buffer pool. Buffers persist across frames
 // (so unchanged pixels survive) and only their damaged regions are repainted.
@@ -61,6 +76,19 @@ struct ZApp {
     bool is_layer;
     ZLayerOpts layer_opts;
 
+    // Lifecycle: tracks the xdg "activated" state the compositor broadcasts to
+    // the front window; transitions fire the handler and force a repaint so a
+    // body() reading z_app_active() reflects Active/Paused.
+    ZLifecycleHandler lifecycle;
+    bool active;
+
+    // Foreign-toplevel-management client (task switcher). Bound only when the
+    // compositor advertises the manager; the launcher uses it, ordinary apps
+    // ignore it. Records mirror live windows; the snapshot is what body() reads.
+    struct zwlr_foreign_toplevel_manager_v1 *ftl_manager;
+    ZTaskRec ftl_recs[Z_MAX_TASKS];
+    ZTask ftl_snapshot[Z_MAX_TASKS];
+
     struct wl_callback *frame_cb;   // in-flight frame throttle (NULL = idle)
     ZBuf bufs[2];                   // retained double-buffer pool
 
@@ -102,6 +130,8 @@ struct ZApp {
 // retained state without app.c's wayland-heavy ZApp definition.
 ZUI *z_app_ui(ZApp *app) { return &app->ui; }
 void *z_app_state(ZApp *app) { return app->state; }
+// Recover the owning app from a foreign-toplevel record.
+static ZApp *rec_app(ZTaskRec *rec) { return rec->app; }
 int z_app_width(ZApp *app) { return app->width; }
 int z_app_height(ZApp *app) { return app->height; }
 
@@ -435,17 +465,40 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
                                int32_t width, int32_t height,
                                struct wl_array *states) {
     (void)toplevel;
-    (void)states;
     ZApp *app = data;
     // Honour a non-zero compositor-suggested size; otherwise keep our own.
     if (width > 0 && height > 0) {
         app->width = width;
         app->height = height;
     }
+    // Lifecycle rides the xdg "activated" state: present here = foreground.
+    bool active = false;
+    if (states) {
+        uint32_t *st;
+        wl_array_for_each(st, states) {
+            if (*st == XDG_TOPLEVEL_STATE_ACTIVATED) {
+                active = true;
+            }
+        }
+    }
+    if (active != app->active) {
+        app->active = active;
+        if (app->lifecycle) {
+            app->lifecycle(app, app->state,
+                           active ? Z_LC_ACTIVE : Z_LC_INACTIVE);
+        }
+        // Repaint so any z_app_active()-driven banner updates even without a
+        // registered handler.
+        app->dirty = true;
+    }
 }
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
     (void)toplevel;
-    ((ZApp *)data)->running = false;
+    ZApp *app = data;
+    if (app->lifecycle) {
+        app->lifecycle(app, app->state, Z_LC_STOPPED);
+    }
+    app->running = false;
 }
 static const struct xdg_toplevel_listener toplevel_listener = {
     .configure = toplevel_configure,
@@ -803,6 +856,121 @@ static const struct wl_seat_listener seat_listener = {
     .name = seat_name,
 };
 
+// --- foreign-toplevel management (task switcher client) -------------------
+// Each handle the compositor publishes mirrors one running app window. We keep a
+// retained record per handle (title/app_id/active), mutated by its events, and
+// expose a filtered snapshot to body() via z_running_apps.
+static void ftl_handle_title(void *data,
+                             struct zwlr_foreign_toplevel_handle_v1 *h,
+                             const char *title) {
+    (void)h;
+    ZTaskRec *rec = data;
+    free(rec->title);
+    rec->title = title ? strdup(title) : NULL;
+    z_invalidate(rec_app(rec));
+}
+static void ftl_handle_app_id(void *data,
+                              struct zwlr_foreign_toplevel_handle_v1 *h,
+                              const char *app_id) {
+    (void)h;
+    ZTaskRec *rec = data;
+    free(rec->app_id);
+    rec->app_id = app_id ? strdup(app_id) : NULL;
+    z_invalidate(rec_app(rec));
+}
+static void ftl_handle_output_enter(
+    void *data, struct zwlr_foreign_toplevel_handle_v1 *h,
+    struct wl_output *o) {
+    (void)data; (void)h; (void)o;
+}
+static void ftl_handle_output_leave(
+    void *data, struct zwlr_foreign_toplevel_handle_v1 *h,
+    struct wl_output *o) {
+    (void)data; (void)h; (void)o;
+}
+static void ftl_handle_state(void *data,
+                             struct zwlr_foreign_toplevel_handle_v1 *h,
+                             struct wl_array *state) {
+    (void)h;
+    ZTaskRec *rec = data;
+    bool active = false;
+    uint32_t *s;
+    wl_array_for_each(s, state) {
+        if (*s == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) {
+            active = true;
+        }
+    }
+    rec->active = active;
+    z_invalidate(rec_app(rec));
+}
+static void ftl_handle_done(void *data,
+                            struct zwlr_foreign_toplevel_handle_v1 *h) {
+    (void)h;
+    z_invalidate(rec_app((ZTaskRec *)data));
+}
+static void ftl_handle_closed(void *data,
+                              struct zwlr_foreign_toplevel_handle_v1 *h) {
+    ZTaskRec *rec = data;
+    ZApp *app = rec_app(rec);
+    zwlr_foreign_toplevel_handle_v1_destroy(h);
+    free(rec->title);
+    free(rec->app_id);
+    rec->title = rec->app_id = NULL;
+    rec->handle = NULL;
+    rec->active = false;
+    rec->used = false;
+    z_invalidate(app);
+}
+static void ftl_handle_parent(void *data,
+                              struct zwlr_foreign_toplevel_handle_v1 *h,
+                              struct zwlr_foreign_toplevel_handle_v1 *parent) {
+    (void)data; (void)h; (void)parent;
+}
+static const struct zwlr_foreign_toplevel_handle_v1_listener ftl_handle_listener = {
+    .title = ftl_handle_title,
+    .app_id = ftl_handle_app_id,
+    .output_enter = ftl_handle_output_enter,
+    .output_leave = ftl_handle_output_leave,
+    .state = ftl_handle_state,
+    .done = ftl_handle_done,
+    .closed = ftl_handle_closed,
+    .parent = ftl_handle_parent,
+};
+
+// The manager announces a new window: claim a free record, stash the back-
+// pointer to the app, and listen on the handle.
+static void ftl_manager_toplevel(
+    void *data, struct zwlr_foreign_toplevel_manager_v1 *mgr,
+    struct zwlr_foreign_toplevel_handle_v1 *handle) {
+    (void)mgr;
+    ZApp *app = data;
+    for (int i = 0; i < Z_MAX_TASKS; i++) {
+        ZTaskRec *rec = &app->ftl_recs[i];
+        if (!rec->used) {
+            rec->used = true;
+            rec->handle = handle;
+            rec->title = rec->app_id = NULL;
+            rec->active = false;
+            rec->app = app;
+            zwlr_foreign_toplevel_handle_v1_add_listener(
+                handle, &ftl_handle_listener, rec);
+            z_invalidate(app);
+            return;
+        }
+    }
+    // Table full: ignore (the window simply won't appear in the switcher).
+}
+static void ftl_manager_finished(
+    void *data, struct zwlr_foreign_toplevel_manager_v1 *mgr) {
+    (void)data;
+    zwlr_foreign_toplevel_manager_v1_destroy(mgr);
+}
+static const struct zwlr_foreign_toplevel_manager_v1_listener
+    ftl_manager_listener = {
+        .toplevel = ftl_manager_toplevel,
+        .finished = ftl_manager_finished,
+};
+
 // --- registry -------------------------------------------------------------
 static void registry_global(void *data, struct wl_registry *registry,
                             uint32_t name, const char *interface,
@@ -822,6 +990,15 @@ static void registry_global(void *data, struct wl_registry *registry,
         app->layer_shell = wl_registry_bind(
             registry, name, &zwlr_layer_shell_v1_interface,
             version < 4 ? version : 4);
+    } else if (strcmp(interface,
+                      zwlr_foreign_toplevel_manager_v1_interface.name) == 0) {
+        // Task switcher: bind the manager and start receiving running-window
+        // handles. Every app binds it (harmless); the launcher is the consumer.
+        app->ftl_manager = wl_registry_bind(
+            registry, name, &zwlr_foreign_toplevel_manager_v1_interface,
+            version < 3 ? version : 3);
+        zwlr_foreign_toplevel_manager_v1_add_listener(
+            app->ftl_manager, &ftl_manager_listener, app);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (!app->output) {
             app->output = wl_registry_bind(registry, name, &wl_output_interface,
@@ -995,3 +1172,51 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 
 void z_invalidate(ZApp *app) { app->dirty = true; }
 void z_app_quit(ZApp *app) { app->running = false; }
+
+// --- lifecycle + task-switcher public API ---------------------------------
+void z_on_lifecycle(ZApp *app, ZLifecycleHandler handler) {
+    app->lifecycle = handler;
+}
+bool z_app_active(ZApp *app) { return app->active; }
+
+const ZTask *z_running_apps(ZApp *app, int *count) {
+    // Rebuild the snapshot from the live records, filtering out this app's own
+    // window (matched by app_id) so the launcher never lists itself.
+    int n = 0;
+    for (int i = 0; i < Z_MAX_TASKS && n < Z_MAX_TASKS; i++) {
+        ZTaskRec *rec = &app->ftl_recs[i];
+        if (!rec->used || !rec->handle) {
+            continue;
+        }
+        if (rec->app_id && app->app_id &&
+            strcmp(rec->app_id, app->app_id) == 0) {
+            continue;
+        }
+        app->ftl_snapshot[n] = (ZTask){
+            .title = rec->title,
+            .app_id = rec->app_id,
+            .active = rec->active,
+            .handle = rec->handle,
+        };
+        n++;
+    }
+    if (count) {
+        *count = n;
+    }
+    return app->ftl_snapshot;
+}
+
+void z_task_activate(ZApp *app, const ZTask *task) {
+    if (!task || !task->handle || !app->seat) {
+        return;
+    }
+    zwlr_foreign_toplevel_handle_v1_activate(task->handle, app->seat);
+}
+
+void z_task_close(ZApp *app, const ZTask *task) {
+    (void)app;
+    if (!task || !task->handle) {
+        return;
+    }
+    zwlr_foreign_toplevel_handle_v1_close(task->handle);
+}

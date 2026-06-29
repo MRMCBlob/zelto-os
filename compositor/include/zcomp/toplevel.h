@@ -9,6 +9,7 @@
 
 struct wlr_xdg_toplevel;
 struct wlr_scene_tree;
+struct wlr_foreign_toplevel_handle_v1;
 
 typedef struct ZcompToplevel {
     struct wl_list link;                // ZcompServer.toplevels
@@ -17,10 +18,21 @@ typedef struct ZcompToplevel {
     struct wlr_scene_tree *scene_tree;  // this surface's node in the scene
     bool is_launcher;                   // the back-most app (Home focuses it)
 
+    // The foreign-toplevel handle shadowing this window (the task switcher sees
+    // it). Created on map, destroyed on unmap; title/app_id/activated kept in
+    // sync. NULL between unmap and the next map.
+    struct wlr_foreign_toplevel_handle_v1 *ftl_handle;
+
     struct wl_listener map;
     struct wl_listener unmap;
     struct wl_listener commit;
     struct wl_listener destroy;
+    struct wl_listener set_title;       // xdg title change -> update ftl_handle
+
+    // Foreign-toplevel handle request listeners (a taskbar client asking to focus
+    // or close this window). Live only while ftl_handle is non-NULL.
+    struct wl_listener ftl_request_activate;
+    struct wl_listener ftl_request_close;
 } ZcompToplevel;
 
 // new_xdg_surface handler: adopt a freshly created xdg_surface (toplevel or

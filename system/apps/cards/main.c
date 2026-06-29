@@ -16,10 +16,21 @@ static void bump(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
+// A lifecycle banner: green "ACTIVE" in the foreground, amber "PAUSED" when
+// backgrounded. Driven by the xdg activated state the compositor broadcasts.
+static ZView lifecycle_banner(ZApp *app) {
+    bool act = z_app_active(app);
+    return Background(act ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
+                          : z_rgba(0x5e, 0x49, 0x1d, 0xff),
+        Padding(10,
+            Foreground(Z_COLOR_TEXT_INV,
+                Font(Z_FONT_CALLOUT, Text(act ? "ACTIVE" : "PAUSED")))));
+}
+
 static ZView cards_body(ZApp *app, CardsState *state) {
-    (void)app;
     return Background(z_rgba(0x10, 0x2a, 0x44, 0xff),
         VStack(
+            lifecycle_banner(app),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Cards"))),
             Foreground(z_rgba(0x9a, 0xc4, 0xf0, 0xff),

@@ -377,6 +377,56 @@ void z_invalidate(ZApp *app);
 // Request the app to exit its loop.
 void z_app_quit(ZApp *app);
 
+// ---------------------------------------------------------------------------
+// Lifecycle.
+//
+// An app moves between foreground (Active) and background (Inactive) as the user
+// switches apps; it is Stopped when the compositor asks it to close. The state
+// rides the standard xdg "activated" toplevel state the compositor broadcasts to
+// exactly the front window — no custom protocol. Register a handler to save/
+// restore work across transitions; the framework also repaints on every change
+// so a body() that reads z_app_active() reflects the live state.
+// See docs/platform/app-lifecycle.md.
+// ---------------------------------------------------------------------------
+typedef enum ZLifecycle {
+    Z_LC_ACTIVE = 0,   // entered the foreground (xdg activated)
+    Z_LC_INACTIVE,     // left the foreground (paused / another app in front)
+    Z_LC_STOPPED,      // the compositor asked the app to close
+} ZLifecycle;
+
+typedef void (*ZLifecycleHandler)(ZApp *app, void *state, ZLifecycle ev);
+
+// Register the lifecycle handler (one per app). `state` passed to it is the same
+// pointer given to body(). Pass NULL to clear.
+void z_on_lifecycle(ZApp *app, ZLifecycleHandler handler);
+
+// True while the app is the foreground (activated) window.
+bool z_app_active(ZApp *app);
+
+// ---------------------------------------------------------------------------
+// Task switcher (running apps).
+//
+// A client (the launcher) can list every other running app window and switch to
+// or close it, over the standard wlr-foreign-toplevel-management protocol. The
+// app's own window is filtered out by app_id. The list mutates as windows open,
+// change title, gain/lose focus, and close; each change repaints the caller.
+// ---------------------------------------------------------------------------
+typedef struct ZTask {
+    const char *title;    // window title (may be NULL until reported)
+    const char *app_id;   // window app_id (may be NULL until reported)
+    bool active;          // true if this is the foreground window
+    void *handle;         // opaque foreign-toplevel handle (for activate/close)
+} ZTask;
+
+// A stable snapshot of the running apps (excluding this app's own window). Valid
+// until the next z_running_apps call; read it fresh inside body(). *count gets
+// the entry count.
+const ZTask *z_running_apps(ZApp *app, int *count);
+
+// Switch to / close a running app from the snapshot.
+void z_task_activate(ZApp *app, const ZTask *task);
+void z_task_close(ZApp *app, const ZTask *task);
+
 #ifdef __cplusplus
 }
 #endif

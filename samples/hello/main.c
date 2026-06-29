@@ -115,11 +115,23 @@ static ZView item_row(ZApp *app, const void *item, int index) {
                 .padding = 14, .spacing = 14, .align = Z_ALIGN_CENTER)));
 }
 
+// Lifecycle banner: green ACTIVE in the foreground, amber PAUSED when another
+// app is in front (driven by the compositor's xdg activated-state broadcast).
+static ZView lifecycle_banner(ZApp *app) {
+    bool act = z_app_active(app);
+    return Background(act ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
+                          : z_rgba(0x5e, 0x49, 0x1d, 0xff),
+        Padding(10,
+            Foreground(Z_COLOR_TEXT_INV,
+                Font(Z_FONT_CALLOUT, Text(act ? "ACTIVE" : "PAUSED")))));
+}
+
 static ZView list_screen(ZApp *app, void *props) {
     (void)props;
     ensure_items();
     return Background(z_rgba(0x0e, 0x12, 0x17, 0xff),
         VStack(
+            lifecycle_banner(app),
             Background(z_rgba(0x1c, 0x22, 0x2b, 0xff),
                 HStack(
                     Foreground(Z_COLOR_TEXT_INV,

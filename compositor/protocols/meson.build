@@ -29,7 +29,20 @@ layer_shell_h = custom_target(
   command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+# Server-side header for wlr-foreign-toplevel-management-unstable-v1 (the task
+# switcher: zcomp publishes a handle per app window, the launcher lists them and
+# requests activate/close). As with layer-shell, wlroots ships the marshalling
+# inside libwlroots (the zwlr_foreign_toplevel_manager_v1 symbols verified with
+# nm), so only the generated server-header is needed; the XML is vendored in
+# protocols/ because no wlr-protocols package is installed.
+foreign_toplevel_h = custom_target(
+  'wlr-foreign-toplevel-management-unstable-v1-protocol.h',
+  input : meson.project_source_root() / 'protocols/wlr-foreign-toplevel-management-unstable-v1.xml',
+  output : 'wlr-foreign-toplevel-management-unstable-v1-protocol.h',
+  command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
 # Listed in the executable's sources so Ninja generates it before compiling.
 # include_directories('protocols') (in the parent build file) puts the build-tree
 # copy on the include path.
-protocol_src = [xdg_shell_h, layer_shell_h]
+protocol_src = [xdg_shell_h, layer_shell_h, foreign_toplevel_h]

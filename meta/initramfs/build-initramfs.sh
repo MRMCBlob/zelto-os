@@ -95,6 +95,21 @@ if [ -f "$FONT_SRC" ]; then
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
 fi
 
+# --- app manifests ----------------------------------------------------------
+# The launcher scans /usr/share/zelto/apps/*.app to build its install tiles
+# (no hardcoded registry). These are plain key=value text files baked into the
+# image (no real package install/signing). One per launchable app.
+mkdir -p "$ROOT/usr/share/zelto/apps"
+for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
+         "$REPO_ROOT/system/apps/cards/zelto-cards.app"; do
+    if [ -f "$m" ]; then
+        echo "    manifest: $(basename "$m")"
+        cp "$m" "$ROOT/usr/share/zelto/apps/"
+    else
+        echo "WARN: manifest missing: $m"
+    fi
+done
+
 # --- xkb keyboard data (xkeyboard-config) -----------------------------------
 # libzelto's client-side xkbcommon needs the keymap dataset to create a context;
 # without it xkb_context_new() fails and the keyboard is disabled. The data is

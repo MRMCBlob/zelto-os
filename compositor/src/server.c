@@ -11,6 +11,7 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
@@ -97,6 +98,14 @@ bool zcomp_server_init(ZcompServer *server) {
     // Builds the background/bottom/apps/top/overlay scene sub-trees (apps adopt
     // the `apps` tree, above) and advertises the layer-shell global for System UI.
     zcomp_layer_shell_init(server);
+
+    // --- wlr-foreign-toplevel-management (the task switcher) ---------------
+    // Publishes a handle per mapped app window so the launcher (a client) can
+    // list running apps and request activate/close over a standard protocol.
+    // zcomp keeps each handle's title/app_id/activated state in sync with the
+    // toplevel it shadows (see toplevel.c).
+    server->foreign_toplevel_manager =
+        wlr_foreign_toplevel_manager_v1_create(server->display);
 
     // --- Seat + input ------------------------------------------------------
     zcomp_seat_init(server);

@@ -21,6 +21,7 @@ struct wlr_scene_output_layout;
 struct wlr_scene_rect;
 struct wlr_scene_tree;
 struct wlr_layer_shell_v1;
+struct wlr_foreign_toplevel_manager_v1;
 struct wlr_xdg_shell;
 struct wlr_seat;
 struct wlr_cursor;
@@ -66,6 +67,12 @@ typedef struct ZcompServer {
     struct wlr_layer_shell_v1 *layer_shell;
     struct wl_listener new_layer_surface;
     struct wl_list layer_surfaces;              // ZcompLayerSurface.link
+
+    // wlr-foreign-toplevel-management: publishes a handle per mapped app window
+    // so the launcher (a client) can list running apps and request activate/close
+    // — the task switcher, over a standard protocol. zcomp keeps each handle's
+    // title/app_id/activated state in sync with the toplevel it shadows.
+    struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
 
     // Area left for app windows after subtracting layer exclusive zones.
     // Recomputed by zcomp_arrange().
