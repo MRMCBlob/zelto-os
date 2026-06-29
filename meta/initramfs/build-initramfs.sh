@@ -46,6 +46,14 @@ PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
 NOTEPAD="${NOTEPAD:-$REPO_ROOT/build-arm64/system/apps/notepad/zelto-notepad}"
 # P12 networking: the Fetch demo (HTTP GET gated by the network permission).
 FETCH="${FETCH:-$REPO_ROOT/build-arm64/system/apps/fetch/zelto-fetch}"
+# P13 packaging: the runtime installer (verifies + unpacks a signed .zap), the
+# Store UI that drives it, and the Widget demo app. Widget is NOT installed into
+# the image — it ships only inside widget.zap and is installed at runtime.
+INSTALLER="${INSTALLER:-$REPO_ROOT/build-arm64/system/installer/zelto-install}"
+STORE="${STORE:-$REPO_ROOT/build-arm64/system/apps/store/zelto-store}"
+WIDGET="${WIDGET:-$REPO_ROOT/build-arm64/system/apps/widget/zelto-widget}"
+TRUSTED_PUB="${TRUSTED_PUB:-$REPO_ROOT/meta/keys/trusted.pub}"
+SIGN_KEY="${SIGN_KEY:-$REPO_ROOT/meta/keys/zelto-dev.pem}"
 FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
@@ -82,6 +90,8 @@ for app in sh ls mount umount mkdir cat echo ln cp mv rm ps dmesg sleep \
            ifconfig route ip udhcpc wget nc; do
     ln -sf busybox "$ROOT/bin/$app"
 done
+# NOTE: busybox-static has no `unzip` applet, so .zap (a ZIP) extraction needs a
+# real unzip — bundled from the arm64 `unzip` package below (P13).
 
 # --- init -------------------------------------------------------------------
 cp "$HERE/init" "$ROOT/init"
@@ -116,6 +126,10 @@ install_bin "$SHADE"    zelto-shade      # notification shade (overlay sink)
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
 install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
 install_bin "$FETCH"    zelto-fetch      # networking demo app ("Fetch")
+install_bin "$INSTALLER" zelto-install   # runtime package installer (libsodium)
+install_bin "$STORE"    zelto-store      # installer UI demo app ("Store")
+# NOTE: $WIDGET is deliberately NOT installed here — it ships only inside
+# widget.zap (built below) and is installed at runtime by zelto-install.
 if [ -f "$FONT_SRC" ]; then
     mkdir -p "$ROOT/usr/share/zelto/fonts"
     cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
@@ -132,7 +146,8 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/notes/zelto-notes.app" \
          "$REPO_ROOT/system/apps/pinger/zelto-pinger.app" \
          "$REPO_ROOT/system/apps/notepad/zelto-notepad.app" \
-         "$REPO_ROOT/system/apps/fetch/zelto-fetch.app"; do
+         "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
+         "$REPO_ROOT/system/apps/store/zelto-store.app"; do
     if [ -f "$m" ]; then
         echo "    manifest: $(basename "$m")"
         cp "$m" "$ROOT/usr/share/zelto/apps/"
@@ -140,6 +155,35 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
         echo "WARN: manifest missing: $m"
     fi
 done
+# NOTE: system/apps/widget/zelto-widget.app is intentionally absent here — it is
+# packaged inside widget.zap and registered at runtime by zelto-install.
+
+# --- P13 trusted root key + staged .zap packages ----------------------------
+# The single trusted public key the installer verifies every package against
+# (the dev key's raw 32-byte Ed25519 pubkey; real publisher keys are Planned).
+if [ -f "$TRUSTED_PUB" ]; then
+    echo "    trusted key: $TRUSTED_PUB"
+    mkdir -p "$ROOT/usr/share/zelto/keys"
+    cp "$TRUSTED_PUB" "$ROOT/usr/share/zelto/keys/trusted.pub"
+else
+    echo "WARN: trusted pubkey missing: $TRUSTED_PUB (run meta/keys/gen-keys.sh)"
+fi
+
+# Build the Widget package (signed) and a tampered copy, and stage them as RAW
+# files (not installed apps). At runtime the Store app drives zelto-install on
+# these. The good package installs; the tampered one (a byte flipped after
+# signing -> file-hash mismatch) is refused.
+mkdir -p "$ROOT/usr/share/zelto/packages"
+WIDGET_MANIFEST="$REPO_ROOT/system/apps/widget/zelto-widget.app"
+if [ -x "$WIDGET" ] && [ -f "$SIGN_KEY" ] && [ -f "$WIDGET_MANIFEST" ]; then
+    echo "    package: widget.zap (signed) + widget-bad.zap (tampered)"
+    "$REPO_ROOT/meta/mkzap.sh" "$WIDGET_MANIFEST" "$WIDGET" \
+        "$ROOT/usr/share/zelto/packages/widget.zap" "$SIGN_KEY"
+    TAMPER=1 "$REPO_ROOT/meta/mkzap.sh" "$WIDGET_MANIFEST" "$WIDGET" \
+        "$ROOT/usr/share/zelto/packages/widget-bad.zap" "$SIGN_KEY"
+else
+    echo "WARN: cannot build widget.zap (missing widget binary, key, or manifest)"
+fi
 
 # --- xkb keyboard data (xkeyboard-config) -----------------------------------
 # libzelto's client-side xkbcommon needs the keymap dataset to create a context;
@@ -189,6 +233,30 @@ if [ -x "$UDEV_STAGE/usr/sbin/seatd" ]; then
     SEATD="$UDEV_STAGE/usr/sbin/seatd"
     cp "$SEATD" "$ROOT/usr/sbin/seatd"
     chmod +x "$ROOT/usr/sbin/seatd"
+fi
+
+# --- unzip (arm64) for .zap extraction --------------------------------------
+# zelto-install execvp's `unzip` to unpack a .zap (a ZIP). busybox-static lacks
+# the applet, so bundle the real arm64 unzip (+ its libbz2 closure, resolved in
+# the closure step below) at /usr/bin/unzip. Best-effort: if it is missing the
+# installer simply can't unpack packages.
+UNZIP_HOSTBIN=""
+UNZIP_STAGE="$BUILD_DIR/unzip"
+if [ ! -x "$UNZIP_STAGE/usr/bin/unzip" ]; then
+    echo "==> fetching unzip:arm64 via apt"
+    rm -rf "$UNZIP_STAGE"; mkdir -p "$UNZIP_STAGE"
+    pushd "$UNZIP_STAGE" >/dev/null
+    apt-get download unzip:arm64 2>/dev/null || true
+    for d in ./*.deb; do [ -e "$d" ] && dpkg-deb -x "$d" .; done
+    rm -f ./*.deb
+    popd >/dev/null
+fi
+if [ -x "$UNZIP_STAGE/usr/bin/unzip" ]; then
+    UNZIP_HOSTBIN="$UNZIP_STAGE/usr/bin/unzip"
+    cp "$UNZIP_HOSTBIN" "$ROOT/usr/bin/unzip"
+    chmod +x "$ROOT/usr/bin/unzip"
+else
+    echo "WARN: arm64 unzip not staged; zelto-install cannot unpack .zap packages"
 fi
 
 # --- shared-library closure (only if dynamically linked) --------------------
@@ -252,16 +320,28 @@ if is_dynamic "$ZCOMP"; then
     #     a closure, but bundle each so a future divergence can't break boot.
     for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER" "$ZSYSD" "$CONSENT" \
                 "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" "$PINGER" "$NOTEPAD" \
-                "$FETCH"; do
+                "$FETCH" "$INSTALLER" "$STORE"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
+    # ($WIDGET is not bundled here — it is not installed in the image; its runtime
+    # .so deps are identical to the other libzelto apps and already bundled. The
+    # installed copy on /var/zelto resolves them from the standard lib dirs.)
     # Notepad pulls libsqlite3 (the z_db_* wrapper); bundle it + its closure
     # explicitly too, in case --as-needed trimmed it from a NEEDED walk.
     bundle_with_closure "$ARM64_LIBDIR/libsqlite3.so.0"
+    # zelto-install links libsodium (Ed25519 + sha256 verification, P13). Its
+    # closure is pulled via $INSTALLER above, but bundle the soname(s) explicitly
+    # too so a NEEDED trim can't drop it.
+    for so in "$ARM64_LIBDIR"/libsodium.so.*; do
+        [ -e "$so" ] && bundle_with_closure "$so"
+    done
 
     # 1c. udevadm (== systemd-udevd) and seatd closures, for input bring-up.
     [ -n "$UDEVADM" ] && bundle_with_closure "$UDEVADM"
     [ -n "$SEATD" ] && bundle_with_closure "$SEATD"
+
+    # 1d. unzip closure (pulls libbz2), so zelto-install can unpack .zap (P13).
+    [ -n "$UNZIP_HOSTBIN" ] && bundle_with_closure "$UNZIP_HOSTBIN"
 
     # 2. Mesa userspace bits that are dlopen'd, so they are invisible to the ELF
     #    NEEDED walk and must be added explicitly:

@@ -5,6 +5,9 @@
 # zsysd is a plain daemon (no SDK dep); always build it.
 subdir('zsysd')
 
+# zelto-install is a plain CLI (no SDK dep, links libsodium); build if it can.
+subdir('installer')
+
 if zelto_dep.found()
   subdir('bar')
   subdir('launcher')
@@ -13,6 +16,8 @@ if zelto_dep.found()
   subdir('apps/pinger')
   subdir('apps/notepad')
   subdir('apps/fetch')
+  subdir('apps/store')
+  subdir('apps/widget')
   subdir('consent')
   subdir('chooser')
   subdir('share')

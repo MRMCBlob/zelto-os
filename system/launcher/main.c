@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include <zelto/ui.h>
@@ -91,13 +92,15 @@ static bool parse_manifest(const char *path, AppEntry *e) {
     return e->name[0] && e->exec_path[0];
 }
 
-// Scan the manifest directory once into g_apps (sorted by readdir order).
-static void ensure_apps(void) {
-    if (g_scanned) {
-        return;
-    }
-    g_scanned = true;
-    DIR *d = opendir(MANIFEST_DIR);
+// Order tiles by display name (case-insensitive), for a stable layout.
+static int app_name_cmp(const void *a, const void *b) {
+    const AppEntry *ea = a, *eb = b;
+    return strcasecmp(ea->name, eb->name);
+}
+
+// Scan one manifest dir, appending each parseable <id>.app to g_apps.
+static void scan_apps_dir(const char *dir) {
+    DIR *d = opendir(dir);
     if (!d) {
         return;
     }
@@ -109,12 +112,34 @@ static void ensure_apps(void) {
             continue;
         }
         char path[256];
-        snprintf(path, sizeof(path), "%s/%s", MANIFEST_DIR, name);
+        snprintf(path, sizeof(path), "%s/%s", dir, name);
         if (parse_manifest(path, &g_apps[g_n_apps])) {
             g_n_apps++;
         }
     }
     closedir(d);
+}
+
+// Scan the manifest directories once into g_apps. Two sources: the baked-in
+// /usr/share/zelto/apps, plus $ZELTO_DATA_DIR/apps/manifests where zelto-install
+// registers runtime-installed .zap packages (P13). A package installed on a prior
+// boot therefore appears as a tile on the next startup scan.
+static void ensure_apps(void) {
+    if (g_scanned) {
+        return;
+    }
+    g_scanned = true;
+    scan_apps_dir(MANIFEST_DIR);
+    const char *data = getenv("ZELTO_DATA_DIR");
+    if (data && data[0]) {
+        char runtime_dir[256];
+        snprintf(runtime_dir, sizeof(runtime_dir), "%s/apps/manifests", data);
+        scan_apps_dir(runtime_dir);
+    }
+    // readdir order is filesystem-dependent (and differs between the baked-in and
+    // runtime dirs); sort by name so the tile layout is deterministic — the
+    // headless harness reads fixed tile coordinates off a captured frame.
+    qsort(g_apps, (size_t)g_n_apps, sizeof(g_apps[0]), app_name_cmp);
 }
 
 typedef struct LauncherState {
@@ -136,20 +161,23 @@ static void launch_app(ZApp *app, void *state, void *data) {
     }
 }
 
+// Tiles are kept compact so the full app list (now ~9 entries incl. the P13
+// Store + a runtime-installed Widget) fits on one screen without overflowing
+// past the bottom edge — every tile must be tappable by the headless harness.
 static ZView tile(const AppEntry *e) {
     return OnTapData(launch_app, (void *)e,
         Background(e->color,
             HStack(
-                Frame(56.0f, 56.0f,
-                    Rect(.color = z_rgba(0xff, 0xff, 0xff, 0x33), .radius = 14)),
+                Frame(40.0f, 40.0f,
+                    Rect(.color = z_rgba(0xff, 0xff, 0xff, 0x33), .radius = 12)),
                 VStack(
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_CALLOUT, Text("%s", e->name))),
                     Foreground(z_rgba(0xff, 0xff, 0xff, 0xcc),
                         Text("%s", e->subtitle)),
-                    .spacing = 4, .align = Z_ALIGN_LEADING),
+                    .spacing = 2, .align = Z_ALIGN_LEADING),
                 Spacer(),
-                .padding = 16, .spacing = 16, .align = Z_ALIGN_CENTER)));
+                .padding = 10, .spacing = 12, .align = Z_ALIGN_CENTER)));
 }
 
 // --- running cards (task switcher) ----------------------------------------
@@ -194,7 +222,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     (void)state;
     ensure_apps();
 
-    ZStackOpts opts = {.padding = 24, .spacing = 18, .align = Z_ALIGN_LEADING};
+    ZStackOpts opts = {.padding = 14, .spacing = 10, .align = Z_ALIGN_LEADING};
     int k = 0;
 
     opts.children[k++] =

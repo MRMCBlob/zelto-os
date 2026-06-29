@@ -176,9 +176,9 @@ static bool csv_contains(const char *csv, const char *item) {
     return false;
 }
 
-// Scan the manifest dir once into g_manifests (id + permissions= line per file).
-static void load_manifests(void) {
-    DIR *d = opendir(MANIFEST_DIR);
+// Scan one manifest dir, appending each <id>.app to g_manifests.
+static void scan_manifest_dir(const char *dir) {
+    DIR *d = opendir(dir);
     if (!d) {
         return;
     }
@@ -189,7 +189,7 @@ static void load_manifests(void) {
             continue;
         }
         char path[512];
-        snprintf(path, sizeof(path), "%s/%s", MANIFEST_DIR, de->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
         FILE *f = fopen(path, "r");
         if (!f) {
             continue;
@@ -225,6 +225,20 @@ static void load_manifests(void) {
         }
     }
     closedir(d);
+}
+
+// (Re)build g_manifests from BOTH the baked-in dir and the runtime-installed dir
+// ($ZELTO_DATA_DIR/apps/manifests, where zelto-install writes a verified .zap's
+// manifest, P13). Called at startup and on a {"op":"reload"} from the installer.
+static void load_manifests(void) {
+    g_n_manifests = 0;
+    scan_manifest_dir(MANIFEST_DIR);
+    const char *data = getenv("ZELTO_DATA_DIR");
+    if (data && data[0]) {
+        char runtime_dir[256];
+        snprintf(runtime_dir, sizeof(runtime_dir), "%s/apps/manifests", data);
+        scan_manifest_dir(runtime_dir);
+    }
 }
 
 static bool manifest_declares(const char *app_id, const char *perm) {
@@ -751,6 +765,14 @@ static void handle_line(int slot, int fd, char *line) {
     }
     if (strcmp(op, "intent_resolve") == 0) {
         handle_intent_resolve(line);
+        return;
+    }
+    // zelto-install sends this after registering a runtime-installed package so
+    // the broker picks up the new manifest (permissions / intent handlers / exec)
+    // without a reboot (P13). Re-scans both manifest dirs.
+    if (strcmp(op, "reload") == 0) {
+        load_manifests();
+        fprintf(stderr, "[zsysd] reloaded manifests (%d total)\n", g_n_manifests);
         return;
     }
 

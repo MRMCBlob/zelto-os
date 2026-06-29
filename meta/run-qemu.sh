@@ -209,6 +209,119 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P13 packaging/install flow (INSTALL=1): install a signed .zap at runtime
+    # onto the persistent disk, then prove it survives a reboot and runs. A
+    # TWO-BOOT test against the same data.img (like STORAGE):
+    #   Boot #1 — the launcher shows NO Widget tile (Widget is not baked in; it
+    #     ships only inside /usr/share/zelto/packages/widget.zap). Open the Store
+    #     app and tap "Install Widget": it fork/execs zelto-install, which verifies
+    #     the package's Ed25519 signature + every file hash, unpacks the binary to
+    #     /var/zelto/installed/os.zelto.widget/, and registers its manifest under
+    #     /var/zelto/apps/manifests/. Then tap "Install tampered": zelto-install
+    #     refuses widget-bad.zap (a byte was flipped after signing -> hash
+    #     mismatch), so nothing is registered. Sync + shutdown.
+    #   Boot #2 — a FRESH QEMU on the SAME disk. The launcher's startup scan now
+    #     reads the runtime-installed manifest, so a Widget tile appears (it
+    #     persisted). Tap it -> the installed binary maps its window.
+    # This captures all four required proofs (before / install / after / running)
+    # plus the rejection and the bonus reboot-persistence. Coordinates are
+    # overridable to retune to the rendered layout from a captured frame (rerun
+    # with SKIP_BUILD=1 + overrides — first guesses miss). Boot is slow under TCG:
+    # keep SHOT_DELAY high and give the install generous time.
+    if [ "${INSTALL:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # Tiles are alphabetical (launcher sorts by name). Boot #1 has 8 tiles
+        # (Store is last/bottom); boot #2 has 9 (Widget appended after Store).
+        TILE_X="${TILE_X:-300}"                 # x over a launcher tile
+        STORE_TILE_Y="${STORE_TILE_Y:-655}"     # "Store" tile centre (8-tile list)
+        WIDGET_TILE_Y="${WIDGET_TILE_Y:-714}"   # "Widget" tile centre (9-tile list)
+        INSTALL_X="${INSTALL_X:-640}"           # "Install Widget" button
+        INSTALL_Y="${INSTALL_Y:-422}"
+        TAMPER_X="${TAMPER_X:-640}"             # "Install tampered" button
+        TAMPER_Y="${TAMPER_Y:-485}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        install_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        install_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [install boot 1/2] launcher (no Widget tile yet)"
+        install_boot
+        sleep "$SHOT_DELAY"
+        shot frame-install-launcher          # BEFORE: no Widget tile; read Store y
+        echo "==> [install 1] tap 'Store' tile"
+        tap "$TILE_X" "$STORE_TILE_Y"
+        sleep 5; shot frame-install-store     # Store UI: Install Widget / tampered
+        echo "==> [install 2] tap 'Install Widget' -> verify + unpack to /var/zelto"
+        tap "$INSTALL_X" "$INSTALL_Y"
+        sleep 7; shot frame-install-installed # "Widget installed OK (exit 0)"
+        echo "==> [install 3] tap 'Install tampered' -> rejected (hash mismatch)"
+        tap "$TAMPER_X" "$TAMPER_Y"
+        sleep 7; shot frame-install-rejected  # "Tampered package rejected (exit N)"
+        echo "==> [install 1] sync + shutdown"
+        sleep 3
+        install_kill
+
+        echo "==> [install boot 2/2] REBOOT same disk; Widget tile persisted"
+        install_boot
+        sleep "$SHOT_DELAY"
+        shot frame-install-launcher2          # AFTER: Widget tile now present
+        echo "==> [install 4] tap 'Widget' tile -> the installed app runs"
+        tap "$TILE_X" "$WIDGET_TILE_Y"
+        sleep 5; shot frame-install-widget    # Widget app mapped (installed binary)
+        install_kill
+        echo "==> install test done; frames in $OUT/frame-install-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"
