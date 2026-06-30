@@ -39,14 +39,17 @@
 // frame mid-pull forces a full repaint (the partial-repaint path under-damages a
 // big translated subtree and re-blends transparent regions wrong).
 //
-// QUICK-SETTINGS TOGGLE STATE lives in the shade's own prefs (z_prefs_*, the P11
-// storage client, scoped to the layer-app storage id). It moved here out of the
-// launcher's private prefs when QS left the launcher; the launcher no longer
-// reads them and nothing else does, so a zsysd-brokered cross-process settings
-// service would be machinery for zero readers — if a second observer ever appears,
-// promote it then. See docs/guides/notifications.md + the P17 memory note.
+// QUICK-SETTINGS TOGGLE STATE now lives in the zsysd-brokered settings store
+// (z_setting_get/set_int on the sys.* keys), NOT the shade's private prefs. A
+// second reader/writer appeared (the Settings app, os.zelto.settings), so the
+// toggles were promoted from the shade's own storage to a single brokered source
+// of truth (P18): the shade z_settings_observe()s, so a flip in Settings
+// recolours the chip here live (and a flip here is broadcast back to Settings),
+// and the broker persists every change to /var/zelto so it survives a reboot.
+// See docs/guides/settings.md + the P17/P18 memory notes.
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -100,16 +103,37 @@ static float clamp01(float a) {
     return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
 }
 
-// Load the persisted quick-settings toggles once (defaults Wi-Fi + bright on,
-// mute off). Each is a prefs int bool in the shade's own storage scope.
+// Load the quick-settings toggles once from the brokered settings store
+// (defaults Wi-Fi + bright on, mute off). These are the SAME sys.* keys the
+// Settings app reads/writes — one source of truth. z_settings_observe (in
+// shade_body) then keeps them live: a flip in Settings recolours the chip here
+// without a reboot, and a flip here is broadcast back to Settings.
 static void ensure_qs(ShadeState *s) {
     if (s->qs_loaded) {
         return;
     }
     s->qs_loaded = true;
-    s->qs_wifi = z_prefs_get_int("qs.wifi", 1) != 0;
-    s->qs_mute = z_prefs_get_int("qs.mute", 0) != 0;
-    s->qs_bright = z_prefs_get_int("qs.bright", 1) != 0;
+    s->qs_wifi = z_setting_get_int("sys.wifi", 1) != 0;
+    s->qs_mute = z_setting_get_int("sys.mute", 0) != 0;
+    s->qs_bright = z_setting_get_int("sys.bright", 1) != 0;
+}
+
+// A setting changed somewhere (this shade or the Settings app): re-read the
+// quick-settings bool it maps to and repaint the chip. Idempotent — applying a
+// value the shade just set is a harmless no-op, so observing our own set (the
+// broker fans out to every subscriber) neither loops nor double-toggles.
+static void on_qs_setting(ZApp *app, const char *key, const char *value,
+                          void *ud) {
+    ShadeState *s = ud;
+    bool v = atoi(value) != 0;
+    if (strcmp(key, "sys.wifi") == 0) {
+        s->qs_wifi = v;
+    } else if (strcmp(key, "sys.mute") == 0) {
+        s->qs_mute = v;
+    } else if (strcmp(key, "sys.bright") == 0) {
+        s->qs_bright = v;
+    }
+    z_invalidate(app);
 }
 
 // --- notification sink (zsysd push) ---------------------------------------
@@ -245,19 +269,19 @@ static ZView notif_card(Banner *b, bool interactive) {
 static void toggle_wifi(ZApp *app, void *state) {
     ShadeState *s = state;
     s->qs_wifi = !s->qs_wifi;
-    z_prefs_set_int("qs.wifi", s->qs_wifi);
+    z_setting_set_int("sys.wifi", s->qs_wifi);   // broker persists + broadcasts
     z_invalidate(app);
 }
 static void toggle_mute(ZApp *app, void *state) {
     ShadeState *s = state;
     s->qs_mute = !s->qs_mute;
-    z_prefs_set_int("qs.mute", s->qs_mute);
+    z_setting_set_int("sys.mute", s->qs_mute);
     z_invalidate(app);
 }
 static void toggle_bright(ZApp *app, void *state) {
     ShadeState *s = state;
     s->qs_bright = !s->qs_bright;
-    z_prefs_set_int("qs.bright", s->qs_bright);
+    z_setting_set_int("sys.bright", s->qs_bright);
     z_invalidate(app);
 }
 
@@ -351,6 +375,10 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     if (!s->subscribed) {
         s->subscribed = true;
         z_notify_subscribe(app, on_show, on_hide, s);
+        // Observe the brokered settings store so a toggle flipped in the Settings
+        // app recolours our quick-settings chip live (both subscribe on the same
+        // ctrl_fd; the broker fans settings_changed out to every observer).
+        z_settings_observe(app, on_qs_setting, s);
     }
     s->pull = z_animated_value(app, 0.0f);
     ensure_qs(s);

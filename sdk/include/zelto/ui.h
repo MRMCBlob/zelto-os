@@ -641,6 +641,40 @@ void z_notify_report_tap(int64_t id);
 void z_notify_report_action(int64_t id, const char *action_id);
 
 // ---------------------------------------------------------------------------
+// System settings.
+//
+// A single brokered source of truth for system toggles (Wi-Fi, mute, screen
+// brightness, ...). zsysd owns the store, persists it across reboots, and pushes
+// a live update to every observer when any value changes — so a toggle flipped
+// in the Settings app recolours the shade's quick-settings chip without a
+// reboot, and vice versa. Keys are namespaced under `sys.` (sys.wifi / sys.mute
+// / sys.bright / sys.airplane / sys.brightness); values are strings (bools as
+// "0"/"1"). get is a fast synchronous read; set persists + broadcasts. An
+// observer registers a callback that fires from the app loop on every change
+// (including ones it made itself — apply changes idempotently, the client never
+// loops). See docs/api-reference/c/system.md.
+// ---------------------------------------------------------------------------
+
+// A setting changed: `key` and its new `value` (both valid only for the call).
+typedef void (*ZSettingsCb)(ZApp *app, const char *key, const char *value,
+                            void *ud);
+
+// Read a setting (fast synchronous round-trip). Returns the broker's value, or
+// `fallback` when the key is unset / the broker is unreachable.
+const char *z_setting_get_str(const char *key, const char *fallback);
+int64_t     z_setting_get_int(const char *key, int64_t fallback);
+
+// Write a setting: the broker persists it (durable across reboot) and broadcasts
+// the change to every observer. Fire-and-forget (no reply).
+void z_setting_set_str(const char *key, const char *value);
+void z_setting_set_int(const char *key, int64_t value);
+
+// Observe live setting changes: `cb` fires from the app loop whenever any value
+// changes. One observer per app; pass NULL to stop. Both the shade and the
+// Settings app observe at once (the broker fans out to all subscribers).
+void z_settings_observe(ZApp *app, ZSettingsCb cb, void *ud);
+
+// ---------------------------------------------------------------------------
 // Persistent storage: preferences, files, and SQLite — all scoped to the app's
 // private data directory under $ZELTO_DATA_DIR (/var/zelto), keyed by app_id.
 //

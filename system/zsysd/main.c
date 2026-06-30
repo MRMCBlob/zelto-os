@@ -46,6 +46,7 @@
 #define MAX_CLIENTS 32
 #define MAX_PENDING 16
 #define MAX_NOTIFS 32
+#define MAX_SETTINGS 64
 #define REQ_MAX 512
 
 // --- manifest table (per-app declarations) --------------------------------
@@ -114,6 +115,41 @@ typedef struct Notification {
 static Notification g_notifs[MAX_NOTIFS];
 static int64_t g_next_notif_id = 1;
 static int g_shade_fd = -1;   // ctrl fd of the subscribed shade (-1 = none)
+
+// --- settings store (zsysd's 4th duty) -------------------------------------
+// A single source of truth for system toggles. Values are strings (bools as
+// "0"/"1"); keys are namespaced under `sys.` (sys.wifi / sys.mute / sys.bright /
+// sys.airplane / sys.brightness). Unlike the notification store (in-memory, lost
+// on reboot) this is PERSISTED: every settings_set writes the whole table
+// through to $ZELTO_DATA_DIR/settings.conf (TAB-separated key\tvalue, fsync'd)
+// like the libzelto storage client, so a flipped toggle survives a reboot.
+//
+// Three ops over the same line protocol:
+//   settings_get        (key)        -> {"value":"<v>"} on the same conn (fast,
+//                                        in-memory; never blocks, so no consent
+//                                        round-trip and the client can read it
+//                                        synchronously like perm_status).
+//   settings_set        (key, value) -> update + persist + broadcast to every
+//                                        subscriber as settings_changed.
+//   settings_subscribe  ()           -> register this ctrl fd to receive
+//                                        settings_changed pushes (like the notify
+//                                        sink, but a SET of fds — the shade AND
+//                                        the Settings app observe at once).
+// The setter is broadcast to as well (it is just another subscriber); clients
+// apply changes idempotently, so a setter that also observes neither loops nor
+// double-applies.
+typedef struct Setting {
+    bool used;
+    char key[64];
+    char value[160];
+} Setting;
+static Setting g_settings[MAX_SETTINGS];
+
+// Subscriber ctrl fds (the persistent connections that asked for settings_changed
+// pushes). A SET, not last-wins: several apps observe simultaneously. Cleared per
+// fd on its disconnect in the read loop (mirroring g_shade_fd).
+static int g_settings_subs[MAX_CLIENTS];
+static int g_n_settings_subs;
 
 // Strip a trailing CR/LF in place.
 static void chomp(char *s) {
@@ -743,6 +779,139 @@ static void route_notify_action(int64_t id, const char *action) {
     notif_drop(id);
 }
 
+// --- settings ---------------------------------------------------------------
+
+// Build the persistence path ($ZELTO_DATA_DIR/settings.conf, falling back to
+// /var/zelto like init's mountpoint) into `out`.
+static void settings_path(char *out, size_t n) {
+    const char *data = getenv("ZELTO_DATA_DIR");
+    if (!data || !data[0]) {
+        data = "/var/zelto";
+    }
+    snprintf(out, n, "%s/settings.conf", data);
+}
+
+static Setting *setting_find(const char *key) {
+    for (int i = 0; i < MAX_SETTINGS; i++) {
+        if (g_settings[i].used && strcmp(g_settings[i].key, key) == 0) {
+            return &g_settings[i];
+        }
+    }
+    return NULL;
+}
+
+// The stored value for a key, or "" when unset (the client supplies the default).
+static const char *setting_value(const char *key) {
+    Setting *s = setting_find(key);
+    return s ? s->value : "";
+}
+
+// Update the in-memory table (insert or overwrite). Returns false if the table
+// is full and the key is new.
+static bool setting_put(const char *key, const char *value) {
+    Setting *s = setting_find(key);
+    if (!s) {
+        for (int i = 0; i < MAX_SETTINGS; i++) {
+            if (!g_settings[i].used) {
+                s = &g_settings[i];
+                break;
+            }
+        }
+    }
+    if (!s) {
+        return false;
+    }
+    s->used = true;
+    snprintf(s->key, sizeof(s->key), "%s", key);
+    snprintf(s->value, sizeof(s->value), "%s", value);
+    return true;
+}
+
+// Read the persisted settings file into the table at startup (best-effort: a
+// missing file just means an empty table — clients fall back to their defaults).
+static void settings_load(void) {
+    char path[300];
+    settings_path(path, sizeof(path));
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        chomp(line);
+        char *tab = strchr(line, '\t');
+        if (!tab) {
+            continue;
+        }
+        *tab = '\0';
+        if (line[0]) {
+            setting_put(line, tab + 1);
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "[zsysd] settings loaded from %s\n", path);
+}
+
+// Rewrite the whole settings file (TAB-separated key\tvalue) and fsync so the
+// change reaches the host image (the guest flush -> virtio-blk chain) and
+// survives a reboot — settings are durable, unlike the notification store.
+static void settings_persist(void) {
+    char path[300];
+    settings_path(path, sizeof(path));
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "[zsysd] settings: cannot write %s\n", path);
+        return;
+    }
+    for (int i = 0; i < MAX_SETTINGS; i++) {
+        if (g_settings[i].used) {
+            fprintf(f, "%s\t%s\n", g_settings[i].key, g_settings[i].value);
+        }
+    }
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+}
+
+// Register a ctrl fd as a settings observer (deduped; a SET so the shade and the
+// Settings app can both be subscribed at once).
+static void settings_subscribe_fd(int fd) {
+    for (int i = 0; i < g_n_settings_subs; i++) {
+        if (g_settings_subs[i] == fd) {
+            return;
+        }
+    }
+    if (g_n_settings_subs < MAX_CLIENTS) {
+        g_settings_subs[g_n_settings_subs++] = fd;
+    }
+}
+
+// Drop a ctrl fd from the observer set (on its disconnect).
+static void settings_unsubscribe_fd(int fd) {
+    for (int i = 0; i < g_n_settings_subs; i++) {
+        if (g_settings_subs[i] == fd) {
+            g_settings_subs[i] = g_settings_subs[--g_n_settings_subs];
+            return;
+        }
+    }
+}
+
+// Push a settings_changed to every subscriber (fan-out; the setter is included).
+static void settings_broadcast(const char *key, const char *value) {
+    char msg[256];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"settings_changed\",\"key\":\"%s\","
+                     "\"value\":\"%s\"}\n",
+                     key, value);
+    if (m <= 0 || m >= (int)sizeof(msg)) {
+        return;
+    }
+    for (int i = 0; i < g_n_settings_subs; i++) {
+        ssize_t w = write(g_settings_subs[i], msg, (size_t)m);
+        (void)w;
+    }
+}
+
 // Process one request line. Perm ops reply on the same connection; register and
 // intent_resolve come over a persistent control connection (no reply). `slot`
 // is the client's table index, so a register can record its mailbox app_id.
@@ -818,6 +987,40 @@ static void handle_line(int slot, int fd, char *line) {
                 cid, cname, imp);
         return;
     }
+    // --- settings ---
+    // settings_get is a synchronous fast read (in-memory; replies on this conn).
+    if (strcmp(op, "settings_get") == 0) {
+        char key[64] = {0};
+        json_get(line, "key", key, sizeof(key));
+        char reply[256];
+        int m = snprintf(reply, sizeof(reply), "{\"value\":\"%s\"}\n",
+                         key[0] ? setting_value(key) : "");
+        if (m > 0 && m < (int)sizeof(reply)) {
+            ssize_t w = write(fd, reply, (size_t)m);
+            (void)w;
+        }
+        return;
+    }
+    // settings_set: persist (write-through to disk) + broadcast to subscribers.
+    if (strcmp(op, "settings_set") == 0) {
+        char key[64] = {0}, value[160] = {0};
+        json_get(line, "key", key, sizeof(key));
+        json_get(line, "value", value, sizeof(value));
+        if (key[0] && setting_put(key, value)) {
+            settings_persist();
+            settings_broadcast(key, value);
+            fprintf(stderr, "[zsysd] settings_set %s=%s -> %d subscriber(s)\n",
+                    key, value, g_n_settings_subs);
+        }
+        return;
+    }
+    // settings_subscribe: record this ctrl fd in the observer set (multiple).
+    if (strcmp(op, "settings_subscribe") == 0) {
+        settings_subscribe_fd(fd);
+        fprintf(stderr, "[zsysd] settings observer subscribed (slot %d, %d total)\n",
+                slot, g_n_settings_subs);
+        return;
+    }
     if (strcmp(op, "notify_badge") == 0) {
         char bapp[96] = {0}, count[16] = {0};
         json_get(line, "app_id", bapp, sizeof(bapp));
@@ -851,6 +1054,7 @@ static void handle_line(int slot, int fd, char *line) {
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     load_manifests();
+    settings_load();
 
     const char *runtime = getenv("XDG_RUNTIME_DIR");
     if (!runtime) {
@@ -948,6 +1152,7 @@ int main(void) {
                 if (cfd == g_shade_fd) {
                     g_shade_fd = -1;   // shade sink disconnected
                 }
+                settings_unsubscribe_fd(cfd);   // drop a settings observer too
                 continue;
             }
             buf[r] = '\0';

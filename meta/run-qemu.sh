@@ -850,6 +850,152 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P18 brokered settings + Settings app (SETTINGS=1): prove the system
+    # toggles are now a single zsysd-brokered source of truth read/written by TWO
+    # processes (the Settings app AND the shade), live in both directions and
+    # persisted across a reboot. A TWO-BOOT test against the same data.img:
+    #   Boot #1 — home; open the app drawer (swipe up) and launch Settings. It
+    #     shows Wi-Fi On (the broker/default). Tap the Wi-Fi toggle -> it flips to
+    #     Off and writes sys.wifi=0 through the broker (persist + broadcast). Now
+    #     PULL THE SHADE DOWN over Settings: its Wi-Fi quick-settings chip already
+    #     reads Off — it observed the change with no reboot (the live cross-process
+    #     proof). Close the shade. Sync + kill.
+    #   Boot #2 — FRESH QEMU, SAME disk: launch Settings -> Wi-Fi still Off (the
+    #     broker loaded sys.wifi=0 back from /var/zelto, not memory). Pull the
+    #     shade down -> its chip is Off too. The persistence + one-source proof.
+    # Coordinates are overridable to retune to the rendered layout from a captured
+    # frame (rerun SKIP_BUILD=1 + overrides — first guesses miss). Boot is slow
+    # under TCG: keep SHOT_DELAY high; the grab strip is a thin top region so the
+    # pull-down swipe MUST start just below the 40px bar (y ~ 72).
+    if [ "${SETTINGS:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
+        # Settings drawer tile: apps are alphabetical by name in a 4-col grid; on
+        # a fresh image Settings falls in row 2, col 3. Retune from the drawer frame.
+        SETTINGS_X="${SETTINGS_X:-786}"; SETTINGS_Y="${SETTINGS_Y:-317}"
+        # The Wi-Fi toggle row in the Settings app (label left, On/Off chip right).
+        SET_WIFI_X="${SET_WIFI_X:-890}"; SET_WIFI_Y="${SET_WIFI_Y:-265}"
+        # The pull-down: start on the grab strip just below the 40px bar, end low.
+        PULL_Y1="${PULL_Y1:-72}"; PULL_Y2="${PULL_Y2:-620}"
+        # Wi-Fi chip in the pulled-down shade panel (top row of three chips).
+        QS_WIFI_X="${QS_WIFI_X:-230}"; QS_WIFI_Y="${QS_WIFI_Y:-150}"
+        # The see-through area below the panel (tap to close the shade).
+        QS_CLOSE_X="${QS_CLOSE_X:-640}"; QS_CLOSE_Y="${QS_CLOSE_Y:-750}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        # A near-zero-hold press for launching a drawer/home icon: those carry an
+        # OnLongPress (curate menu), and under TCG the guest monotonic clock can run
+        # fast enough that a 0.1s held tap is measured past the 0.45s long-press
+        # threshold -> the curate menu fires instead of a launch (the documented
+        # drawer-tap flake). A press with no hold can't cross the threshold at any
+        # clock scale, so it always reads as a tap.
+        launchtap() { move "$1" "$2"; sleep 0.3; btn down; btn up; }
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        # Pull the system shade down: press on the grab strip, nudge while still on
+        # it so the surface expands to full BEFORE the finger leaves, then drag down.
+        pull_shade() {
+            move "$SWIPE_X" "$PULL_Y1"; sleep 0.3; btn down; sleep 0.4
+            move "$SWIPE_X" 108; sleep 0.5
+            move "$SWIPE_X" 330; sleep 0.4
+            move "$SWIPE_X" "$PULL_Y2"; sleep 0.5; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        settings_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        settings_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [settings boot 1/2] home; open drawer + launch Settings"
+        settings_boot
+        sleep "$SHOT_DELAY"
+        shot frame-settings-home
+        drag "$SWIPE_X" 690 110            # swipe up -> open the app drawer
+        sleep 4; shot frame-settings-drawer  # read the Settings tile y off this
+        echo "==> [settings 1] tap Settings -> it maps in the foreground"
+        launchtap "$SETTINGS_X" "$SETTINGS_Y"
+        sleep 5; shot frame-settings-app     # Settings: Wi-Fi On (broker default)
+        echo "==> [settings 1] tap Wi-Fi toggle -> flips Off + writes sys.wifi=0"
+        tap "$SET_WIFI_X" "$SET_WIFI_Y"
+        sleep 3; shot frame-settings-flipped # Settings Wi-Fi now Off
+        echo "==> [settings 1] PULL the shade DOWN -> its chip already reads Off"
+        pull_shade
+        sleep 5; shot frame-settings-shade-live  # LIVE cross-process: chip is Off
+        echo "==> [settings 1] tap below the panel -> close the shade"
+        tap "$QS_CLOSE_X" "$QS_CLOSE_Y"
+        sleep 2; shot frame-settings-closed
+        echo "==> [settings 1] sync + shutdown (sys.wifi=0 persisted)"
+        sleep 3
+        settings_kill
+
+        echo "==> [settings boot 2/2] REBOOT same disk; Wi-Fi still Off"
+        settings_boot
+        sleep "$SHOT_DELAY"
+        shot frame-settings-reboot
+        drag "$SWIPE_X" 690 110
+        sleep 4; shot frame-settings-reboot-drawer
+        echo "==> [settings 2] launch Settings -> Wi-Fi loaded Off from /var/zelto"
+        launchtap "$SETTINGS_X" "$SETTINGS_Y"
+        sleep 5; shot frame-settings-reboot-app   # Wi-Fi Off survived reboot
+        echo "==> [settings 2] pull the shade down -> chip Off too"
+        pull_shade
+        sleep 5; shot frame-settings-reboot-shade
+        settings_kill
+        echo "==> settings test done; frames in $OUT/frame-settings-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

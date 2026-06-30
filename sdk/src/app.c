@@ -143,6 +143,12 @@ struct ZApp {
     ZNotifyHideCb notify_hide_cb;
     void *notify_sink_ud;
 
+    // Settings observer: this app called z_settings_observe, so zsysd pushes
+    // settings_changed on ctrl_fd whenever any system setting is set (by anyone,
+    // including this app). Folded into ctrl_dispatch_line like the notify sink.
+    ZSettingsCb settings_cb;
+    void *settings_ud;
+
     // Keyboard translation (raw keycodes -> keysyms) via xkbcommon.
     struct xkb_context *xkb_ctx;
     struct xkb_keymap *xkb_keymap;
@@ -1727,6 +1733,14 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
         z_invalidate(app);
         return;
     }
+    if (strcmp(op, "settings_changed") == 0 && app->settings_cb) {
+        char key[64] = {0}, value[160] = {0};
+        ctrl_json_get(line, "key", key, sizeof(key));
+        ctrl_json_get(line, "value", value, sizeof(value));
+        app->settings_cb(app, key, value, app->settings_ud);
+        z_invalidate(app);
+        return;
+    }
     if (strcmp(op, "deliver") != 0) {
         return;
     }
@@ -2081,6 +2095,84 @@ void z_notify_report_action(int64_t id, const char *action_id) {
                      (long long)id, action_id ? action_id : "");
     if (m > 0 && m < (int)sizeof(msg)) {
         ssize_t w = write(app->ctrl_fd, msg, (size_t)m);
+        (void)w;
+    }
+}
+
+// --- system settings (zsysd) client ----------------------------------------
+// The settings broker is a fast in-memory store with a write-through to disk.
+// get/set are transient connections (like z_perm_status / z_notify_cancel): get
+// is a quick synchronous read (the broker never blocks on it, so no wayland pump
+// is needed), set is fire-and-forget. Live updates ride the persistent ctrl_fd:
+// z_settings_observe subscribes once, and zsysd pushes settings_changed (handled
+// in ctrl_dispatch_line). The setter is broadcast to as well; clients apply
+// changes idempotently so observing your own set neither loops nor double-applies.
+const char *z_setting_get_str(const char *key, const char *fallback) {
+    static char val[256];
+    if (!key) {
+        return fallback;
+    }
+    int fd = zsysd_connect();
+    if (fd < 0) {
+        return fallback;
+    }
+    char msg[128];
+    int m = snprintf(msg, sizeof(msg), "{\"op\":\"settings_get\",\"key\":\"%s\"}\n",
+                     key);
+    const char *result = fallback;
+    if (m > 0 && m < (int)sizeof(msg) && write(fd, msg, (size_t)m) == m) {
+        char line[256];
+        if (zsysd_read_line(fd, line, sizeof(line)) &&
+            ctrl_json_get(line, "value", val, sizeof(val)) && val[0]) {
+            result = val;
+        }
+    }
+    close(fd);
+    return result;
+}
+
+int64_t z_setting_get_int(const char *key, int64_t fallback) {
+    const char *s = z_setting_get_str(key, NULL);
+    if (!s || !s[0]) {
+        return fallback;
+    }
+    return (int64_t)strtoll(s, NULL, 10);
+}
+
+void z_setting_set_str(const char *key, const char *value) {
+    if (!key || !value) {
+        return;
+    }
+    int fd = zsysd_connect();
+    if (fd < 0) {
+        return;
+    }
+    char msg[256];
+    int m = snprintf(msg, sizeof(msg),
+                     "{\"op\":\"settings_set\",\"key\":\"%s\",\"value\":\"%s\"}\n",
+                     key, value);
+    if (m > 0 && m < (int)sizeof(msg)) {
+        ssize_t w = write(fd, msg, (size_t)m);
+        (void)w;
+    }
+    close(fd);
+}
+
+void z_setting_set_int(const char *key, int64_t value) {
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "%lld", (long long)value);
+    z_setting_set_str(key, tmp);
+}
+
+void z_settings_observe(ZApp *app, ZSettingsCb cb, void *ud) {
+    if (!app) {
+        return;
+    }
+    app->settings_cb = cb;
+    app->settings_ud = ud;
+    if (cb && app->ctrl_fd >= 0) {
+        const char *msg = "{\"op\":\"settings_subscribe\"}\n";
+        ssize_t w = write(app->ctrl_fd, msg, strlen(msg));
         (void)w;
     }
 }

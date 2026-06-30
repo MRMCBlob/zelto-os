@@ -49,6 +49,9 @@ SHADE="${SHADE:-$REPO_ROOT/build-arm64/system/shade/zelto-shade}"
 PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
 # P11 persistent storage: the Notepad demo (prefs + SQLite on the virtio-blk disk).
 NOTEPAD="${NOTEPAD:-$REPO_ROOT/build-arm64/system/apps/notepad/zelto-notepad}"
+# P18 brokered settings: the Settings app (reads/writes the zsysd settings store,
+# the same sys.* keys the shade's quick-settings chips use).
+SETTINGS_APP="${SETTINGS_APP:-$REPO_ROOT/build-arm64/system/apps/settings/zelto-settings}"
 # P12 networking: the Fetch demo (HTTP GET gated by the network permission).
 FETCH="${FETCH:-$REPO_ROOT/build-arm64/system/apps/fetch/zelto-fetch}"
 # P13 packaging: the runtime installer (verifies + unpacks a signed .zap), the
@@ -132,6 +135,7 @@ install_bin "$NOTES"    zelto-notes      # intent-target demo app ("Notes")
 install_bin "$SHADE"    zelto-shade      # notification shade (overlay sink)
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
 install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
+install_bin "$SETTINGS_APP" zelto-settings # brokered-settings demo app ("Settings")
 install_bin "$FETCH"    zelto-fetch      # networking demo app ("Fetch")
 install_bin "$INSTALLER" zelto-install   # runtime package installer (libsodium)
 install_bin "$STORE"    zelto-store      # installer UI demo app ("Store")
@@ -153,6 +157,7 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/notes/zelto-notes.app" \
          "$REPO_ROOT/system/apps/pinger/zelto-pinger.app" \
          "$REPO_ROOT/system/apps/notepad/zelto-notepad.app" \
+         "$REPO_ROOT/system/apps/settings/zelto-settings.app" \
          "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
          "$REPO_ROOT/system/apps/store/zelto-store.app"; do
     if [ -f "$m" ]; then
@@ -327,7 +332,8 @@ if is_dynamic "$ZCOMP"; then
     #     a closure, but bundle each so a future divergence can't break boot.
     for binp in "$SAMPLE" "$CARDS" "$BAR" "$NAV" "$RECENTS" "$LAUNCHER" \
                 "$ZSYSD" "$CONSENT" "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" \
-                "$PINGER" "$NOTEPAD" "$FETCH" "$INSTALLER" "$STORE"; do
+                "$PINGER" "$NOTEPAD" "$SETTINGS_APP" "$FETCH" "$INSTALLER" \
+                "$STORE"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
     # ($WIDGET is not bundled here — it is not installed in the image; its runtime
