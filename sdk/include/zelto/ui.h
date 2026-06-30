@@ -399,11 +399,30 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 // an xdg (non-layer) app. The new size arrives via the next configure + repaint.
 void z_layer_resize(ZApp *app, int width, int height);
 
+// Restrict the surface's INPUT region to a rectangle (surface-local px); pointer
+// events outside it fall through to whatever is beneath. A layer surface that is
+// visually full-screen but should only CATCH input in a sub-area when idle — the
+// pull-down shade, input-transparent except a thin top grab strip until it is
+// pulled open — uses this instead of resizing, so its footprint never changes
+// mid-gesture (a surface resize races pointer delivery). Pass w<=0 or h<=0 to
+// accept input across the WHOLE surface (the default). No-op for a non-layer app;
+// applied on the next commit, and a no-op when the region is unchanged.
+void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h);
+
 // Current surface size in pixels (after the latest configure). A full-screen
 // layer that sizes or translates itself — a slide-up app drawer offset by its
 // own height — needs the height; both are read fresh inside body().
 int z_app_width(ZApp *app);
 int z_app_height(ZApp *app);
+
+// Full output (screen) size in pixels, independent of this surface's own size.
+// A layer surface that COLLAPSES its own footprint when idle (the pull-down
+// shade, only a thin grab strip until pulled) still needs the whole screen
+// height to lay out and size its expanded panel before it has grown — z_app_*
+// would report only the collapsed strip. Falls back to the surface size if the
+// output mode was not advertised.
+int z_screen_width(ZApp *app);
+int z_screen_height(ZApp *app);
 
 // Request a rebuild (like setState). Schedules a new body()/layout/paint.
 void z_invalidate(ZApp *app);

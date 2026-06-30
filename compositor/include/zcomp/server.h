@@ -91,6 +91,23 @@ typedef struct ZcompServer {
     struct wl_listener request_set_selection;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_mgr;
+    // Implicit pointer grab: while a button is held, pointer motion stays with
+    // the surface that received the press (translated into ITS coordinates) even
+    // after the cursor leaves it, instead of refocusing to whatever is now under
+    // the cursor. Without this a drag that runs off the pressed surface — pulling
+    // the system shade down over an app, or a slider drag off its widget — loses
+    // its events at the surface edge. NULL when no button is down; grab_ox/grab_oy
+    // are the grabbed surface's top-left in layout coordinates.
+    struct wlr_surface *grab_surface;
+    double grab_ox, grab_oy;
+    struct wl_listener grab_surface_destroy;   // drops the grab if it's destroyed
+    // The surface the cursor last hovered (+ its layout origin), updated every
+    // non-grabbed motion. A button press promotes this to the grab — more robust
+    // than re-running the hit test at the press instant, which can momentarily
+    // miss (e.g. a surface mid-resize), which would drop the grab and let a drag
+    // escape the moment it leaves the pressed surface.
+    struct wlr_surface *hover_surface;
+    double hover_ox, hover_oy;
     struct wl_listener cursor_motion;
     struct wl_listener cursor_motion_absolute;
     struct wl_listener cursor_button;

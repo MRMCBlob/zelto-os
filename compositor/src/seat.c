@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include <wlr/backend.h>
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
@@ -39,16 +40,66 @@ struct wlr_surface *zcomp_surface_at(ZcompServer *server, double lx, double ly,
 
 // --- pointer -------------------------------------------------------------
 
+// The grabbed surface was destroyed mid-drag: drop the grab.
+static void handle_grab_surface_destroy(struct wl_listener *listener,
+                                        void *data) {
+    (void)data;
+    ZcompServer *server =
+        wl_container_of(listener, server, grab_surface_destroy);
+    wl_list_remove(&server->grab_surface_destroy.link);
+    server->grab_surface = NULL;
+}
+
+// Begin / end an implicit pointer grab on `surface` (origin = its top-left in
+// layout coords). While held, every pointer event is re-routed to it regardless
+// of what the cursor is over, so a drag that runs off the pressed surface keeps
+// its events. A destroy listener drops the grab if the surface goes away.
+static void begin_grab(ZcompServer *server, struct wlr_surface *surface,
+                       double ox, double oy) {
+    server->grab_surface = surface;
+    server->grab_ox = ox;
+    server->grab_oy = oy;
+    server->grab_surface_destroy.notify = handle_grab_surface_destroy;
+    wl_signal_add(&surface->events.destroy, &server->grab_surface_destroy);
+}
+
+static void end_grab(ZcompServer *server) {
+    if (server->grab_surface) {
+        wl_list_remove(&server->grab_surface_destroy.link);
+        server->grab_surface = NULL;
+    }
+}
+
 static void process_cursor_motion(ZcompServer *server, uint32_t time) {
+    // Implicit pointer grab: while a button is held, keep delivering events to
+    // the surface that received the press — in its own coordinates — rather than
+    // refocusing to whatever the cursor is now over. Re-enter it every motion
+    // (notify_enter is a no-op when it already holds focus, but re-asserts it if
+    // the surface's commit/resize dropped focus), so a drag that runs off the
+    // pressed surface — pulling the shade down over an app while it grows to
+    // full — keeps every motion AND the closing button-up.
+    if (server->grab_surface) {
+        double sx = server->cursor->x - server->grab_ox;
+        double sy = server->cursor->y - server->grab_oy;
+        wlr_seat_pointer_notify_enter(server->seat, server->grab_surface, sx, sy);
+        wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
+        return;
+    }
     double sx, sy;
     struct wlr_surface *surface =
         zcomp_surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
     if (!surface) {
-        // Nothing under the cursor: show the default arrow, drop focus.
+        // Nothing under the cursor: show the default arrow, drop focus + hover.
+        server->hover_surface = NULL;
         wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
         wlr_seat_pointer_clear_focus(server->seat);
         return;
     }
+    // Remember the hovered surface + its layout origin so a following button
+    // press can grab it without re-running the hit test (see handle_cursor_button).
+    server->hover_surface = surface;
+    server->hover_ox = server->cursor->x - sx;
+    server->hover_oy = server->cursor->y - sy;
     wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
     wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
 }
@@ -74,8 +125,37 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener,
 static void handle_cursor_button(struct wl_listener *listener, void *data) {
     ZcompServer *server = wl_container_of(listener, server, cursor_button);
     struct wlr_pointer_button_event *event = data;
+    bool pressed = event->state == WLR_BUTTON_PRESSED;
+
+    // Begin an implicit grab on the first press so motion keeps reaching the
+    // pressed surface once the drag runs off it (see process_cursor_motion). Use
+    // the hovered surface recorded by the preceding motion — re-running the hit
+    // test here can momentarily miss (a surface mid-resize), which would drop the
+    // grab and let a drag escape the instant it left the pressed surface.
+    if (pressed && !server->grab_surface && server->hover_surface) {
+        begin_grab(server, server->hover_surface, server->hover_ox,
+                   server->hover_oy);
+    }
+
+    // Re-assert the grab's focus before delivering the button: an idle resize of
+    // the grabbed surface between the last motion and this button (e.g. the shade
+    // settling) can drop pointer focus, and with no motion to re-enter it the
+    // button — notably the drag-closing release — would otherwise miss it.
+    if (server->grab_surface) {
+        wlr_seat_pointer_notify_enter(server->seat, server->grab_surface,
+                                      server->cursor->x - server->grab_ox,
+                                      server->cursor->y - server->grab_oy);
+    }
+
     wlr_seat_pointer_notify_button(server->seat, event->time_msec,
                                    event->button, event->state);
+
+    // End the grab once every button is up, then refocus to whatever the cursor
+    // now rests over (so the next hover/tap targets the right surface).
+    if (!pressed && server->seat->pointer_state.button_count == 0) {
+        end_grab(server);
+        process_cursor_motion(server, event->time_msec);
+    }
 }
 
 static void handle_cursor_axis(struct wl_listener *listener, void *data) {

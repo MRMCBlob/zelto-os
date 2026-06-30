@@ -79,6 +79,9 @@ struct ZApp {
     struct zwlr_layer_surface_v1 *layer_surface;
     bool is_layer;
     ZLayerOpts layer_opts;
+    // Cached input-region request (z_layer_set_input_region), to dedup commits.
+    bool ir_valid, ir_whole;
+    int ir_x, ir_y, ir_w, ir_h;
 
     // Lifecycle: tracks the xdg "activated" state the compositor broadcasts to
     // the front window; transitions fire the handler and force a repaint so a
@@ -158,6 +161,12 @@ struct ZApp {
     double drag_vel_y;           // latest finger velocity (px/s)
     ZScroll *drag_scroll;        // scroll being dragged (NULL = none)
     ZView pan_target;            // custom OnPan target (NULL = none)
+    // The pan handler resolved when the drag began, cached as a plain function
+    // pointer so the gesture survives body() rebuilds: pan_target is an arena
+    // ZView that the next rebuild can move/free, so dereferencing it mid-gesture
+    // (a body whose tree changes shape between phases — the shade idle strip
+    // vs. its pulled-open panel) reads stale memory and drops events.
+    ZPanHandler pan_handler;
 
     // Long-press recognizer. Armed on a press that lands on an OnLongPress node;
     // the app loop polls with a finite timeout so a finger held still wakes us at
@@ -190,6 +199,16 @@ void *z_app_state(ZApp *app) { return app->state; }
 static ZApp *rec_app(ZTaskRec *rec) { return rec->app; }
 int z_app_width(ZApp *app) { return app->width; }
 int z_app_height(ZApp *app) { return app->height; }
+// Full output size (the advertised mode), independent of this surface's own
+// (possibly collapsed) size. Falls back to the surface size before the mode is
+// known. The pull-down shade reads these to size its expanded panel while it is
+// still a thin strip.
+int z_screen_width(ZApp *app) {
+    return app->out_width > 0 ? app->out_width : app->width;
+}
+int z_screen_height(ZApp *app) {
+    return app->out_height > 0 ? app->out_height : app->height;
+}
 
 // The active app, set for the lifetime of app_run(). The permission API
 // (z_perm_status/z_perm_request) takes no ZApp to match the platform docs, so it
@@ -676,7 +695,9 @@ static void fire_long_press(ZApp *app) {
 }
 
 static void dispatch_pan(ZApp *app, ZPanPhase phase) {
-    if (!app->pan_target || !app->pan_target->on_pan) {
+    // Use the cached handler, not pan_target->on_pan: pan_target is an arena view
+    // a rebuild during the gesture may have freed/moved.
+    if (!app->pan_handler) {
         return;
     }
     ZPanEvent e = {
@@ -688,7 +709,7 @@ static void dispatch_pan(ZApp *app, ZPanPhase phase) {
         .velocity_y = (float)app->drag_vel_y,
         .phase = phase,
     };
-    app->pan_target->on_pan(app, app->state, &e);
+    app->pan_handler(app, app->state, &e);
 }
 
 static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
@@ -713,6 +734,7 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
         app->long_press_armed = false;
         app->panning = true;
         app->pan_target = find_pan(app->root, app->press_x, app->press_y);
+        app->pan_handler = app->pan_target ? app->pan_target->on_pan : NULL;
         if (!app->pan_target) {
             ZView sv = find_scroll(app->root, app->press_x, app->press_y);
             app->drag_scroll = sv ? sv->scroll : NULL;
@@ -755,6 +777,7 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         app->panning = false;
         app->drag_scroll = NULL;
         app->pan_target = NULL;
+        app->pan_handler = NULL;
         app->drag_vel_y = 0.0;
         app->press_x = app->last_x = app->ptr_x;
         app->press_y = app->last_y = app->ptr_y;
@@ -1424,6 +1447,35 @@ void z_layer_resize(ZApp *app, int width, int height) {
                                    (uint32_t)(height > 0 ? height : 0));
     // Commit so the request takes effect; the compositor replies with a
     // configure carrying the resolved size, which repaints at the new height.
+    wl_surface_commit(app->surface);
+}
+
+void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h) {
+    if (!app || !app->is_layer || !app->surface || !app->compositor) {
+        return;
+    }
+    bool whole = (w <= 0 || h <= 0);
+    // Dedup: a body() that calls this every rebuild should not re-commit a region
+    // that has not changed.
+    if (app->ir_valid && app->ir_whole == whole && (whole ||
+        (app->ir_x == x && app->ir_y == y && app->ir_w == w && app->ir_h == h))) {
+        return;
+    }
+    app->ir_valid = true;
+    app->ir_whole = whole;
+    app->ir_x = x;
+    app->ir_y = y;
+    app->ir_w = w;
+    app->ir_h = h;
+    if (whole) {
+        // NULL region = the whole surface accepts input (the default).
+        wl_surface_set_input_region(app->surface, NULL);
+    } else {
+        struct wl_region *region = wl_compositor_create_region(app->compositor);
+        wl_region_add(region, x, y, w, h);
+        wl_surface_set_input_region(app->surface, region);
+        wl_region_destroy(region);
+    }
     wl_surface_commit(app->surface);
 }
 

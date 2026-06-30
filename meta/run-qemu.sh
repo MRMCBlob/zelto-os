@@ -704,6 +704,152 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P17 system-wide pull-down shade (SHADE2=1): prove the quick-settings +
+    # notifications shade is now a real OVERLAY pull-down that works OVER any
+    # running app (not just the home screen, as in P16). A TWO-BOOT test against
+    # the same data.img:
+    #   Boot #1 — open the app drawer (swipe up) and launch Pinger so a normal app
+    #     is in the foreground. Tap "Post" -> the notification consent modal ->
+    #     Allow -> Pinger posts a notification and zelto-shade shows a heads-up
+    #     banner over Pinger. Now PULL THE SHADE DOWN from the top edge (a
+    #     down-swipe starting on the shade's thin grab strip just below the status
+    #     bar): the translucent panel slides down OVER Pinger showing the clock,
+    #     the Wi-Fi/Mute/Bright toggle chips, and the posted notification in the
+    #     list. Tap the Wi-Fi chip (it recolours + persists to the shade's prefs).
+    #     Close the shade (tap the see-through area below the panel). Sync + kill.
+    #   Boot #2 — FRESH QEMU, SAME disk: pull the shade down again (over the home
+    #     screen this time) -> the Wi-Fi chip is still in its flipped state (it was
+    #     read back from /var/zelto). This is the toggle-persists-across-reboot
+    #     proof. Coordinates are overridable to retune to the rendered layout from
+    #     a captured frame (rerun SKIP_BUILD=1 + overrides — first guesses miss).
+    #     Boot is slow under TCG: keep SHOT_DELAY high and give the springs +
+    #     consent generous time. The grab strip is a thin top-edge region, so the
+    #     pull-down swipe MUST start just below the 40px status bar (y ~ 60).
+    if [ "${SHADE2:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
+        # Pinger drawer tile: apps are alphabetical by name in a 4-col grid; on a
+        # fresh image Pinger is the 5th (row 2, col 1). Retune from the drawer frame.
+        PINGER_X="${PINGER_X:-180}"; PINGER_Y="${PINGER_Y:-317}"
+        POST_X="${POST_X:-640}"; POST_Y="${POST_Y:-392}"    # Pinger "Post" button
+        ALLOW_X="${ALLOW_X:-894}"; ALLOW_Y="${ALLOW_Y:-527}" # consent dialog Allow
+        # The pull-down: start on the grab strip just below the 40px bar, end low.
+        PULL_Y1="${PULL_Y1:-72}"; PULL_Y2="${PULL_Y2:-620}"
+        # Wi-Fi chip in the pulled-down panel (top row of three chips).
+        QS_WIFI_X="${QS_WIFI_X:-230}"; QS_WIFI_Y="${QS_WIFI_Y:-150}"
+        # The see-through area below the panel (tap to close the shade).
+        QS_CLOSE_X="${QS_CLOSE_X:-640}"; QS_CLOSE_Y="${QS_CLOSE_Y:-750}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        # A multi-step vertical drag; the pan recognizer tracks the finger live, so
+        # step it (a single jump fires one CHANGED and misses the live track).
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        # Pull the system shade down: press on the grab strip, NUDGE a little while
+        # still on the strip so the shade expands to full BEFORE the finger leaves
+        # it (then input stays over the now-full surface), then drag the rest down.
+        pull_shade() {
+            move "$SWIPE_X" "$PULL_Y1"; sleep 0.3; btn down; sleep 0.4
+            move "$SWIPE_X" 108; sleep 0.5       # nudge within the grab strip -> expand
+            move "$SWIPE_X" 330; sleep 0.4
+            move "$SWIPE_X" "$PULL_Y2"; sleep 0.5; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        shade_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        shade_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [shade2 boot 1/2] home; open drawer + launch Pinger"
+        shade_boot
+        sleep "$SHOT_DELAY"
+        shot frame-shade2-home
+        drag "$SWIPE_X" 690 110            # swipe up -> open the app drawer
+        sleep 4; shot frame-shade2-drawer  # read the Pinger tile y off this
+        echo "==> [shade2 1] tap Pinger -> it maps in the foreground"
+        tap "$PINGER_X" "$PINGER_Y"
+        sleep 5; shot frame-shade2-app     # Pinger before posting (Post button)
+        echo "==> [shade2 1] tap Post -> consent modal"
+        tap "$POST_X" "$POST_Y"
+        sleep 4; shot frame-shade2-consent
+        echo "==> [shade2 1] Allow -> Pinger posts; heads-up banner over Pinger"
+        tap "$ALLOW_X" "$ALLOW_Y"
+        sleep 4; shot frame-shade2-banner
+        echo "==> [shade2 1] PULL the shade DOWN over Pinger (top-edge swipe)"
+        pull_shade
+        sleep 5; shot frame-shade2-pulled  # panel over Pinger: clock+chips+notif
+        echo "==> [shade2 1] tap Wi-Fi chip -> flips + persists"
+        tap "$QS_WIFI_X" "$QS_WIFI_Y"
+        sleep 4; shot frame-shade2-toggled
+        echo "==> [shade2 1] tap below the panel -> close the shade"
+        tap "$QS_CLOSE_X" "$QS_CLOSE_Y"
+        sleep 2; shot frame-shade2-closed  # Pinger visible again, shade retracted
+        echo "==> [shade2 1] sync + shutdown (Wi-Fi toggle persisted)"
+        sleep 3
+        shade_kill
+
+        echo "==> [shade2 boot 2/2] REBOOT same disk; pull shade -> Wi-Fi still off"
+        shade_boot
+        sleep "$SHOT_DELAY"
+        shot frame-shade2-reboot
+        pull_shade
+        sleep 5; shot frame-shade2-reboot-shade   # Wi-Fi chip still in flipped state
+        shade_kill
+        echo "==> shade2 test done; frames in $OUT/frame-shade2-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

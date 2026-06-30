@@ -12,30 +12,23 @@
 //
 // These live in ONE launcher body as the children of a depth ZStack: the home
 // surface at the back, then the app drawer (offset off the BOTTOM, opened by an
-// up-swipe), then the quick-settings shade (offset off the TOP, pulled down by a
-// down-swipe), then — only while open — a long-press curate menu and a toast.
-// Each sliding panel's position is an Offset bound to a persistent animated value
-// (0 = parked off-screen, 1 = fully out), settled with a spring; the same OnPan +
-// Offset + spring machinery drives both. The bottom nav bar's Back (zelto-nav)
-// stays the *app-level* Back; the launcher owns its own panels (a cross-process
-// Back→drawer signal is out of scope — see docs/platform/app-lifecycle.md).
+// up-swipe), then — only while open — a long-press curate menu and a toast. The
+// drawer's position is an Offset bound to a persistent animated value (0 = parked
+// off-screen, 1 = fully out), settled with a spring. The bottom nav bar's Back
+// (zelto-nav) stays the *app-level* Back; the launcher owns its own drawer (a
+// cross-process Back→drawer signal is out of scope — see app-lifecycle.md).
 //
 // HOME EDITING: long-pressing any icon (press-and-hold past the SDK threshold)
 // opens a small context menu to add/remove that app from the home favourites,
 // capped at one screen (MAX_FAVS); the change rewrites the home.favorites CSV and
-// the grid + drawer rebuild live. QUICK SETTINGS: the shade holds a clock + a row
-// of persisted toggle chips (Wi-Fi / Mute / Bright placeholders that flip a
-// stored bool and recolour). Both panels reuse the home/drawer single-body
-// approach; a true over-any-app shade (its own OVERLAY layer-shell client like
-// zelto-shade) is the follow-up — see the P16 note below.
+// the grid + drawer rebuild live.
 //
-// WHY ONE BODY (not an OVERLAY layer-shell client like zelto-shade): the shade
-// lives in the launcher body, reusing the proven P15 OnPan + Offset + spring +
-// forced-full-repaint machinery with no new binary, no layer-shell input-
-// passthrough/resize choreography, and a self-contained two-boot test. The cost
-// is that it is reachable only on the home screen, not pulled down OVER a running
-// app (which an always-mapped OVERLAY client would allow). That trade is the
-// right one for this phase; the always-available shade is left as the follow-up.
+// QUICK SETTINGS moved OUT of the launcher in P17. The P16 quick-settings shade
+// lived in this body (reachable only on the home screen); it is now a real
+// system-wide pull-down owned by the OVERLAY layer-shell client zelto-shade, so
+// it works over any running app. The launcher therefore no longer handles the
+// top-edge down-swipe (the shade catches it above the launcher) and no longer
+// stores the toggle bools. See system/shade/main.c + the P17 memory note.
 //
 // App metadata is read from /usr/share/zelto/apps/<id>.app manifests (a simple
 // key=value text file) plus $ZELTO_DATA_DIR/apps/manifests at startup. The set of
@@ -294,13 +287,7 @@ static void ensure_home(void) {
 // body) or its identity shifts and the animation state corrupts.
 typedef struct LauncherState {
     ZAnimated *drawer_anim;   // 0 hidden below the fold .. 1 covering home
-    ZAnimated *qs_anim;       // 0 hidden above the top .. 1 quick-settings pulled down
     float surface_h;
-    float qs_h;               // quick-settings panel height (px), refreshed each build
-
-    // Which on-surface gesture an in-flight home pan resolved to (decided on the
-    // first CHANGED by drag direction): 0 undecided, 1 drawer (up), 2 qs (down).
-    int home_gesture;
 
     // Long-press context menu. menu_idx is a g_apps index; menu_open gates the
     // overlay. A short-lived toast (cap-reached feedback) shows until toast_until.
@@ -308,23 +295,7 @@ typedef struct LauncherState {
     int menu_idx;
     double toast_until;       // monotonic seconds; 0 = no toast
     char toast[64];
-
-    // Quick-settings toggles, loaded once from prefs and persisted on flip.
-    bool qs_loaded;
-    bool qs_wifi, qs_mute, qs_bright;
 } LauncherState;
-
-// Load the persisted quick-settings toggle state once (defaults: Wi-Fi + bright
-// on, mute off). Each is a prefs int bool, scoped to os.zelto.launcher.
-static void ensure_qs(LauncherState *s) {
-    if (s->qs_loaded) {
-        return;
-    }
-    s->qs_loaded = true;
-    s->qs_wifi = z_prefs_get_int("qs.wifi", 1) != 0;
-    s->qs_mute = z_prefs_get_int("qs.mute", 0) != 0;
-    s->qs_bright = z_prefs_get_int("qs.bright", 1) != 0;
-}
 
 // --- shared cell ----------------------------------------------------------
 // Icon tap: spawn the app binary. The child inherits WAYLAND_DISPLAY/ZELTO_FONT
@@ -492,79 +463,28 @@ static void do_remove_fav(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
-// --- quick-settings open/close --------------------------------------------
-// (The shade opens only by the down-swipe gesture; it closes by tap-scrim, the
-// up-drag pan, or the bottom handle — all driving qs_anim toward 0 via a spring.)
-static void qs_anim_close(ZApp *app, void *state) {
-    (void)app;
-    LauncherState *s = state;
-    if (s->qs_anim) {
-        z_animated_spring(s->qs_anim, 0.0f);
-    }
-}
-static void close_qs(ZApp *app, void *state) {
-    (void)state;
-    z_with_animation(app, Z_SPRING_STANDARD, qs_anim_close);
-}
-
-// Toggle handlers: flip the bool, persist it, recolour next rebuild.
-static void toggle_wifi(ZApp *app, void *state) {
-    LauncherState *s = state;
-    s->qs_wifi = !s->qs_wifi;
-    z_prefs_set_int("qs.wifi", s->qs_wifi);
-    z_invalidate(app);
-}
-static void toggle_mute(ZApp *app, void *state) {
-    LauncherState *s = state;
-    s->qs_mute = !s->qs_mute;
-    z_prefs_set_int("qs.mute", s->qs_mute);
-    z_invalidate(app);
-}
-static void toggle_bright(ZApp *app, void *state) {
-    LauncherState *s = state;
-    s->qs_bright = !s->qs_bright;
-    z_prefs_set_int("qs.bright", s->qs_bright);
-    z_invalidate(app);
-}
-
 static float clamp01(float a) {
     return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
 }
 
-// The home surface owns both top-level swipes, disambiguated by direction on the
-// first CHANGED: an UP-drag pulls the app drawer up (drawer_anim 0->1), a
-// DOWN-drag pulls the quick-settings shade down (qs_anim 0->1). The chosen value
-// tracks the finger live (z_animated_set); the release settles it by position/
-// velocity. translation_y/velocity_y are negative dragging up, positive down.
+// The home surface's up-swipe pulls the app drawer up (drawer_anim 0->1); the
+// value tracks the finger live (z_animated_set) and the release settles it by
+// position/velocity. translation_y/velocity_y are negative dragging up. A
+// down-drag is ignored here — the top-edge pull-down is owned by the system
+// shade (zelto-shade), which sits above the launcher and catches it first.
 static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
     (void)app;
     LauncherState *s = state;
-    if (!s->drawer_anim || !s->qs_anim) {
+    if (!s->drawer_anim) {
         return;
     }
     float h = s->surface_h > 1.0f ? s->surface_h : 1.0f;
-    float qh = s->qs_h > 1.0f ? s->qs_h : 1.0f;
-    if (e->phase == Z_PAN_BEGIN) {
-        s->home_gesture = 0;
-    } else if (e->phase == Z_PAN_CHANGED) {
-        if (s->home_gesture == 0) {
-            s->home_gesture = e->translation_y < 0.0f ? 1 : 2;
-        }
-        if (s->home_gesture == 1) {
-            z_animated_set(s->drawer_anim, clamp01(-e->translation_y / h));
-        } else {
-            z_animated_set(s->qs_anim, clamp01(e->translation_y / qh));
-        }
+    if (e->phase == Z_PAN_CHANGED) {
+        z_animated_set(s->drawer_anim, clamp01(-e->translation_y / h));
     } else if (e->phase == Z_PAN_END) {
-        if (s->home_gesture == 1) {
-            float a = z_animated_get(s->drawer_anim);
-            bool open = a > 0.35f || e->velocity_y < -500.0f;
-            z_animated_spring(s->drawer_anim, open ? 1.0f : 0.0f);
-        } else if (s->home_gesture == 2) {
-            float a = z_animated_get(s->qs_anim);
-            bool open = a > 0.35f || e->velocity_y > 500.0f;
-            z_animated_spring(s->qs_anim, open ? 1.0f : 0.0f);
-        }
+        float a = z_animated_get(s->drawer_anim);
+        bool open = a > 0.35f || e->velocity_y < -500.0f;
+        z_animated_spring(s->drawer_anim, open ? 1.0f : 0.0f);
     }
 }
 
@@ -591,77 +511,15 @@ static void on_drawer_pan(ZApp *app, void *state, const ZPanEvent *e) {
     }
 }
 
-// Up-drag anywhere on the open quick-settings shade retracts it (mirror of the
-// drawer's close pan). translation_y is negative dragging up, so a = 1 + ty/qh
-// falls from 1 toward 0; an up-fling (velocity_y < -500) also closes.
-static void on_qs_pan(ZApp *app, void *state, const ZPanEvent *e) {
-    (void)app;
-    LauncherState *s = state;
-    if (!s->qs_anim) {
-        return;
-    }
-    float qh = s->qs_h > 1.0f ? s->qs_h : 1.0f;
-    if (e->phase == Z_PAN_CHANGED) {
-        z_animated_set(s->qs_anim, clamp01(1.0f + e->translation_y / qh));
-    } else if (e->phase == Z_PAN_END) {
-        float a = z_animated_get(s->qs_anim);
-        bool close = a < 0.65f || e->velocity_y < -500.0f;
-        z_animated_spring(s->qs_anim, close ? 0.0f : 1.0f);
-    }
-}
-
-// --- quick-settings panel + curate menu (built in body) -------------------
-// One quick-settings toggle chip: a rounded, padded label that recolours by its
-// on/off bool (accent when on, dark when off) and flips it on tap.
-static ZView qs_chip(ZAction on_tap, const char *label, bool on) {
-    ZColor bg = on ? z_rgba(0x2e, 0x9b, 0xff, 0xff) : z_rgba(0x1b, 0x22, 0x2c, 0xff);
-    return Grow(1.0f,
-        OnTap(on_tap,
-            Background(bg,
-                CornerRadius(16.0f,
-                    Padding(16.0f,
-                        Foreground(Z_COLOR_TEXT_INV,
-                            Font(Z_FONT_CALLOUT,
-                                Text("%s %s", label, on ? "On" : "Off"))))))));
-}
-
-// The quick-settings card: a big clock + a row of toggle chips, on a translucent
-// dark panel. Built into a top-anchored sliding layer in body().
-static ZView qs_card(LauncherState *s) {
-    char clock[16] = "--:--";
-    time_t t = time(NULL);
-    struct tm tmv;
-    if (localtime_r(&t, &tmv)) {
-        strftime(clock, sizeof(clock), "%H:%M", &tmv);
-    }
-    return Background(z_rgba(0x10, 0x14, 0x1c, 0xee),   // translucent dark
-        VStack(
-            Foreground(Z_COLOR_TEXT_INV,
-                Font(Z_FONT_LARGE_TITLE, Text("%s", clock))),
-            HStack(
-                qs_chip(toggle_wifi, "Wi-Fi", s->qs_wifi),
-                qs_chip(toggle_mute, "Mute", s->qs_mute),
-                qs_chip(toggle_bright, "Bright", s->qs_bright),
-                .spacing = 12, .align = Z_ALIGN_CENTER),
-            // A grab handle at the bottom edge (the visual close affordance; the
-            // whole shade is also an up-drag/scrim-tap close target).
-            Rect(.color = z_rgba(0x8a, 0x93, 0x9e, 0xff),
-                 .width = 56, .height = 5, .radius = 3),
-            .spacing = 18, .padding = 24, .align = Z_ALIGN_CENTER));
-}
-
 // --- body -----------------------------------------------------------------
 static ZView launcher_body(ZApp *app, LauncherState *state) {
-    // Retained hooks, allocated FIRST in a FIXED order every rebuild so their
-    // identity is stable: drawer_anim (anim cell 0) then qs_anim (anim cell 1).
-    // The drawer is always built (never conditionally), so its Scroll cell stays
-    // stable too. Both panels are merely translated off-screen when at rest.
+    // Retained hooks, allocated FIRST + unconditionally every rebuild so their
+    // identity is stable: drawer_anim is the body's single z_animated_value (anim
+    // cell 0). The drawer is always built (never conditionally), so its Scroll
+    // cell stays stable too; it is merely translated off-screen when at rest.
     state->drawer_anim = z_animated_value(app, 0.0f);
-    state->qs_anim = z_animated_value(app, 0.0f);
     state->surface_h = (float)z_app_height(app);
-    state->qs_h = state->surface_h * 0.45f;   // shade pull distance / track scale
     ensure_home();
-    ensure_qs(state);
 
     // (1) HOME surface: wallpaper + favourites grid + a drawer handle, the whole
     // thing an OnPan target so an up-swipe anywhere opens the drawer.
@@ -712,39 +570,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                                   .axis = Z_AXIS_VERTICAL)),
                 .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING))));
 
-    // (3) QUICK-SETTINGS SHADE: a translucent-dark panel pulled DOWN from the top
-    // edge (the inverse of the drawer), bound to qs_anim. When fully closed it is
-    // a bare card parked one panel-height ABOVE the fold — inert, intercepting
-    // nothing (so home taps/up-swipes pass through). Once it is off the rest
-    // position it becomes a full-surface layer: the card pinned to the top, an
-    // invisible scrim (close on tap) filling the rest, and an up-drag (on_qs_pan)
-    // closing it. Reading qs_anim as the static Offset y each rebuild animates it.
-    float qs_v = z_animated_get(state->qs_anim);
-    // The shade is a top-anchored card sized to the full width and the qs_h panel
-    // height, over a transparent filler; the whole layer is slid by an Offset y
-    // bound to qs_anim: -qs_h hidden above the top edge .. 0 pulled fully down.
-    float qsw = (float)z_app_width(app);
-    float qslide = (qs_v - 1.0f) * state->qs_h;
-    ZView qs_panel = Frame(qsw, state->qs_h, qs_card(state));
-    ZView qs;
-    if (qs_v > 0.001f) {
-        // Open/opening: a full-surface dimming scrim behind (tap to close), then
-        // the sliding card (up-drag anywhere on it retracts via on_qs_pan).
-        qs = Fill(ZStack(
-            OnTap(close_qs, Fill(Background(z_rgba(0x00, 0x00, 0x00, 0x55),
-                                            Fill(Spacer())))),
-            Offset(NULL, qslide,
-                OnPan(on_qs_pan, Fill(
-                    VStack(qs_panel, Spacer(), .align = Z_ALIGN_CENTER)))),
-            .align = Z_ALIGN_CENTER));
-    } else {
-        // Fully closed: card parked above the top over a no-handler filler — it
-        // covers and intercepts nothing, so home taps/swipes pass straight through.
-        qs = Offset(NULL, -state->qs_h, Fill(
-            VStack(qs_panel, Spacer(), .align = Z_ALIGN_CENTER)));
-    }
-
-    // (4) CURATE CONTEXT MENU (long-press): a dimmed modal over everything with
+    // (3) CURATE CONTEXT MENU (long-press): a dimmed modal over everything with
     // an Add/Remove-from-home action for the long-pressed app. Built only while
     // open; carries no retained hooks, so the cell order above stays fixed.
     ZView menu = NULL;
@@ -768,7 +594,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             .align = Z_ALIGN_CENTER));
     }
 
-    // (5) TOAST: transient cap-reached feedback near the bottom. While it is up we
+    // (4) TOAST: transient cap-reached feedback near the bottom. While it is up we
     // re-invalidate so the loop keeps ticking and the toast self-clears at its
     // deadline (a rare, brief busy-repaint — only on a no-op "home is full").
     ZView toast = NULL;
@@ -784,11 +610,11 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             .spacing = 0, .padding = 48, .align = Z_ALIGN_CENTER));
     }
 
-    // A translucent layer in motion (or an always-translucent overlay) must paint
-    // as a full repaint, or the partial-repaint path re-blends over already-correct
-    // pixels and darkens them cumulatively. Force it whenever a panel is off its
-    // rest position or a translucent overlay is up.
-    if (drawer_v > 0.001f || qs_v > 0.001f || menu || toast) {
+    // A layer in motion (the sliding drawer) or a translucent overlay (the menu
+    // scrim / toast) must paint as a full repaint, or the partial-repaint path
+    // re-blends over already-correct pixels and darkens them cumulatively. Force
+    // it whenever the drawer is off its rest position or an overlay is up.
+    if (drawer_v > 0.001f || menu || toast) {
         z_full_repaint(app);
     }
 
@@ -798,7 +624,6 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     int k = 0;
     root.children[k++] = home;
     root.children[k++] = drawer;
-    root.children[k++] = qs;
     if (menu) {
         root.children[k++] = menu;
     }
