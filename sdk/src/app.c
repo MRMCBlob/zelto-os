@@ -1333,6 +1333,11 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 void z_invalidate(ZApp *app) { app->dirty = true; }
 void z_app_quit(ZApp *app) { app->running = false; }
 
+// Force a full repaint of the next frame. render() resets ui.transitioning
+// before calling body() and treats it (like a screen slide) as a full repaint,
+// so a body() that sets it via this call repaints the whole surface this frame.
+void z_full_repaint(ZApp *app) { app->ui.transitioning = true; }
+
 void z_layer_resize(ZApp *app, int width, int height) {
     if (!app || !app->is_layer || !app->layer_surface) {
         return;

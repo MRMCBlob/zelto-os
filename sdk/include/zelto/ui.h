@@ -157,6 +157,10 @@ ZView Frame(float width, float height, ZView view);
 ZView CornerRadius(float radius, ZView view);
 ZView Font(ZFont size, ZView view);
 ZView Grow(float weight, ZView view);
+// Expand this view to fill its parent's inner box. A depth stack (ZStack)
+// otherwise centres each child at its own content size; Fill is how a
+// full-screen layer (e.g. a wallpaper, or a slide-up sheet) covers the stack.
+ZView Fill(ZView view);
 
 // Gesture / input modifiers. OnTap makes any view tappable; OnKey makes it a
 // keyboard target (keys are delivered to the first focusable view in the tree).
@@ -383,8 +387,21 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 // an xdg (non-layer) app. The new size arrives via the next configure + repaint.
 void z_layer_resize(ZApp *app, int width, int height);
 
+// Current surface size in pixels (after the latest configure). A full-screen
+// layer that sizes or translates itself — a slide-up app drawer offset by its
+// own height — needs the height; both are read fresh inside body().
+int z_app_width(ZApp *app);
+int z_app_height(ZApp *app);
+
 // Request a rebuild (like setState). Schedules a new body()/layout/paint.
 void z_invalidate(ZApp *app);
+
+// Force the NEXT paint to repaint the whole surface instead of just the diffed
+// damage rects. Call it from body() on a frame where a large subtree is moving
+// under an Offset (a slide-up sheet, a drag): the per-rect partial path
+// under-damages a big translated subtree and leaves stale pixels, so motion
+// frames want a full repaint (the same path screen transitions already take).
+void z_full_repaint(ZApp *app);
 
 // Request the app to exit its loop.
 void z_app_quit(ZApp *app);

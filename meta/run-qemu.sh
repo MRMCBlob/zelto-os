@@ -432,6 +432,130 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P15 home screen + app drawer (HOME=1): a TWO-BOOT test against the same
+    # data.img proving (a) the home/drawer split, (b) the slide-up drawer with a
+    # live swipe + spring settle, (c) launching from both surfaces, and (d)
+    # favourites persisting across a reboot (the prefs string on /var/zelto).
+    #   Boot #1 — boot to the wallpapered HOME surface: only the favourites grid
+    #     (a subset) + a drawer handle. Launch from a FAVOURITE (tap a home icon).
+    #     Home (nav) back to the launcher. Then *swipe up* to open the drawer: the
+    #     drag is captured mid-slide WHILE THE BUTTON IS HELD (the offset tracks
+    #     the finger live, so the frame is stable), then again once it settles
+    #     open showing the FULL app list in a scroll. Launch from the DRAWER (tap
+    #     a drawer icon). On boot #1 the launcher finds no stored favourites, seeds
+    #     the default set, and persists home.favorites to /var/zelto. Sync + kill.
+    #   Boot #2 — a FRESH QEMU on the SAME disk. The launcher reads home.favorites
+    #     back (serial log: "favorites loaded from prefs: ..."), so the home grid
+    #     shows the same favourites — they survived the reboot.
+    # Coordinates are overridable to retune to the rendered layout from a captured
+    # frame (rerun with SKIP_BUILD=1 + overrides — first guesses miss). Boot is
+    # slow under TCG: keep SHOT_DELAY high and give the spring generous time.
+    if [ "${HOME_TEST:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # Home favourites grid (4 cols, below the 40px top bar). Row-1, col-1 icon.
+        FAV_X="${FAV_X:-180}"; FAV_Y="${FAV_Y:-150}"
+        # Bottom nav Home button (strip ~736..800; centre ~768).
+        HOME_X="${HOME_X:-640}"; NAV_Y="${NAV_Y:-768}"
+        # Swipe-up gesture column (x) and its start/mid/end y (screen px).
+        SWIPE_X="${SWIPE_X:-640}"
+        SWIPE_Y1="${SWIPE_Y1:-690}"   # start: low on the home surface
+        SWIPE_MID="${SWIPE_MID:-410}" # held mid-drag capture point
+        SWIPE_Y2="${SWIPE_Y2:-110}"   # end: near the top (well past threshold)
+        # A drawer app icon that is NOT a favourite (row-2 col-2 = "Rows"),
+        # to prove the drawer launches apps absent from the home grid.
+        DRAWER_X="${DRAWER_X:-483}"; DRAWER_Y="${DRAWER_Y:-317}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        home_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        home_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [home boot 1/2] wallpapered home: favourites only + drawer handle"
+        home_boot
+        sleep "$SHOT_DELAY"
+        shot frame-home-home
+        echo "==> [home 1] launch from a FAVOURITE (tap a home icon)"
+        tap "$FAV_X" "$FAV_Y"
+        sleep 5; shot frame-home-app-favourite
+        echo "==> [home 1] nav Home -> back to the home surface"
+        tap "$HOME_X" "$NAV_Y"
+        sleep 3; shot frame-home-home2
+        echo "==> [home 1] swipe up -> open the drawer (capture mid-drag, held)"
+        # Drag in small steps so the pan recognizer tracks continuously; hold at
+        # the mid point and capture there (the drawer follows the finger live, so
+        # the held frame is stable), then continue past the threshold and release.
+        move "$SWIPE_X" "$SWIPE_Y1"; sleep 0.2; btn down; sleep 0.3
+        move "$SWIPE_X" 600; sleep 0.4
+        move "$SWIPE_X" 510; sleep 0.4
+        move "$SWIPE_X" "$SWIPE_MID"; sleep 1.5
+        shot frame-home-drawer-mid           # held mid-drag, drawer ~halfway up
+        move "$SWIPE_X" 260; sleep 0.4
+        move "$SWIPE_X" "$SWIPE_Y2"; sleep 0.3; btn up
+        sleep 4; shot frame-home-drawer-open # settled open: full app list, scroll
+        echo "==> [home 1] launch from the DRAWER (tap a drawer icon)"
+        tap "$DRAWER_X" "$DRAWER_Y"
+        sleep 5; shot frame-home-app-drawer
+        echo "==> [home 1] sync + shutdown (favourites persisted to /var/zelto)"
+        sleep 3
+        home_kill
+
+        echo "==> [home boot 2/2] REBOOT same disk; favourites read back from prefs"
+        home_boot
+        sleep "$SHOT_DELAY"
+        shot frame-home-reboot               # same favourites grid (survived reboot)
+        home_kill
+        echo "==> home test done; frames in $OUT/frame-home-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

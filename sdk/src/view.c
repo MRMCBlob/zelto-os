@@ -210,6 +210,11 @@ ZView Grow(float weight, ZView view) {
     return view;
 }
 
+ZView Fill(ZView view) {
+    view->fill = true;
+    return view;
+}
+
 ZView OnTap(ZAction action, ZView view) {
     view->on_tap = action;
     return view;

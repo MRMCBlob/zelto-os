@@ -141,11 +141,10 @@ typedef struct ZUI {
     bool have_last;
 } ZUI;
 
-// Implemented in app.c (ZApp is private there).
+// Implemented in app.c (ZApp is private there). z_app_width/z_app_height are
+// declared publicly in <zelto/ui.h> (included above).
 ZUI *z_app_ui(ZApp *app);
 void *z_app_state(ZApp *app);
-int z_app_width(ZApp *app);
-int z_app_height(ZApp *app);
 // The active app's app_id (set for app_run's lifetime). Used by storage.c to
 // scope each app's private data directory.
 const char *z_active_app_id(void);
