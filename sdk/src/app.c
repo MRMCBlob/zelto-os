@@ -1333,6 +1333,25 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 void z_invalidate(ZApp *app) { app->dirty = true; }
 void z_app_quit(ZApp *app) { app->running = false; }
 
+void z_layer_resize(ZApp *app, int width, int height) {
+    if (!app || !app->is_layer || !app->layer_surface) {
+        return;
+    }
+    // No-op if nothing changed, so a body() that calls this every rebuild does
+    // not spam set_size/commit (each commit asks for a fresh configure).
+    if (app->layer_opts.width == width && app->layer_opts.height == height) {
+        return;
+    }
+    app->layer_opts.width = width;
+    app->layer_opts.height = height;
+    zwlr_layer_surface_v1_set_size(app->layer_surface,
+                                   (uint32_t)(width > 0 ? width : 0),
+                                   (uint32_t)(height > 0 ? height : 0));
+    // Commit so the request takes effect; the compositor replies with a
+    // configure carrying the resolved size, which repaints at the new height.
+    wl_surface_commit(app->surface);
+}
+
 // --- permission broker (zsysd) client -------------------------------------
 // zsysd speaks a newline-delimited JSON-ish protocol over a SOCK_STREAM unix
 // socket at $XDG_RUNTIME_DIR/zsysd.sock. The client sends one request line —

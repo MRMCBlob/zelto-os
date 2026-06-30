@@ -322,6 +322,116 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P14 home screen + system navigation (NAV=1): a SINGLE-boot test that the
+    # grid home screen + bottom 3-button nav bar drive the existing window
+    # manager. The flow exercises every button against P6/P7 machinery:
+    #   1. Boot to the grid home screen (square icons) with a bottom nav bar
+    #      (Back / Home / Recents). The idle shade is collapsed (1px) so the
+    #      top row of icons is not covered.
+    #   2. Tap an app icon (A) -> app A maps in the usable area (above the nav).
+    #   3. Tap Home -> the launcher grid returns to front (foreign-toplevel
+    #      activate of os.zelto.launcher). Tap a second icon (B) -> app B maps.
+    #   4. Tap Recents -> the zelto-recents overlay lists A + B as cards.
+    #      Tap card A -> z_task_activate(A) + dismiss (A is now foreground).
+    #   5. Tap Recents again -> tap a card's X -> z_task_close drops that window.
+    # Coordinates are overridable to retune to the rendered layout from a captured
+    # frame (rerun with SKIP_BUILD=1 + overrides — first guesses miss). Boot is
+    # slow under TCG: keep SHOT_DELAY high.
+    if [ "${NAV:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # Grid icon centres (4 columns; the launcher sorts apps alphabetically).
+        # The app area starts below the 40px top bar, so y includes that offset.
+        TILE_AX="${TILE_AX:-170}"; TILE_AY="${TILE_AY:-165}"   # icon col 1, row 1 (app A)
+        TILE_BX="${TILE_BX:-483}"; TILE_BY="${TILE_BY:-165}"   # icon col 2, row 1 (app B)
+        # Bottom nav buttons (strip y ~ 736..800; centre ~768).
+        BACK_X="${BACK_X:-213}";    NAV_Y="${NAV_Y:-768}"
+        HOME_X="${HOME_X:-640}"
+        RECENTS_X="${RECENTS_X:-1067}"
+        # Recents overlay card centres (card is ~620px wide, centred).
+        CARD_AY="${CARD_AY:-300}"                # first (top) task card
+        CARD_CLOSE_X="${CARD_CLOSE_X:-900}"      # the card's red X button
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        nav_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        nav_kill() {
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [nav] boot to grid home screen + bottom nav bar"
+        nav_boot
+        sleep "$SHOT_DELAY"
+        shot frame-nav-home                 # grid icons + Back/Home/Recents bar
+        echo "==> [nav] tap app A icon -> maps above the nav bar"
+        tap "$TILE_AX" "$TILE_AY"
+        sleep 5; shot frame-nav-appA
+        echo "==> [nav] tap Home -> grid returns to front"
+        tap "$HOME_X" "$NAV_Y"
+        sleep 3; shot frame-nav-home2
+        echo "==> [nav] tap app B icon -> second app maps (A + B both running)"
+        tap "$TILE_BX" "$TILE_BY"
+        sleep 5; shot frame-nav-appB
+        echo "==> [nav] tap Recents -> overview lists running apps"
+        tap "$RECENTS_X" "$NAV_Y"
+        sleep 4; shot frame-nav-recents
+        echo "==> [nav] tap a Recents card -> switch to it + dismiss overlay"
+        tap "$HOME_X" "$CARD_AY"            # tap the top card body (centre-x)
+        sleep 4; shot frame-nav-switch
+        echo "==> [nav] tap Recents again -> close a window via its X"
+        tap "$RECENTS_X" "$NAV_Y"
+        sleep 4; shot frame-nav-recents2
+        tap "$CARD_CLOSE_X" "$CARD_AY"      # the card's red X
+        sleep 4; shot frame-nav-closed
+        nav_kill
+        echo "==> nav test done; frames in $OUT/frame-nav-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

@@ -164,6 +164,11 @@ launch_shell() {
         # prompt can connect to the compositor and render.
         [ -x /usr/bin/zsysd ] && /usr/bin/zsysd &
         [ -x /usr/bin/zelto-bar ] && /usr/bin/zelto-bar &
+        # The bottom navigation bar (Back/Home/Recents): a layer-shell client
+        # anchored at the bottom with an exclusive zone, so apps map between the
+        # top bar and it. Always-running like the bar; its buttons drive the
+        # window manager (foreign-toplevel activate + fork/exec zelto-recents).
+        [ -x /usr/bin/zelto-nav ] && /usr/bin/zelto-nav &
         # The notification shade: an OVERLAY layer-shell sink that subscribes to
         # zsysd and renders heads-up banners. Always-running like the bar.
         [ -x /usr/bin/zelto-shade ] && /usr/bin/zelto-shade &

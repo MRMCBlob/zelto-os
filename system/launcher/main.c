@@ -2,22 +2,19 @@
 //
 // A normal xdg_toplevel app (app_id "os.zelto.launcher") that the compositor
 // keeps at the back of the app stack and sizes to the usable area below the
-// status bar. It shows two things:
+// status bar (and above the bottom nav bar). It is a phone-style home screen: a
+// grid of square app icons, one per app discovered on disk. App metadata is read
+// from /usr/share/zelto/apps/<id>.app manifests (a dead-simple key=value text
+// file) plus $ZELTO_DATA_DIR/apps/manifests at startup, not a hardcoded C array.
+// Tapping an icon fork()+exec()s the app's `exec=` binary, which connects to the
+// same Wayland socket and maps its own toplevel in front.
 //
-//   1. Install tiles — one per app discovered on disk. App metadata is read from
-//      /usr/share/zelto/apps/<id>.app manifests (a dead-simple key=value text
-//      file) at startup, not a hardcoded C array. Tapping a tile fork()+exec()s
-//      the app's `exec=` binary, which connects to the same Wayland socket and
-//      maps its own toplevel in front.
-//
-//   2. A "Running" section — a live task switcher built from
-//      z_running_apps() (wlr-foreign-toplevel-management). Each card taps to
-//      switch to that app (z_task_activate) or close it (the × button →
-//      z_task_close). The list updates as apps open, change focus, and close.
-//
-// The Home chord (handled in zcomp) brings this launcher back to the front; the
-// compositor broadcasts the xdg activated state so the front app is Active and
-// the rest are paused. See docs/platform/app-lifecycle.md.
+// The live task switcher that used to share this surface (the "Running" section)
+// now lives in the Recents overlay (zelto-recents), reached from the bottom nav
+// bar; the home screen is just the grid. The Home button (and the Home chord in
+// zcomp) brings this launcher back to the front via foreign-toplevel activate;
+// the compositor broadcasts the xdg activated state so the front app is Active
+// and the rest are paused. See docs/platform/app-lifecycle.md.
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,8 +143,8 @@ typedef struct LauncherState {
     int unused;
 } LauncherState;
 
-// --- install tiles --------------------------------------------------------
-// Tile tap: spawn the app binary. The child inherits WAYLAND_DISPLAY/ZELTO_FONT
+// --- home grid ------------------------------------------------------------
+// Icon tap: spawn the app binary. The child inherits WAYLAND_DISPLAY/ZELTO_FONT
 // from the launcher's environment (set by the initramfs init).
 static void launch_app(ZApp *app, void *state, void *data) {
     (void)app;
@@ -161,92 +158,67 @@ static void launch_app(ZApp *app, void *state, void *data) {
     }
 }
 
-// Tiles are kept compact so the full app list (now ~9 entries incl. the P13
-// Store + a runtime-installed Widget) fits on one screen without overflowing
-// past the bottom edge — every tile must be tappable by the headless harness.
-static ZView tile(const AppEntry *e) {
-    return OnTapData(launch_app, (void *)e,
-        Background(e->color,
-            HStack(
-                Frame(40.0f, 40.0f,
-                    Rect(.color = z_rgba(0xff, 0xff, 0xff, 0x33), .radius = 12)),
-                VStack(
-                    Foreground(Z_COLOR_TEXT_INV,
-                        Font(Z_FONT_CALLOUT, Text("%s", e->name))),
-                    Foreground(z_rgba(0xff, 0xff, 0xff, 0xcc),
-                        Text("%s", e->subtitle)),
-                    .spacing = 2, .align = Z_ALIGN_LEADING),
-                Spacer(),
-                .padding = 10, .spacing = 12, .align = Z_ALIGN_CENTER)));
-}
+#define GRID_COLS 4
+#define ICON_SIZE 104.0f
+#define ICON_RADIUS 24.0f
 
-// --- running cards (task switcher) ----------------------------------------
-// Tapping a card switches to that app; tapping its × closes it. Both read the
-// ZTask from the stable z_running_apps snapshot bound at build time.
-static void activate_task(ZApp *app, void *state, void *data) {
-    (void)state;
-    z_task_activate(app, (const ZTask *)data);
-}
-static void close_task(ZApp *app, void *state, void *data) {
-    (void)state;
-    z_task_close(app, (const ZTask *)data);
-}
-
-static ZView running_card(const ZTask *t) {
-    const char *title = t->title ? t->title
-                                 : (t->app_id ? t->app_id : "App");
-    // Active = green, paused = amber, so the foreground app is obvious in a frame.
-    ZColor bg = t->active ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
-                          : z_rgba(0x5e, 0x49, 0x1d, 0xff);
-    return OnTapData(activate_task, (void *)t,
-        Background(bg,
-            HStack(
-                VStack(
-                    Foreground(Z_COLOR_TEXT_INV,
-                        Font(Z_FONT_CALLOUT, Text("%s", title))),
-                    Foreground(z_rgba(0xff, 0xff, 0xff, 0xcc),
-                        Text("%s", t->active ? "Active" : "Paused")),
-                    .spacing = 4, .align = Z_ALIGN_LEADING),
-                Spacer(),
-                // Close button: a big red square so it is an easy tap target.
-                OnTapData(close_task, (void *)t,
-                    Background(z_rgba(0xc8, 0x3a, 0x3a, 0xff),
-                        Frame(52.0f, 52.0f,
-                            CornerRadius(12,
+// One phone-style home-screen cell: a square coloured icon (the app's initial
+// centred in it) with the app name as a caption below. No PNG assets yet —
+// real assets/icon.png rendering is Planned; the coloured rounded square + glyph
+// stands in. The whole cell is the tap target (fork/exec of exec=). Grow(1) so a
+// row of GRID_COLS cells splits the width evenly (empty trailing slots are
+// Spacers, which grow the same, keeping real cells at one column wide).
+static ZView grid_cell(const AppEntry *e) {
+    char glyph = e->name[0] ? e->name[0] : '?';
+    if (glyph >= 'a' && glyph <= 'z') {
+        glyph = (char)(glyph - 'a' + 'A');
+    }
+    return Grow(1.0f,
+        OnTapData(launch_app, (void *)e,
+            VStack(
+                Frame(ICON_SIZE, ICON_SIZE,
+                    Background(e->color,
+                        CornerRadius(ICON_RADIUS,
+                            ZStack(
                                 Foreground(Z_COLOR_TEXT_INV,
-                                    Font(Z_FONT_TITLE, Text("X"))))))),
-                .padding = 14, .spacing = 12, .align = Z_ALIGN_CENTER)));
+                                    Font(Z_FONT_LARGE_TITLE,
+                                        Text("%c", glyph))),
+                                .align = Z_ALIGN_CENTER)))),
+                Foreground(Z_COLOR_TEXT_INV,
+                    Font(Z_FONT_CAPTION, Text("%s", e->name))),
+                .spacing = 8, .align = Z_ALIGN_CENTER)));
 }
 
+// The home screen: a grid of square icons (GRID_COLS per row). The live task
+// switcher that used to live here has moved to the Recents overlay (zelto-recents,
+// reached from the bottom nav bar) — the home screen is now just the app grid.
 static ZView launcher_body(ZApp *app, LauncherState *state) {
     (void)state;
+    (void)app;
     ensure_apps();
 
-    ZStackOpts opts = {.padding = 14, .spacing = 10, .align = Z_ALIGN_LEADING};
+    ZStackOpts grid = {.padding = 20, .spacing = 18, .align = Z_ALIGN_LEADING};
     int k = 0;
 
-    opts.children[k++] =
+    grid.children[k++] =
         Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("Apps")));
 
-    for (int i = 0; i < g_n_apps && k < Z_MAX_CHILDREN - 2; i++) {
-        opts.children[k++] = tile(&g_apps[i]);
-    }
-
-    // Running section: a live list of the other app windows.
-    int n_running = 0;
-    const ZTask *running = z_running_apps(app, &n_running);
-    if (n_running > 0) {
-        opts.children[k++] = Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
-            Font(Z_FONT_CALLOUT, Text("Running")));
-        for (int i = 0; i < n_running && k < Z_MAX_CHILDREN - 1; i++) {
-            opts.children[k++] = running_card(&running[i]);
+    // One HStack row per GRID_COLS apps; pad the final row with Spacers so its
+    // cells stay one column wide instead of stretching to fill.
+    for (int i = 0; i < g_n_apps && k < Z_MAX_CHILDREN - 1; i += GRID_COLS) {
+        ZStackOpts row = {.spacing = 16, .align = Z_ALIGN_LEADING};
+        for (int c = 0; c < GRID_COLS; c++) {
+            int idx = i + c;
+            row.children[c] =
+                idx < g_n_apps ? grid_cell(&g_apps[idx]) : Spacer();
         }
+        grid.children[k++] = z_stack(Z_AXIS_HORIZONTAL, &row);
     }
 
-    opts.children[k++] = Spacer();
+    grid.children[k++] = Spacer();
 
     return Background(z_rgba(0x0b, 0x0e, 0x13, 0xff),
-                      z_stack(Z_AXIS_VERTICAL, &opts));
+                      z_stack(Z_AXIS_VERTICAL, &grid));
 }
 
 Z_APP_ID(LauncherState, launcher_body, "os.zelto.launcher")

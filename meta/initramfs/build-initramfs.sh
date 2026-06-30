@@ -29,6 +29,11 @@ SAMPLE="${SAMPLE:-$REPO_ROOT/build-arm64/samples/hello/zelto-hello}"
 # app (SAMPLE) which the launcher exec's as "Rows".
 BAR="${BAR:-$REPO_ROOT/build-arm64/system/bar/zelto-bar}"
 LAUNCHER="${LAUNCHER:-$REPO_ROOT/build-arm64/system/launcher/zelto-launcher}"
+# P14 home screen + system navigation: the bottom 3-button nav bar (layer-shell,
+# always-running like the bar) and the Recents task-overview overlay (fork/exec'd
+# by the nav bar's Recents button).
+NAV="${NAV:-$REPO_ROOT/build-arm64/system/nav/zelto-nav}"
+RECENTS="${RECENTS:-$REPO_ROOT/build-arm64/system/recents/zelto-recents}"
 CARDS="${CARDS:-$REPO_ROOT/build-arm64/system/apps/cards/zelto-cards}"
 # P8 system services: the permission broker (a plain daemon) + the consent
 # dialog (a libzelto overlay app zsysd spawns on a prompt).
@@ -116,7 +121,9 @@ install_bin() {
 install_bin "$SAMPLE"   zelto-hello      # app #1 ("Rows"), launched by a tile
 install_bin "$CARDS"    zelto-cards      # app #2 ("Cards"), launched by a tile
 install_bin "$BAR"      zelto-bar        # status bar (layer-shell)
-install_bin "$LAUNCHER" zelto-launcher   # app launcher (back toplevel)
+install_bin "$NAV"      zelto-nav        # bottom nav bar (layer-shell, Back/Home/Recents)
+install_bin "$RECENTS"  zelto-recents    # Recents task-overview overlay
+install_bin "$LAUNCHER" zelto-launcher   # app launcher / home grid (back toplevel)
 install_bin "$ZSYSD"    zsysd            # system-service broker (permissions+intents)
 install_bin "$CONSENT"  zelto-consent    # permission consent dialog (overlay)
 install_bin "$CHOOSER"  zelto-chooser    # share-sheet / intent chooser (overlay)
@@ -318,9 +325,9 @@ if is_dynamic "$ZCOMP"; then
     # 1b. the libzelto apps' closure (libwayland-client, libharfbuzz,
     #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
     #     a closure, but bundle each so a future divergence can't break boot.
-    for binp in "$SAMPLE" "$CARDS" "$BAR" "$LAUNCHER" "$ZSYSD" "$CONSENT" \
-                "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" "$PINGER" "$NOTEPAD" \
-                "$FETCH" "$INSTALLER" "$STORE"; do
+    for binp in "$SAMPLE" "$CARDS" "$BAR" "$NAV" "$RECENTS" "$LAUNCHER" \
+                "$ZSYSD" "$CONSENT" "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" \
+                "$PINGER" "$NOTEPAD" "$FETCH" "$INSTALLER" "$STORE"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
     # ($WIDGET is not bundled here — it is not installed in the image; its runtime

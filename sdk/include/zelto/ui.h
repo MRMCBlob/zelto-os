@@ -375,6 +375,14 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
                                 &z__opts);                                \
     }
 
+// Resize a layer-shell surface at runtime. A layer app's size is normally fixed
+// at startup (the Z_LAYER_APP opts), but a surface whose footprint changes — the
+// notification shade, which should occupy the top of the screen only while a
+// banner is up and reserve/cover nothing when idle — re-requests its size here.
+// Passing 0 on an axis lets the compositor size it from the anchors. No-op for
+// an xdg (non-layer) app. The new size arrives via the next configure + repaint.
+void z_layer_resize(ZApp *app, int width, int height);
+
 // Request a rebuild (like setState). Schedules a new body()/layout/paint.
 void z_invalidate(ZApp *app);
 

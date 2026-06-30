@@ -23,6 +23,13 @@
 
 #define MAX_BANNERS 8
 
+// The strip's height while it has banners; it shrinks to IDLE_H (a negligible
+// sliver) when empty so the home grid below it is not covered by the opaque
+// software-rendered band. The renderer cannot produce a transparent surface, so
+// "reserve nothing when idle" is done by resizing, not by painting transparent.
+#define BANNER_STRIP_H 150
+#define IDLE_H 1
+
 // One active banner: a copy of the pushed notification (the ZShownNotification
 // strings are valid only for the duration of the show callback, so copy them).
 typedef struct Banner {
@@ -158,10 +165,12 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         }
     }
 
-    // No active banners: a fully transparent strip (nothing visible). Active
-    // banners: the cards over a transparent backdrop so apps show through the
-    // gaps. (The strip itself still occupies the top of the screen — a
-    // pull-down/dynamic-height shade is Planned.)
+    // Shrink the surface to a sliver when there is nothing to show (the opaque
+    // band would otherwise cover the top of the home grid) and grow it back to
+    // the banner-strip height when a banner is up. z_layer_resize no-ops when the
+    // size is unchanged, so calling it every rebuild is cheap.
+    z_layer_resize(app, 0, k == 0 ? IDLE_H : BANNER_STRIP_H);
+
     if (k == 0) {
         return Background(z_rgba(0, 0, 0, 0), Spacer());
     }
@@ -171,14 +180,16 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
 
 // OVERLAY layer, anchored top across the width and floated below the 40px status
 // bar (margin_top) so the bar stays visible, NOT keyboard-exclusive (a passive
-// heads-up surface). A fixed-height strip; because the software renderer can
-// only produce opaque surfaces the strip is opaque (it covers the top of the
-// app while shown). A truly transparent / dynamic-height pull-down shade is
-// Planned.
+// heads-up surface). Starts collapsed to IDLE_H and grows to BANNER_STRIP_H only
+// while a banner is up (shade_body drives this via z_layer_resize) — when idle it
+// covers no space, so the home grid below it starts at the top of the usable
+// area. Because the software renderer can only produce opaque surfaces, the strip
+// is opaque while shown (it covers the top of the app, like an Android heads-up).
+// A truly transparent pull-down shade is Planned.
 Z_LAYER_APP(ShadeState, shade_body,
             .layer = Z_LAYER_OVERLAY,
             .anchor = Z_ANCHOR_TOP | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .height = 150,
+            .height = IDLE_H,
             .margin_top = 40,
             .keyboard = false)
