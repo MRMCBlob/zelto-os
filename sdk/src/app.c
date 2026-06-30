@@ -80,7 +80,9 @@ struct ZApp {
     bool is_layer;
     ZLayerOpts layer_opts;
     // Cached input-region request (z_layer_set_input_region), to dedup commits.
-    bool ir_valid, ir_whole;
+    // ir_none = an EMPTY region (catches nothing, fully input-transparent — the
+    // brightness-dim overlay); distinct from ir_whole (NULL region = whole).
+    bool ir_valid, ir_whole, ir_none;
     int ir_x, ir_y, ir_w, ir_h;
 
     // Lifecycle: tracks the xdg "activated" state the compositor broadcasts to
@@ -1462,12 +1464,13 @@ void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h) {
     }
     bool whole = (w <= 0 || h <= 0);
     // Dedup: a body() that calls this every rebuild should not re-commit a region
-    // that has not changed.
-    if (app->ir_valid && app->ir_whole == whole && (whole ||
+    // that has not changed. (A previous empty-region request is never equal.)
+    if (app->ir_valid && !app->ir_none && app->ir_whole == whole && (whole ||
         (app->ir_x == x && app->ir_y == y && app->ir_w == w && app->ir_h == h))) {
         return;
     }
     app->ir_valid = true;
+    app->ir_none = false;
     app->ir_whole = whole;
     app->ir_x = x;
     app->ir_y = y;
@@ -1482,6 +1485,28 @@ void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h) {
         wl_surface_set_input_region(app->surface, region);
         wl_region_destroy(region);
     }
+    wl_surface_commit(app->surface);
+}
+
+void z_layer_set_input_none(ZApp *app) {
+    if (!app || !app->is_layer || !app->surface || !app->compositor) {
+        return;
+    }
+    if (app->ir_valid && app->ir_none) {
+        return;   // already empty
+    }
+    app->ir_valid = true;
+    app->ir_none = true;
+    app->ir_whole = false;
+    // An EMPTY wl_region (no rectangles) = the surface catches no pointer input,
+    // so every event falls through to whatever is beneath. This is the OPPOSITE
+    // of a NULL region (whole-surface input); it is how a visually full-screen
+    // overlay — the brightness-dim scrim — paints over the app yet steals none of
+    // its taps. Distinct from z_layer_set_input_region(.., 0,0,0,0), which the
+    // SDK treats as "whole surface".
+    struct wl_region *region = wl_compositor_create_region(app->compositor);
+    wl_surface_set_input_region(app->surface, region);
+    wl_region_destroy(region);
     wl_surface_commit(app->surface);
 }
 

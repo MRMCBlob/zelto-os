@@ -401,6 +401,16 @@ void z_net_send(ZNetRequest *r, ZNetCallback cb, void *ud) {
         finish_err(r);   // too many in flight
         return;
     }
+    // Airplane mode (P19): the brokered `sys.airplane` setting halts ALL network
+    // before the permission check, so flipping Airplane in Settings makes every
+    // request fail immediately (no consent prompt, no connect) — the airplane
+    // toggle's real, observable actuation. Off again -> requests proceed as before.
+    // Enforced here in the one path every libzelto net client (HTTP + WS) funnels
+    // through; a fast in-memory broker read, like z_perm_status.
+    if (z_setting_get_int("sys.airplane", 0) != 0) {
+        finish_err(r);
+        return;
+    }
     // Gate on the network permission, exactly like any sensitive capability.
     ZPermStatus st = z_perm_status("network");
     if (st == Z_PERM_GRANTED) {
@@ -496,6 +506,10 @@ static void ws_destroy(ZWebSocket *w) {
 
 ZWebSocket *z_ws_open(const char *url) {
     if (!url) {
+        return NULL;
+    }
+    // Airplane mode halts the network (P19) — same gate as z_net_send.
+    if (z_setting_get_int("sys.airplane", 0) != 0) {
         return NULL;
     }
     // Best-effort permission gate: deny only on a cached denial. By the time an

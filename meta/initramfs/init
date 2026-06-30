@@ -172,6 +172,10 @@ launch_shell() {
         # The notification shade: an OVERLAY layer-shell sink that subscribes to
         # zsysd and renders heads-up banners. Always-running like the bar.
         [ -x /usr/bin/zelto-shade ] && /usr/bin/zelto-shade &
+        # The brightness dim overlay (P19): an OVERLAY layer-shell scrim that
+        # observes sys.brightness and dims the whole screen. Input-transparent;
+        # always-running like the shade. Started after it so it composites on top.
+        [ -x /usr/bin/zelto-dim ] && /usr/bin/zelto-dim &
         # Small stagger so the bar's exclusive zone is applied before the
         # launcher's initial size is computed (cosmetic; arrange re-runs anyway).
         sleep 1

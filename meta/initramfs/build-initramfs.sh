@@ -46,6 +46,9 @@ SHARE_APP="${SHARE_APP:-$REPO_ROOT/build-arm64/system/share/zelto-share}"
 NOTES="${NOTES:-$REPO_ROOT/build-arm64/system/apps/notes/zelto-notes}"
 # P10 notifications: the shade (overlay layer-shell sink) + the Pinger source app.
 SHADE="${SHADE:-$REPO_ROOT/build-arm64/system/shade/zelto-shade}"
+# P19 brightness actuation: the dim overlay (observes sys.brightness, paints a
+# translucent full-screen scrim). Always-running like the bar/shade.
+DIM="${DIM:-$REPO_ROOT/build-arm64/system/dim/zelto-dim}"
 PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
 # P11 persistent storage: the Notepad demo (prefs + SQLite on the virtio-blk disk).
 NOTEPAD="${NOTEPAD:-$REPO_ROOT/build-arm64/system/apps/notepad/zelto-notepad}"
@@ -133,6 +136,7 @@ install_bin "$CHOOSER"  zelto-chooser    # share-sheet / intent chooser (overlay
 install_bin "$SHARE_APP" zelto-share     # intent-source demo app ("Share")
 install_bin "$NOTES"    zelto-notes      # intent-target demo app ("Notes")
 install_bin "$SHADE"    zelto-shade      # notification shade (overlay sink)
+install_bin "$DIM"      zelto-dim        # brightness dim overlay (sys.brightness)
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
 install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
 install_bin "$SETTINGS_APP" zelto-settings # brokered-settings demo app ("Settings")
@@ -332,8 +336,8 @@ if is_dynamic "$ZCOMP"; then
     #     a closure, but bundle each so a future divergence can't break boot.
     for binp in "$SAMPLE" "$CARDS" "$BAR" "$NAV" "$RECENTS" "$LAUNCHER" \
                 "$ZSYSD" "$CONSENT" "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" \
-                "$PINGER" "$NOTEPAD" "$SETTINGS_APP" "$FETCH" "$INSTALLER" \
-                "$STORE"; do
+                "$DIM" "$PINGER" "$NOTEPAD" "$SETTINGS_APP" "$FETCH" \
+                "$INSTALLER" "$STORE"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
     # ($WIDGET is not bundled here — it is not installed in the image; its runtime

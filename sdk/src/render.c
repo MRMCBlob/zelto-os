@@ -80,13 +80,31 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
             if (sa == 0xff) {
                 *dst = src;
             } else {
+                // Source-over in PREMULTIPLIED-alpha space, PRESERVING the
+                // destination alpha. wl_shm ARGB8888 surface buffers are
+                // premultiplied (wlroots/wlr_scene composites them so), so a
+                // partly-transparent fill must store premultiplied colour — else
+                // the compositor reads colour/alpha that are out of step and a
+                // 50%-white fill blows out to near-solid white. The buffer is
+                // itself premultiplied (we wrote it), so dst.rgb already carries
+                // its own alpha; blend straight src OVER premultiplied dst:
+                //   out.a   = sa + da*(1-sa)
+                //   out.rgb = src.rgb*sa + dst.rgb*(1-sa)     [premultiplied]
+                // Over an opaque pixel (da=255) out.a=255 and this reduces to the
+                // old formula, so every widget on a solid background is unchanged;
+                // only painting over transparent now yields a correct translucent
+                // surface the compositor blends over the app (the P19 dim scrim,
+                // and any cross-surface translucency).
                 uint32_t d = *dst;
+                uint32_t da = (d >> 24) & 0xff;
                 uint32_t dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff,
                          db = d & 0xff;
-                uint32_t rr = (col.r * sa + dr * (255 - sa)) / 255u;
-                uint32_t gg = (col.g * sa + dg * (255 - sa)) / 255u;
-                uint32_t bb = (col.b * sa + db * (255 - sa)) / 255u;
-                *dst = 0xff000000u | (rr << 16) | (gg << 8) | bb;
+                uint32_t inv = 255u - sa;                 // 1 - src_alpha
+                uint32_t oa = sa + da * inv / 255u;        // out alpha (0..255)
+                uint32_t rr = (col.r * sa + dr * inv) / 255u;
+                uint32_t gg = (col.g * sa + dg * inv) / 255u;
+                uint32_t bb = (col.b * sa + db * inv) / 255u;
+                *dst = (oa << 24) | (rr << 16) | (gg << 8) | bb;
             }
         }
     }

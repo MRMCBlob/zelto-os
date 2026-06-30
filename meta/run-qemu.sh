@@ -996,6 +996,179 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # P19 settings ACTUATION (ACTUATE=1): prove the brokered toggles now DO
+    # something system-wide, not just recolour a chip. THREE actuations + the bar
+    # as a third independent broker reader, then persistence. A TWO-BOOT test
+    # against the same data.img (the var is ACTUATE, not BRIGHT/DIM, to avoid
+    # clobbering a shell env var):
+    #   Boot #1 — home (bar shows a green Wi-Fi dot + a mid brightness pip). Open
+    #     the drawer, launch Settings. Step Brightness DOWN to 1 -> the whole app
+    #     area visibly DIMS (the zelto-dim OVERLAY scrim) AND the bar's brightness
+    #     pip shrinks. Toggle Airplane ON -> the bar grows an orange airplane dot
+    #     and greys the Wi-Fi dot. Open the drawer, launch Fetch, tap Fetch -> the
+    #     GET FAILS immediately ("request failed", NO consent modal) because
+    #     sys.airplane gates the network path. Sync + kill (brightness=1,
+    #     airplane=1 persisted to /var/zelto).
+    #   Boot #2 — FRESH QEMU, SAME disk: at boot the dim overlay reads
+    #     sys.brightness=1 back from disk so the screen is ALREADY dimmed, and the
+    #     bar shows the airplane dot — both persisted. Launch Settings (shows
+    #     Brightness 1, Airplane On), turn Airplane OFF + step Brightness back to 5
+    #     -> the screen un-dims. Launch Fetch -> consent -> Allow -> 200 OK (the
+    #     network is restored: airplane off => GET succeeds). The off/on proof.
+    # Coordinates are overridable (rerun SKIP_BUILD=1 + overrides to retune to the
+    # rendered layout). Boot is slow under TCG: keep SHOT_DELAY high. Use launchtap
+    # (zero-hold) for drawer launches so a held tap can't flake into the long-press.
+    if [ "${ACTUATE:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        SWIPE_X="${SWIPE_X:-640}"
+        # Home favourites row (y~115): Cards 172, Fetch 484, Notepad 796, Notes 1108.
+        FETCH_FAV_X="${FETCH_FAV_X:-484}"; FAV_Y="${FAV_Y:-115}"
+        NAV_HOME_X="${NAV_HOME_X:-630}"; NAV_HOME_Y="${NAV_HOME_Y:-757}"
+        SETTINGS_X="${SETTINGS_X:-786}"; SETTINGS_Y="${SETTINGS_Y:-317}"
+        # Settings app rows (label left, On/Off chip right at x~890), measured off
+        # frame-actuate-settings: Wi-Fi 265, Mute 331, Bright-boost 397, Airplane 463.
+        AIR_X="${AIR_X:-890}"; AIR_Y="${AIR_Y:-463}"          # Airplane toggle chip
+        # Brightness stepper row (y~529): "-" at x~811, the number, "+" at x~897.
+        BRIGHT_DEC_X="${BRIGHT_DEC_X:-811}"
+        BRIGHT_INC_X="${BRIGHT_INC_X:-897}"
+        BRIGHT_ROW_Y="${BRIGHT_ROW_Y:-529}"
+        # The "Fetch" button bar is centred ~y356 (taps at 392 land in the gap below
+        # it and never fire the GET — measured off frame-actuate-fetch-app).
+        FETCH_BTN_X="${FETCH_BTN_X:-640}"; FETCH_BTN_Y="${FETCH_BTN_Y:-356}"
+        ALLOW_X="${ALLOW_X:-894}"; ALLOW_Y="${ALLOW_Y:-527}"
+        NET_PORT="${NET_PORT:-8080}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        launchtap() { move "$1" "$2"; sleep 0.3; btn down; btn up; }
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        actuate_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        actuate_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        # Host HTTP endpoint (guest reaches it at 10.0.2.2) for the Fetch proof.
+        NET_SRV_PID=""
+        if command -v python3 >/dev/null 2>&1; then
+            SERVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zelto-www.XXXXXX")"
+            printf 'Hello from the Zelto host! (P19 airplane off => GET works)\n' \
+                > "$SERVE_DIR/hello.txt"
+            echo "==> [actuate] host HTTP server on :$NET_PORT ($SERVE_DIR)"
+            ( cd "$SERVE_DIR" && python3 -m http.server "$NET_PORT" ) \
+                >/dev/null 2>&1 &
+            NET_SRV_PID=$!
+            sleep 1
+        else
+            echo "WARN: python3 not found; Fetch success half can't be checked"
+        fi
+
+        echo "==> [actuate boot 1/2] home; bar status cluster (Wi-Fi dot + pip)"
+        actuate_boot
+        sleep "$SHOT_DELAY"
+        shot frame-actuate-home
+        # --- network: airplane OFF (persisted default) => Fetch succeeds ---------
+        echo "==> [actuate 1] launch Fetch (home favourite); GET -> consent -> 200"
+        launchtap "$FETCH_FAV_X" "$FAV_Y"
+        sleep 5; shot frame-actuate-fetch-app
+        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
+        sleep 4; shot frame-actuate-consent      # airplane off: the perm modal shows
+        tap "$ALLOW_X" "$ALLOW_Y"
+        sleep 6; shot frame-actuate-fetch-ok      # 200 OK body (network reachable)
+        # --- brightness: an unambiguous A/B on the Settings stepper -------------
+        echo "==> [actuate 1] Home, open drawer, launch Settings"
+        tap "$NAV_HOME_X" "$NAV_HOME_Y"; sleep 2
+        drag "$SWIPE_X" 690 110            # open the app drawer
+        sleep 4
+        launchtap "$SETTINGS_X" "$SETTINGS_Y"
+        sleep 5; shot frame-actuate-settings
+        # NB: space the stepper taps ~1.6s apart — under TCG libinput drops taps
+        # that arrive faster than it can process ("system too slow"), so rapid
+        # 0.5s taps mostly no-op. 1.6s gaps land every step reliably.
+        echo "==> [actuate 1] Brightness UP to 5 -> NO dim (A); pip widest"
+        for i in 1 2 3 4 5; do tap "$BRIGHT_INC_X" "$BRIGHT_ROW_Y"; sleep 1.6; done
+        shot frame-actuate-bright5               # brightness 5: undimmed (compare B)
+        echo "==> [actuate 1] Brightness DOWN to 1 -> screen DIMS (B); pip min"
+        for i in 1 2 3 4; do tap "$BRIGHT_DEC_X" "$BRIGHT_ROW_Y"; sleep 1.6; done
+        shot frame-actuate-dim                   # brightness 1: zelto-dim scrim, pip min
+        # --- airplane ON -> bar dot + the network gate --------------------------
+        echo "==> [actuate 1] Airplane ON -> bar airplane dot; Wi-Fi greys"
+        tap "$AIR_X" "$AIR_Y"
+        sleep 3; shot frame-actuate-airplane
+        echo "==> [actuate 1] Home -> Fetch again; GET FAILS (airplane gate, no modal)"
+        tap "$NAV_HOME_X" "$NAV_HOME_Y"; sleep 2
+        launchtap "$FETCH_FAV_X" "$FAV_Y"
+        sleep 5
+        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
+        sleep 4; shot frame-actuate-fetch-fail   # "request failed", NO consent modal
+        echo "==> [actuate 1] sync + shutdown (brightness=1, airplane=1 persisted)"
+        sleep 3
+        actuate_kill
+
+        echo "==> [actuate boot 2/2] REBOOT same disk; dim + airplane persisted"
+        actuate_boot
+        sleep "$SHOT_DELAY"
+        shot frame-actuate-reboot                # home dimmed at b=1 + bar airplane dot
+        echo "==> [actuate 2] open drawer, launch Settings -> Brightness 1, Airplane On"
+        drag "$SWIPE_X" 690 110
+        sleep 4
+        launchtap "$SETTINGS_X" "$SETTINGS_Y"
+        sleep 5; shot frame-actuate-reboot-settings
+        actuate_kill
+        [ -n "$NET_SRV_PID" ] && kill "$NET_SRV_PID" 2>/dev/null || true
+        echo "==> actuate test done; frames in $OUT/frame-actuate-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

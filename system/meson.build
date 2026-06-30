@@ -25,4 +25,5 @@ if zelto_dep.found()
   subdir('recents')
   subdir('share')
   subdir('shade')
+  subdir('dim')
 endif

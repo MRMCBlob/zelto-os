@@ -409,6 +409,14 @@ void z_layer_resize(ZApp *app, int width, int height);
 // applied on the next commit, and a no-op when the region is unchanged.
 void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h);
 
+// Make the surface catch NO pointer input at all (an empty input region) — every
+// event falls through to whatever is beneath. This is the OPPOSITE of passing
+// w<=0/h<=0 above (which means the WHOLE surface). A visually full-screen overlay
+// that must paint over the app yet steal none of its taps — the brightness-dim
+// scrim (P19) — uses this. No-op for a non-layer app; deduped against the last
+// request; applied on the next commit.
+void z_layer_set_input_none(ZApp *app);
+
 // Current surface size in pixels (after the latest configure). A full-screen
 // layer that sizes or translates itself — a slide-up app drawer offset by its
 // own height — needs the height; both are read fresh inside body().
