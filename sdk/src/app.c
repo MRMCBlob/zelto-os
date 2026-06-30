@@ -159,6 +159,14 @@ struct ZApp {
     ZScroll *drag_scroll;        // scroll being dragged (NULL = none)
     ZView pan_target;            // custom OnPan target (NULL = none)
 
+    // Long-press recognizer. Armed on a press that lands on an OnLongPress node;
+    // the app loop polls with a finite timeout so a finger held still wakes us at
+    // the threshold. Firing it suppresses the tap the release would emit, and any
+    // motion past the slop (-> pan) disarms it first.
+    bool long_press_armed, long_pressed;
+    double press_s;              // monotonic time of the press
+    ZView long_press_target;     // OnLongPress node under the press (NULL = none)
+
     // Retained build output: the laid-out root from the most recent build, used
     // to hit-test pointer events and route keys until the next build replaces it.
     ZView root;
@@ -339,6 +347,20 @@ static ZView find_pan(ZView n, double x, double y) {
         }
     }
     return n->on_pan ? n : NULL;
+}
+
+// Deepest OnLongPress target under (x,y).
+static ZView find_long_press(ZView n, double x, double y) {
+    if (!n || !point_in(n, x, y)) {
+        return NULL;
+    }
+    for (int i = n->n_children - 1; i >= 0; i--) {
+        ZView h = find_long_press(n->children[i], x, y);
+        if (h) {
+            return h;
+        }
+    }
+    return n->on_long_press ? n : NULL;
 }
 
 // --- build/layout/paint/commit -------------------------------------------
@@ -638,6 +660,20 @@ static void pointer_leave(void *data, struct wl_pointer *p, uint32_t serial,
 }
 // Movement past this many pixels turns a press into a pan (cancelling the tap).
 #define Z_PAN_SLOP 8.0
+// A still press held this long (seconds) without crossing the slop is a long-press.
+#define Z_LONG_PRESS_S 0.45
+
+// Fire the armed long-press: disarm, mark long_pressed so the release suppresses
+// the tap, and invoke the target's handler with the press position.
+static void fire_long_press(ZApp *app) {
+    app->long_press_armed = false;
+    app->long_pressed = true;
+    ZView t = app->long_press_target;
+    if (t && t->on_long_press) {
+        t->on_long_press(app, app->state, t->long_press_data,
+                         (float)app->press_x, (float)app->press_y);
+    }
+}
 
 static void dispatch_pan(ZApp *app, ZPanPhase phase) {
     if (!app->pan_target || !app->pan_target->on_pan) {
@@ -662,15 +698,19 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
     app->ptr_x = wl_fixed_to_double(sx);
     app->ptr_y = wl_fixed_to_double(sy);
 
-    if (!app->ptr_down) {
+    if (!app->ptr_down || app->long_pressed) {
+        // Once a long-press has fired the gesture is consumed: ignore motion
+        // until release so it can neither start a pan nor re-fire.
         return;
     }
 
     double dx = app->ptr_x - app->press_x;
     double dy = app->ptr_y - app->press_y;
     if (!app->panning && (dx * dx + dy * dy) > (Z_PAN_SLOP * Z_PAN_SLOP)) {
-        // Slop crossed: this is a drag. Pick a target (custom OnPan first, else
-        // the scroll container under the press) and begin.
+        // Slop crossed: this is a drag, not a long-press. Disarm the timer and
+        // pick a target (custom OnPan first, else the scroll container under the
+        // press) and begin.
+        app->long_press_armed = false;
         app->panning = true;
         app->pan_target = find_pan(app->root, app->press_x, app->press_y);
         if (!app->pan_target) {
@@ -719,6 +759,13 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         app->press_x = app->last_x = app->ptr_x;
         app->press_y = app->last_y = app->ptr_y;
         app->last_motion_s = z_now_seconds();
+        // Arm the long-press only if the press landed on an OnLongPress node, so
+        // the app loop's finite poll timeout (below) is used only when needed.
+        app->press_s = app->last_motion_s;
+        app->long_pressed = false;
+        app->long_press_target = find_long_press(app->root, app->ptr_x,
+                                                 app->ptr_y);
+        app->long_press_armed = app->long_press_target != NULL;
         return;
     }
     // Release.
@@ -726,6 +773,13 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         return;
     }
     app->ptr_down = false;
+    app->long_press_armed = false;
+    if (app->long_pressed) {
+        // The long-press already handled this gesture; swallow the tap/pan-end.
+        app->long_pressed = false;
+        app->panning = false;
+        return;
+    }
     if (!app->panning) {
         // No drag: it was a tap. Hit-test and run the deepest handler.
         ZView hit = hit_test(app->root, app->ptr_x, app->ptr_y);
@@ -1230,7 +1284,15 @@ static int app_run(ZApp *app) {
         net_n = z_net_collect_fds(&pfds[nf], Z_NET_POLL_MAX);
         nf += (nfds_t)net_n;
 
-        if (poll(pfds, nf, -1) < 0) {
+        // While a long-press is armed (a finger held still, no fd traffic),
+        // bound the wait so we wake at the threshold to fire it; otherwise block.
+        int timeout = -1;
+        if (app->long_press_armed && app->ptr_down && !app->panning) {
+            double remain = Z_LONG_PRESS_S - (z_now_seconds() - app->press_s);
+            timeout = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
+        }
+
+        if (poll(pfds, nf, timeout) < 0) {
             wl_display_cancel_read(dpy);
             if (errno == EINTR) {
                 continue;
@@ -1263,6 +1325,14 @@ static int app_run(ZApp *app) {
         // Drive any ready HTTP/WebSocket sockets (callbacks fire from here).
         if (net_n > 0) {
             z_net_handle_ready(&pfds[net_slot], net_n);
+        }
+
+        // Long-press: a still finger held past the threshold fires now (the poll
+        // timeout above woke us even with no fd traffic). The handler typically
+        // mutates state + z_invalidate, so the render below paints the result.
+        if (app->long_press_armed && app->ptr_down && !app->panning &&
+            z_now_seconds() - app->press_s >= Z_LONG_PRESS_S) {
+            fire_long_press(app);
         }
 
         // Render when state is dirty and no frame is in flight; render() arms a

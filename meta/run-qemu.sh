@@ -556,6 +556,154 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P16 curate favourites + quick-settings shade (QUICK=1): a TWO-BOOT test
+    # against the same data.img proving (a) a long-press on a drawer icon adds it
+    # to the home favourites, (b) a long-press on a home favourite removes it,
+    # both rewriting the home.favorites prefs CSV; and (c) a down-swipe from the
+    # top pulls the quick-settings shade down, where tapping a toggle chip flips a
+    # persisted bool. Boot #2 reboots the SAME disk and proves the curated
+    # favourites AND the toggle survived (read back from /var/zelto prefs).
+    #   Boot #1 — home (favourites only). Open the drawer (swipe up), LONG-PRESS a
+    #     non-favourite drawer icon -> the curate menu -> tap "Add to home"; close
+    #     the drawer -> the icon is now on home. LONG-PRESS a home favourite ->
+    #     menu -> "Remove from home" -> it leaves the grid. Then DOWN-SWIPE from
+    #     the top edge -> the quick-settings shade slides down; tap the Wi-Fi chip
+    #     (it recolours + persists). Sync + kill.
+    #   Boot #2 — FRESH QEMU, SAME disk: home shows the curated set (added icon
+    #     present, removed favourite gone); pull the shade down again -> the Wi-Fi
+    #     chip is still in its flipped state (serial: "favorites loaded from
+    #     prefs: ..."). Coordinates are overridable to retune to the rendered
+    #     layout from a captured frame (rerun SKIP_BUILD=1 + overrides). Boot is
+    #     slow under TCG: keep SHOT_DELAY high and give the long-press hold + the
+    #     springs generous time.
+    if [ "${QUICK:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        FAV_X="${FAV_X:-180}"; FAV_Y="${FAV_Y:-150}"   # home fav row-1 col-1 (remove)
+        HOME_X="${HOME_X:-640}"; NAV_Y="${NAV_Y:-768}" # bottom nav Home
+        SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
+        # A non-favourite drawer icon to ADD (row-2 col-2 = "Rows" once the drawer
+        # is open; the drawer header offsets the grid down a little).
+        DRAWER_X="${DRAWER_X:-483}"; DRAWER_Y="${DRAWER_Y:-317}"
+        # Curate menu buttons (centred modal): Add/Remove is the first button,
+        # Cancel the second. Retune to the captured menu frame.
+        MENU_BTN_X="${MENU_BTN_X:-640}"
+        MENU_ADD_Y="${MENU_ADD_Y:-381}"                # "Add to home" / "Remove..." (Cancel is ~442)
+        # Quick-settings: the Wi-Fi chip (first of three across the top card) and a
+        # scrim point below the card to close it.
+        QS_WIFI_X="${QS_WIFI_X:-230}"; QS_WIFI_Y="${QS_WIFI_Y:-150}"
+        QS_SCRIM_X="${QS_SCRIM_X:-640}"; QS_SCRIM_Y="${QS_SCRIM_Y:-640}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        # Press-and-hold in place past the SDK long-press threshold (0.45s): NO
+        # move between down and up, or it would cross the slop and become a pan.
+        longpress() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.9; btn up; }
+        # A multi-step vertical drag from (X,Y1) to (X,Y2); the pan recognizer
+        # tracks the finger continuously, so step it rather than jump once.
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        quick_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        quick_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [quick boot 1/2] home: favourites only"
+        quick_boot
+        sleep "$SHOT_DELAY"
+        shot frame-quick-home
+        echo "==> [quick 1] swipe up -> open the app drawer"
+        drag "$SWIPE_X" 690 110
+        sleep 4; shot frame-quick-drawer
+        echo "==> [quick 1] long-press a non-favourite drawer icon -> curate menu"
+        longpress "$DRAWER_X" "$DRAWER_Y"
+        sleep 2; shot frame-quick-menu-add        # menu: "Add to home"
+        echo "==> [quick 1] tap 'Add to home'"
+        tap "$MENU_BTN_X" "$MENU_ADD_Y"
+        sleep 2; shot frame-quick-added           # drawer still open, fav added
+        echo "==> [quick 1] close the drawer (swipe down on the grabber)"
+        drag "$SWIPE_X" 90 700
+        sleep 3; shot frame-quick-home-added      # home now shows the added icon
+        echo "==> [quick 1] long-press a home favourite -> Remove from home"
+        longpress "$FAV_X" "$FAV_Y"
+        sleep 2; shot frame-quick-menu-remove     # menu: "Remove from home"
+        tap "$MENU_BTN_X" "$MENU_ADD_Y"
+        sleep 2; shot frame-quick-removed         # that favourite left the grid
+        echo "==> [quick 1] down-swipe from the top -> quick-settings shade"
+        drag "$SWIPE_X" 70 470
+        sleep 3; shot frame-quick-shade           # shade open: clock + chips
+        echo "==> [quick 1] tap the Wi-Fi chip -> flips + persists"
+        tap "$QS_WIFI_X" "$QS_WIFI_Y"
+        sleep 2; shot frame-quick-toggled         # chip recoloured
+        echo "==> [quick 1] tap the scrim -> close the shade"
+        tap "$QS_SCRIM_X" "$QS_SCRIM_Y"
+        sleep 2; shot frame-quick-closed
+        echo "==> [quick 1] sync + shutdown (favourites + toggle persisted)"
+        sleep 3
+        quick_kill
+
+        echo "==> [quick boot 2/2] REBOOT same disk; curated set + toggle survive"
+        quick_boot
+        sleep "$SHOT_DELAY"
+        shot frame-quick-reboot                   # home: added present, removed gone
+        echo "==> [quick 2] pull the shade down -> Wi-Fi chip still flipped"
+        drag "$SWIPE_X" 70 470
+        sleep 3; shot frame-quick-reboot-shade
+        quick_kill
+        echo "==> quick test done; frames in $OUT/frame-quick-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

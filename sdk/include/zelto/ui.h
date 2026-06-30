@@ -196,6 +196,18 @@ typedef void (*ZPanHandler)(ZApp *app, void *state, const ZPanEvent *e);
 
 ZView OnPan(ZPanHandler handler, ZView view);
 
+// Long-press: fires when a press is held in place past a time threshold without
+// crossing the pan slop. It composes with OnTap and OnPan on the same subtree —
+// moving past the slop first becomes a pan (no long-press), a quick release
+// stays a tap, and a still hold past the threshold fires the long-press and
+// suppresses the tap that the release would otherwise have produced. `data` is a
+// per-view pointer bound at build time (like OnTapData — point it at stable
+// state); `x`/`y` are the surface-local press position (e.g. to place a menu).
+typedef void (*ZLongPressHandler)(ZApp *app, void *state, void *data, float x,
+                                  float y);
+
+ZView OnLongPress(ZLongPressHandler handler, void *data, ZView view);
+
 // ---------------------------------------------------------------------------
 // Scrolling.
 //

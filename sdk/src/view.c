@@ -231,6 +231,12 @@ ZView OnPan(ZPanHandler handler, ZView view) {
     return view;
 }
 
+ZView OnLongPress(ZLongPressHandler handler, void *data, ZView view) {
+    view->on_long_press = handler;
+    view->long_press_data = data;
+    return view;
+}
+
 ZView OnKey(ZKeyAction action, ZView view) {
     view->on_key = action;
     view->focusable = true;

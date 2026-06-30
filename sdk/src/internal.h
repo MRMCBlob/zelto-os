@@ -52,6 +52,8 @@ struct ZNode {
     void *tap_data;
     ZKeyAction on_key;
     ZPanHandler on_pan;   // pan/drag recognizer (NULL = none)
+    ZLongPressHandler on_long_press;  // press-and-hold recognizer (NULL = none)
+    void *long_press_data;            // per-view data passed to on_long_press
     bool focusable;
     bool focused;         // set by the app loop on the focused node (focus ring)
     uint64_t key;         // stable identity for keyed reconcile (0 = positional)
