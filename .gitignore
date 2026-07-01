@@ -47,3 +47,13 @@ compile_commands.json
 Thumbs.db
 *.swp
 *~
+
+
+# --- Allow ------------------------------------------------------------
+!resources/
+!resources/icons/
+!resources/icons/**
+!resources/icons/Duocolor/
+!resources/icons/Duocolor/**
+!resources/wallpaper/
+!resources/wallpaper/**
