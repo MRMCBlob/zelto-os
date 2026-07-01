@@ -417,6 +417,15 @@ void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h);
 // request; applied on the next commit.
 void z_layer_set_input_none(ZApp *app);
 
+// Toggle EXCLUSIVE keyboard interactivity on a layer surface at runtime. A layer
+// app is normally created with a fixed keyboard mode (the Z_LAYER_APP `keyboard`
+// opt), but a surface that becomes modal only some of the time — the lock screen,
+// which must grab the keyboard while locked and hand it back to the app on unlock
+// — flips it here. `exclusive` true routes the keyboard to this surface (a modal
+// grab, like the consent dialog); false returns it to the front app toplevel. No-
+// op for a non-layer app; deduped; applied on the next commit. See P8/P20.
+void z_layer_set_keyboard(ZApp *app, bool exclusive);
+
 // Current surface size in pixels (after the latest configure). A full-screen
 // layer that sizes or translates itself — a slide-up app drawer offset by its
 // own height — needs the height; both are read fresh inside body().
@@ -470,6 +479,31 @@ void z_on_lifecycle(ZApp *app, ZLifecycleHandler handler);
 
 // True while the app is the foreground (activated) window.
 bool z_app_active(ZApp *app);
+
+// ---------------------------------------------------------------------------
+// Idle notifications (ext-idle-notify-v1).
+//
+// The compositor reports user activity (any pointer/keyboard event) on the seat.
+// A client registers an idle notification with a timeout; its `on_idled` fires
+// once the seat has seen no activity for that long, and `on_resumed` fires on the
+// next activity. This is how the idle -> dim -> lock -> off state machine
+// (zelto-lock) is driven without polling: create one notification per threshold
+// (dim / lock / off seconds), each firing at its own time; a single input resumes
+// them all. Cancel a notification (e.g. to re-arm with a new timeout, or when the
+// lock disarms the lifecycle) with z_idle_cancel. See docs/platform/idle-lock.md.
+// ---------------------------------------------------------------------------
+typedef struct ZIdle ZIdle;   // one registered idle notification (opaque)
+typedef void (*ZIdleCb)(ZApp *app, void *ud);
+
+// Register an idle notification firing `on_idled` after `timeout_ms` of no seat
+// activity and `on_resumed` on the next activity. Returns NULL if the compositor
+// does not advertise ext-idle-notify or no seat is bound yet. Free with
+// z_idle_cancel (the ZIdle is heap-allocated, not arena — it outlives a build).
+ZIdle *z_idle_notify(ZApp *app, int timeout_ms, ZIdleCb on_idled,
+                     ZIdleCb on_resumed, void *ud);
+
+// Cancel + free an idle notification. Safe on NULL.
+void z_idle_cancel(ZIdle *idle);
 
 // ---------------------------------------------------------------------------
 // Permissions.

@@ -9,6 +9,7 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
@@ -36,6 +37,15 @@ struct wlr_surface *zcomp_surface_at(ZcompServer *server, double lx, double ly,
         return NULL;
     }
     return scene_surface->surface;
+}
+
+// Pump user activity into the idle notifier so idle-aware clients (the lock
+// screen) reset their dim/lock/off timeouts. Called on every input event; the
+// timeout policy itself lives entirely in the client, keeping zcomp policy-free.
+static void notify_activity(ZcompServer *server) {
+    if (server->idle_notifier) {
+        wlr_idle_notifier_v1_notify_activity(server->idle_notifier, server->seat);
+    }
 }
 
 // --- pointer -------------------------------------------------------------
@@ -109,6 +119,7 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     struct wlr_pointer_motion_event *event = data;
     wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x,
                     event->delta_y);
+    notify_activity(server);
     process_cursor_motion(server, event->time_msec);
 }
 
@@ -119,6 +130,7 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener,
     struct wlr_pointer_motion_absolute_event *event = data;
     wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x,
                              event->y);
+    notify_activity(server);
     process_cursor_motion(server, event->time_msec);
 }
 
@@ -126,6 +138,7 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
     ZcompServer *server = wl_container_of(listener, server, cursor_button);
     struct wlr_pointer_button_event *event = data;
     bool pressed = event->state == WLR_BUTTON_PRESSED;
+    notify_activity(server);
 
     // Begin an implicit grab on the first press so motion keeps reaching the
     // pressed surface once the drag runs off it (see process_cursor_motion). Use
@@ -161,6 +174,7 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 static void handle_cursor_axis(struct wl_listener *listener, void *data) {
     ZcompServer *server = wl_container_of(listener, server, cursor_axis);
     struct wlr_pointer_axis_event *event = data;
+    notify_activity(server);
     wlr_seat_pointer_notify_axis(server->seat, event->time_msec,
                                  event->orientation, event->delta,
                                  event->delta_discrete, event->source);
@@ -202,6 +216,7 @@ static void handle_kb_key(struct wl_listener *listener, void *data) {
     ZcompKeyboard *keyboard = wl_container_of(listener, keyboard, key);
     struct wlr_seat *seat = keyboard->server->seat;
     struct wlr_keyboard_key_event *event = data;
+    notify_activity(keyboard->server);
 
     // Intercept global window-management chords on press; forward everything
     // else to the focused client. evdev keycodes are +8 in xkb.

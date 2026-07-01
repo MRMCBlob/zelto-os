@@ -18,6 +18,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "internal.h"
+#include "ext-idle-notify-v1-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -84,6 +85,15 @@ struct ZApp {
     // brightness-dim overlay); distinct from ir_whole (NULL region = whole).
     bool ir_valid, ir_whole, ir_none;
     int ir_x, ir_y, ir_w, ir_h;
+    // Cached EXCLUSIVE-keyboard state (z_layer_set_keyboard), to dedup commits.
+    // A lock screen flips this true while locked, false on unlock.
+    bool kbd_valid, kbd_exclusive;
+
+    // ext-idle-notify: the notifier global (bound when advertised) plus the list
+    // of live idle notifications this app registered (z_idle_notify). Each fires
+    // idled/resumed on the seat's activity clock; the lock screen drives its
+    // dim/lock/off state machine off them.
+    struct ext_idle_notifier_v1 *idle_notifier;
 
     // Lifecycle: tracks the xdg "activated" state the compositor broadcasts to
     // the front window; transitions fire the handler and force a repaint so a
@@ -1146,6 +1156,12 @@ static void registry_global(void *data, struct wl_registry *registry,
             version < 3 ? version : 3);
         zwlr_foreign_toplevel_manager_v1_add_listener(
             app->ftl_manager, &ftl_manager_listener, app);
+    } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0) {
+        // Idle notifications (the lock screen drives its dim/lock/off machine
+        // off these). Every app binds it harmlessly; zelto-lock is the consumer.
+        app->idle_notifier = wl_registry_bind(
+            registry, name, &ext_idle_notifier_v1_interface,
+            version < 1 ? version : 1);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (!app->output) {
             app->output = wl_registry_bind(registry, name, &wl_output_interface,
@@ -1508,6 +1524,92 @@ void z_layer_set_input_none(ZApp *app) {
     wl_surface_set_input_region(app->surface, region);
     wl_region_destroy(region);
     wl_surface_commit(app->surface);
+}
+
+void z_layer_set_keyboard(ZApp *app, bool exclusive) {
+    if (!app || !app->is_layer || !app->layer_surface) {
+        return;
+    }
+    // Dedup: a body() that asserts its keyboard mode every rebuild should not
+    // re-commit an unchanged interactivity (each commit asks a fresh configure).
+    if (app->kbd_valid && app->kbd_exclusive == exclusive) {
+        return;
+    }
+    app->kbd_valid = true;
+    app->kbd_exclusive = exclusive;
+    zwlr_layer_surface_v1_set_keyboard_interactivity(
+        app->layer_surface,
+        exclusive ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
+                  : ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+    // Commit so the request takes effect; the compositor grabs/releases the
+    // keyboard (layer.c layer_sync_keyboard / layer_release_keyboard on commit).
+    wl_surface_commit(app->surface);
+}
+
+// --- idle notifications (ext-idle-notify-v1) -------------------------------
+// One registered idle notification. Heap-allocated (outlives a body() rebuild),
+// wrapping the protocol object plus the client callbacks.
+struct ZIdle {
+    struct ext_idle_notification_v1 *notification;
+    ZApp *app;
+    ZIdleCb on_idled;
+    ZIdleCb on_resumed;
+    void *ud;
+};
+
+static void idle_handle_idled(void *data,
+                              struct ext_idle_notification_v1 *n) {
+    (void)n;
+    ZIdle *idle = data;
+    if (idle->on_idled) {
+        idle->on_idled(idle->app, idle->ud);
+    }
+}
+static void idle_handle_resumed(void *data,
+                                struct ext_idle_notification_v1 *n) {
+    (void)n;
+    ZIdle *idle = data;
+    if (idle->on_resumed) {
+        idle->on_resumed(idle->app, idle->ud);
+    }
+}
+static const struct ext_idle_notification_v1_listener idle_notification_listener = {
+    .idled = idle_handle_idled,
+    .resumed = idle_handle_resumed,
+};
+
+ZIdle *z_idle_notify(ZApp *app, int timeout_ms, ZIdleCb on_idled,
+                     ZIdleCb on_resumed, void *ud) {
+    if (!app || !app->idle_notifier || !app->seat || timeout_ms < 0) {
+        return NULL;
+    }
+    ZIdle *idle = calloc(1, sizeof(*idle));
+    if (!idle) {
+        return NULL;
+    }
+    idle->app = app;
+    idle->on_idled = on_idled;
+    idle->on_resumed = on_resumed;
+    idle->ud = ud;
+    idle->notification = ext_idle_notifier_v1_get_idle_notification(
+        app->idle_notifier, (uint32_t)timeout_ms, app->seat);
+    if (!idle->notification) {
+        free(idle);
+        return NULL;
+    }
+    ext_idle_notification_v1_add_listener(idle->notification,
+                                          &idle_notification_listener, idle);
+    return idle;
+}
+
+void z_idle_cancel(ZIdle *idle) {
+    if (!idle) {
+        return;
+    }
+    if (idle->notification) {
+        ext_idle_notification_v1_destroy(idle->notification);
+    }
+    free(idle);
 }
 
 // --- permission broker (zsysd) client -------------------------------------

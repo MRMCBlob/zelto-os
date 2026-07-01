@@ -12,6 +12,7 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
@@ -106,6 +107,12 @@ bool zcomp_server_init(ZcompServer *server) {
     // toplevel it shadows (see toplevel.c).
     server->foreign_toplevel_manager =
         wlr_foreign_toplevel_manager_v1_create(server->display);
+
+    // --- ext-idle-notify-v1 (idle/lock lifecycle) --------------------------
+    // Advertise the idle-notifier global. The seat pumps activity into it on
+    // every input event (seat.c); idle-aware clients (zelto-lock) register
+    // per-timeout notifications and run the dim/lock/off policy themselves.
+    server->idle_notifier = wlr_idle_notifier_v1_create(server->display);
 
     // --- Seat + input ------------------------------------------------------
     zcomp_seat_init(server);

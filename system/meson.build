@@ -26,4 +26,5 @@ if zelto_dep.found()
   subdir('share')
   subdir('shade')
   subdir('dim')
+  subdir('lock')
 endif

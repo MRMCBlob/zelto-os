@@ -27,11 +27,35 @@ typedef struct BarState {
     bool wifi;
     bool airplane;
     int64_t brightness;   // 1..5
+    bool lock_enabled;    // P20: show a padlock glyph when the lock screen is on
+    int64_t lock_now;     // sys.lock_now counter (a long-press on the bar bumps it)
 } BarState;
 
 // A small filled status dot (signal / mode indicator).
 static ZView dot(ZColor c) {
     return Frame(10.0f, 10.0f, Rect(.color = c, .radius = 5));
+}
+
+// A tiny padlock glyph (shackle over a body). Shown when the lock screen is
+// enabled — the bar's 4th brokered indicator (P20), alongside Wi-Fi/airplane/pip.
+static ZView lock_glyph(ZColor c) {
+    return Frame(12.0f, 16.0f,
+        VStack(
+            Frame(8.0f, 6.0f, Rect(.color = c, .radius = 3)),   // shackle
+            Frame(12.0f, 9.0f, Rect(.color = c, .radius = 2)),  // body
+            .spacing = 0, .align = Z_ALIGN_CENTER));
+}
+
+// Long-press anywhere on the bar: manually lock now (bump sys.lock_now, which
+// zelto-lock observes). A nice-to-have manual affordance (P20).
+static void bar_longpress(ZApp *app, void *state, void *data, float x, float y) {
+    (void)data;
+    (void)x;
+    (void)y;
+    BarState *s = state;
+    s->lock_now++;
+    z_setting_set_int("sys.lock_now", s->lock_now);
+    z_invalidate(app);
 }
 
 // A setting changed (here, the shade, or the Settings app): re-read the field it
@@ -46,6 +70,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->airplane = v != 0;
     } else if (strcmp(key, "sys.brightness") == 0) {
         s->brightness = v;
+    } else if (strcmp(key, "sys.lock_enabled") == 0) {
+        s->lock_enabled = v != 0;
     }
     z_invalidate(app);
 }
@@ -58,6 +84,8 @@ static ZView bar_body(ZApp *app, BarState *state) {
         state->wifi = z_setting_get_int("sys.wifi", 1) != 0;
         state->airplane = z_setting_get_int("sys.airplane", 0) != 0;
         state->brightness = z_setting_get_int("sys.brightness", 3);
+        state->lock_enabled = z_setting_get_int("sys.lock_enabled", 0) != 0;
+        state->lock_now = z_setting_get_int("sys.lock_now", 0);
         z_settings_observe(app, on_changed, state);
     }
 
@@ -88,17 +116,22 @@ static ZView bar_body(ZApp *app, BarState *state) {
     if (state->airplane) {
         cluster.children[k++] = dot(z_rgba(0xf0, 0xa0, 0x30, 0xff));  // airplane
     }
+    if (state->lock_enabled) {
+        cluster.children[k++] = lock_glyph(z_rgba(0xc6, 0xcf, 0xd8, 0xff)); // lock
+    }
     cluster.children[k++] = Frame(pip_w, 10.0f,
         Rect(.color = z_rgba(0xc6, 0xcf, 0xd8, 0xff), .radius = 3));  // brightness
     cluster.children[k++] = Foreground(Z_COLOR_TEXT_INV, Text("%s", clock));
 
-    return Background(z_rgba(0x10, 0x14, 0x1a, 0xff),
-        HStack(
-            Foreground(Z_COLOR_TEXT_INV,
-                Font(Z_FONT_BODY, Text("Zelto"))),
-            Spacer(),
-            z_stack(Z_AXIS_HORIZONTAL, &cluster),
-            .padding = 12, .spacing = 10, .align = Z_ALIGN_CENTER));
+    // A long-press on the bar manually locks now (bumps sys.lock_now).
+    return OnLongPress(bar_longpress, NULL,
+        Background(z_rgba(0x10, 0x14, 0x1a, 0xff),
+            HStack(
+                Foreground(Z_COLOR_TEXT_INV,
+                    Font(Z_FONT_BODY, Text("Zelto"))),
+                Spacer(),
+                z_stack(Z_AXIS_HORIZONTAL, &cluster),
+                .padding = 12, .spacing = 10, .align = Z_ALIGN_CENTER)));
 }
 
 Z_LAYER_APP(BarState, bar_body,

@@ -1169,6 +1169,169 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # P20 idle/lock lifecycle (LOCK=1): prove the phone's idle -> dim -> lock ->
+    # off -> wake -> unlock state machine, driven by ext-idle-notify + the
+    # sys.lock_* broker settings, with the lock screen truly blocking the app
+    # beneath and the foreground app exactly restored on unlock. A TWO-BOOT test
+    # against the same data.img:
+    #   Boot #1 — home (lock disabled by default, so nothing idles: the other
+    #     phase harnesses are undisturbed). Open the drawer, launch Settings. In
+    #     the Lock screen section flip "Lock screen" ON (the bar grows a padlock
+    #     glyph — the 4th brokered indicator) and step "Lock after" once (a non-
+    #     default timeout to prove persistence). Now leave Settings foreground and
+    #     STOP input: after the timeout the screen dims then the lock screen takes
+    #     over (clock + date) OVER Settings, blocking it. Inject a tap -> it wakes
+    #     to the LOCK screen (NOT Settings — the app stays blocked). Swipe up ->
+    #     unlock -> Settings is exactly the foreground app again. Then flip "Lock
+    #     screen" OFF and idle again -> it no longer locks (Settings stays up).
+    #     Sync + kill (lock_enabled=0 + the stepped timeout persisted to /var/zelto).
+    #   Boot #2 — FRESH QEMU, SAME disk: launch Settings -> Lock screen reads Off
+    #     and "Lock after" shows the stepped value (both loaded back from
+    #     /var/zelto; zelto-lock's serial log prints the same config). The
+    #     persistence proof.
+    # The idle timeouts are wide (dim 8s / lock 20s / off 120s) so the LOCKED
+    # window is large regardless of the TCG guest-clock skew; after the idle wait a
+    # tap normalises OFF-or-LOCKED to LOCKED before the screenshot, so the lock UI
+    # is captured whatever the clock did. Coordinates are overridable (rerun
+    # SKIP_BUILD=1 + overrides to retune from a captured frame). Boot is slow under
+    # TCG: keep SHOT_DELAY high. Use launchtap (zero-hold) for drawer launches.
+    if [ "${LOCK:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        SWIPE_X="${SWIPE_X:-640}"
+        # Settings drawer tile: alphabetical 4-col grid, row 2 col 3 on a fresh
+        # image. Retune from frame-lock-drawer.
+        SETTINGS_X="${SETTINGS_X:-786}"; SETTINGS_Y="${SETTINGS_Y:-317}"
+        # Settings Lock-screen section (measured off frame-lock-settings; the app
+        # is a vertical Scroll, these are the initial unscrolled positions):
+        #   the "Lock screen" On/Off chip (right column, like the other toggles),
+        #   and the "Lock after" stepper "+" button + its row y.
+        LOCK_TOGGLE_X="${LOCK_TOGGLE_X:-890}"; LOCK_TOGGLE_Y="${LOCK_TOGGLE_Y:-496}"
+        LOCK_INC_X="${LOCK_INC_X:-897}"; LOCK_ROW_Y="${LOCK_ROW_Y:-628}"
+        # A tap to wake the screen (normalise OFF->LOCKED); anywhere on the lock.
+        WAKE_X="${WAKE_X:-640}"; WAKE_Y="${WAKE_Y:-420}"
+        # How long to leave the device idle (wall seconds) so it locks under any
+        # clock scale (lock=20 guest-s; even at ~1x, 30s wall > 20).
+        IDLE_WAIT="${IDLE_WAIT:-30}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
+        launchtap() { move "$1" "$2"; sleep 0.3; btn down; btn up; }
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        # Swipe UP on the lock screen to unlock: press low, drag well past the top
+        # so translation_y clears the unlock threshold (-150px), release.
+        swipe_up() {
+            move "$SWIPE_X" 620; sleep 0.2; btn down; sleep 0.3
+            move "$SWIPE_X" 460; sleep 0.3
+            move "$SWIPE_X" 300; sleep 0.3
+            move "$SWIPE_X" 160; sleep 0.4; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        lock_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        lock_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [lock boot 1/2] home (lock disabled by default)"
+        lock_boot
+        sleep "$SHOT_DELAY"
+        shot frame-lock-home
+        echo "==> [lock 1] open drawer + launch Settings"
+        drag "$SWIPE_X" 690 110
+        sleep 4; shot frame-lock-drawer          # read the Settings tile y off this
+        launchtap "$SETTINGS_X" "$SETTINGS_Y"
+        sleep 8; shot frame-lock-settings         # Lock screen section (read coords)
+        echo "==> [lock 1] enable Lock screen -> bar padlock glyph appears"
+        tap "$LOCK_TOGGLE_X" "$LOCK_TOGGLE_Y"
+        sleep 2; shot frame-lock-enabled          # toggle On + padlock in the bar
+        echo "==> [lock 1] step 'Lock after' once (non-default -> persistence)"
+        tap "$LOCK_INC_X" "$LOCK_ROW_Y"
+        sleep 2; shot frame-lock-config           # "Lock after" bumped
+        echo "==> [lock 1] leave Settings foreground + idle ${IDLE_WAIT}s -> locks"
+        sleep "$IDLE_WAIT"
+        shot frame-lock-idle                      # dimmed/locked/off (clock-dependent)
+        echo "==> [lock 1] tap -> WAKES to the lock screen (app stays blocked)"
+        tap "$WAKE_X" "$WAKE_Y"
+        sleep 2; shot frame-lock-locked           # lock clock over Settings (blocked)
+        echo "==> [lock 1] swipe up -> UNLOCK -> Settings is foreground again"
+        swipe_up
+        # Settle generously: the unlock repaint is immediate but the TCG
+        # screendump can lag a frame and still show the (stale) lock (same capture
+        # artifact P17/P18 flagged); the disable tap below lands on the real
+        # Settings toggle, proving the unlock took.
+        sleep 5; shot frame-lock-unlocked         # Settings restored, no lock
+        echo "==> [lock 1] disable Lock screen -> padlock gone"
+        tap "$LOCK_TOGGLE_X" "$LOCK_TOGGLE_Y"
+        sleep 2; shot frame-lock-disabled
+        echo "==> [lock 1] idle again ${IDLE_WAIT}s -> no lock (disabled)"
+        sleep "$IDLE_WAIT"
+        shot frame-lock-noidle                    # Settings still up, never locked
+        echo "==> [lock 1] sync + shutdown (lock_enabled=0 + timeout persisted)"
+        sleep 3
+        lock_kill
+
+        echo "==> [lock boot 2/2] REBOOT same disk; settings persisted"
+        lock_boot
+        sleep "$SHOT_DELAY"
+        shot frame-lock-reboot                    # home, no lock (disabled persisted)
+        echo "==> [lock 2] open drawer + launch Settings -> Off + stepped timeout"
+        drag "$SWIPE_X" 690 110
+        sleep 4
+        launchtap "$SETTINGS_X" "$SETTINGS_Y"
+        sleep 8; shot frame-lock-reboot-settings  # Lock Off + "Lock after" persisted
+        lock_kill
+        echo "==> lock test done; frames in $OUT/frame-lock-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

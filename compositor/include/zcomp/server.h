@@ -23,6 +23,7 @@ struct wlr_scene_tree;
 struct wlr_layer_shell_v1;
 struct wlr_layer_surface_v1;
 struct wlr_foreign_toplevel_manager_v1;
+struct wlr_idle_notifier_v1;
 struct wlr_xdg_shell;
 struct wlr_seat;
 struct wlr_cursor;
@@ -79,6 +80,12 @@ typedef struct ZcompServer {
     // — the task switcher, over a standard protocol. zcomp keeps each handle's
     // title/app_id/activated state in sync with the toplevel it shadows.
     struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager;
+
+    // ext-idle-notify-v1: reports user activity on the seat so idle-aware clients
+    // (the lock screen) fire dim/lock/off timeouts. zcomp only pumps activity
+    // into it on every input event; the timeout POLICY lives in the client, so
+    // the compositor stays free of idle/lock policy (see seat.c notify_activity).
+    struct wlr_idle_notifier_v1 *idle_notifier;
 
     // Area left for app windows after subtracting layer exclusive zones.
     // Recomputed by zcomp_arrange().

@@ -176,6 +176,12 @@ launch_shell() {
         # observes sys.brightness and dims the whole screen. Input-transparent;
         # always-running like the shade. Started after it so it composites on top.
         [ -x /usr/bin/zelto-dim ] && /usr/bin/zelto-dim &
+        # The lock screen + idle lifecycle (P20): an OVERLAY layer-shell app that
+        # dims/locks/blanks the screen on inactivity (ext-idle-notify + the
+        # sys.lock_* broker settings) and gates it behind a swipe/passcode.
+        # Started LAST so it is the topmost overlay (above the shade + dim). Inert
+        # until sys.lock_enabled is turned on.
+        [ -x /usr/bin/zelto-lock ] && /usr/bin/zelto-lock &
         # Small stagger so the bar's exclusive zone is applied before the
         # launcher's initial size is computed (cosmetic; arrange re-runs anyway).
         sleep 1

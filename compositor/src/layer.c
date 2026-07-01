@@ -141,9 +141,18 @@ static void handle_layer_commit(struct wl_listener *listener, void *data) {
     // later commit may change anchors/exclusive zone. Re-arrange either way.
     // (wlr_scene_layer_surface_v1_configure sends the configure for us.)
     zcomp_arrange(ls->server);
-    // A commit may be where keyboard-interactivity first becomes EXCLUSIVE.
+    // A commit may be where keyboard-interactivity first becomes EXCLUSIVE (a
+    // layer that grabs the keyboard at runtime — the lock screen locking) or
+    // where it DROPS back to non-EXCLUSIVE (the lock screen unlocking). Sync in
+    // the first case; release the grab back to the front app in the second, so a
+    // surface that stays mapped but stops being modal returns the keyboard.
     if (ls->layer_surface->surface->mapped) {
-        layer_sync_keyboard(ls);
+        if (ls->layer_surface->current.keyboard_interactive ==
+            ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+            layer_sync_keyboard(ls);
+        } else if (ls->server->focused_layer == ls->layer_surface) {
+            layer_release_keyboard(ls);
+        }
     }
 }
 

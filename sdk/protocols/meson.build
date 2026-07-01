@@ -61,8 +61,32 @@ foreign_toplevel_client_code = custom_target(
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# ext-idle-notify-v1 client bindings (P20 idle/lock lifecycle). The compositor
+# reports user activity through wlr_idle_notifier_v1 (ext-idle-notify-v1); a
+# client — zelto-lock — binds ext_idle_notifier_v1 and creates idle notifications
+# with per-timeout `idled`/`resumed` events to drive the dim -> lock -> off state
+# machine. Unlike the wlr-* protocols this one SHIPS in wayland-protocols
+# (staging), so use the system XML directly rather than vendoring it. wlroots
+# ships the SERVER marshalling in libwlroots, so only the client side is generated.
+idle_notify_xml = wl_protocol_dir / 'staging/ext-idle-notify/ext-idle-notify-v1.xml'
+
+idle_notify_client_header = custom_target(
+  'ext-idle-notify-v1-client-protocol.h',
+  input : idle_notify_xml,
+  output : 'ext-idle-notify-v1-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+
+idle_notify_client_code = custom_target(
+  'ext-idle-notify-v1-protocol.c',
+  input : idle_notify_xml,
+  output : 'ext-idle-notify-v1-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 sdk_protocol_src = [
   xdg_client_header, xdg_client_code,
   layer_client_header, layer_client_code,
   foreign_toplevel_client_header, foreign_toplevel_client_code,
+  idle_notify_client_header, idle_notify_client_code,
 ]
