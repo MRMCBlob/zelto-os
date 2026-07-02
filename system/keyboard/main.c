@@ -114,12 +114,15 @@ static void on_hide_key(ZApp *app, void *state) {
 }
 
 // --- key views --------------------------------------------------------------
+// Flanking the glyph with Spacers centres it on the key's *main* (horizontal)
+// axis — .align only governs the cross (vertical) axis, so without them the
+// label hugs the left edge.
 static ZView cap(ZView inner, float grow) {
     return Grow(grow,
-        Background(z_rgba(0x2b, 0x33, 0x40, 0xff),
+        Background(Z_COLOR_SURFACE_3,
             CornerRadius(8.0f,
                 Frame(0.0f, (float)KEY_H,
-                    HStack(inner, .align = Z_ALIGN_CENTER)))));
+                    HStack(Spacer(), inner, Spacer(), .align = Z_ALIGN_CENTER)))));
 }
 static ZView glyph(const char *label) {
     return Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label)));
@@ -149,12 +152,13 @@ static ZView action_key(const char *label, ZAction act, float grow, ZColor bg) {
             Background(bg,
                 CornerRadius(8.0f,
                     Frame(0.0f, (float)KEY_H,
-                        HStack(glyph(label), .align = Z_ALIGN_CENTER))))));
+                        HStack(Spacer(), glyph(label), Spacer(),
+                               .align = Z_ALIGN_CENTER))))));
 }
 
 static ZView keyboard_grid(KbdState *s) {
-    ZColor sp = z_rgba(0x1b, 0x22, 0x2c, 0xff);          // special-key fill
-    ZColor shift_bg = s->shift ? z_rgba(0x2e, 0x9b, 0xff, 0xff) : sp;
+    ZColor sp = Z_COLOR_SURFACE_2;                        // special-key fill
+    ZColor shift_bg = s->shift ? Z_COLOR_PRIMARY : sp;   // active shift = accent
 
     ZView row1 = char_row(s, s->symbols ? "1234567890" : "qwertyuiop");
     ZView row2 = char_row(s, s->symbols ? "@#$%&-+()/" : "asdfghjkl");
@@ -178,14 +182,14 @@ static ZView keyboard_grid(KbdState *s) {
     // Row 4: symbols toggle, space (wide), paste (system clipboard), enter, hide.
     ZView row4 = HStack(
         action_key(s->symbols ? "ABC" : "?123", on_symbols, 1.6f, sp),
-        action_key("space", on_space, 4.2f, z_rgba(0x2b, 0x33, 0x40, 0xff)),
-        action_key("paste", on_paste, 1.8f, z_rgba(0x1d, 0x6e, 0x44, 0xff)),
+        action_key("space", on_space, 4.2f, Z_COLOR_SURFACE_3),
+        action_key("paste", on_paste, 1.8f, Z_COLOR_SUCCESS),
         action_key("enter", on_enter, 1.6f, sp),
         action_key("v", on_hide_key, 1.2f, sp),
         .spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f);
 
     return Fill(
-        Background(z_rgba(0x0c, 0x10, 0x16, 0xff),
+        Background(Z_COLOR_BG,
             VStack(row1, row2, row3, row4,
                    .spacing = 8.0f, .padding = 8.0f, .grow = 1.0f)));
 }

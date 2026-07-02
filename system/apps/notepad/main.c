@@ -102,7 +102,7 @@ static void add_note(ZApp *app, void *state) {
 static ZView rows_panel(NotepadState *s) {
     ZStackOpts opts = {.spacing = 6, .align = Z_ALIGN_LEADING, .padding = 16};
     int k = 0;
-    opts.children[k++] = Foreground(z_rgba(0xbf, 0xd8, 0xcc, 0xff),
+    opts.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("DB rows (newest first)")));
     if (s->row_count == 0) {
         opts.children[k++] = Foreground(Z_COLOR_TEXT_INV,
@@ -112,7 +112,7 @@ static ZView rows_panel(NotepadState *s) {
         opts.children[k++] = Foreground(Z_COLOR_TEXT_INV,
             Font(Z_FONT_BODY, Text("%s", s->rows[i])));
     }
-    return Background(z_rgba(0x1d, 0x6e, 0x44, 0xff),
+    return Background(Z_COLOR_SURFACE_2,
         CornerRadius(14, Frame(520.0f, 0.0f, z_stack(Z_AXIS_VERTICAL, &opts))));
 }
 
@@ -148,17 +148,17 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     col.children[k++] =
         Frame(0.0f, 52.0f, bar ? bar : z_rect(&(ZRectOpts){.height = 1.0f}));
     col.children[k++] = Frame(140.0f, 72.0f,
-        Background(z_rgba(0x2e, 0x9b, 0xff, 0xff),
+        Background(Z_COLOR_PRIMARY,
             CornerRadius(20,
                 Foreground(Z_COLOR_TEXT_INV,
                     Font(Z_FONT_TITLE,
                         Text("%lld", (long long)state->count))))));
-    col.children[k++] = Background(z_rgba(0xfa, 0x66, 0x26, 0xff),
+    col.children[k++] = Background(Z_COLOR_PRIMARY,
         Button(add_note, "Add note"));
     col.children[k++] = rows_panel(state);
     col.children[k++] = Spacer();
 
-    return Background(z_rgba(0x14, 0x18, 0x24, 0xff),
+    return Background(Z_COLOR_BG,
         z_stack(Z_AXIS_VERTICAL, &col));
 }
 

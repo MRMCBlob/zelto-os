@@ -232,12 +232,12 @@ static void tap_action(ZApp *app, void *state, void *data) {
 // the action button is a deeper tap target nested inside (deepest handler wins).
 // A non-interactive (history) card carries no handlers and renders dimmer.
 static ZView notif_card(Banner *b, bool interactive) {
-    ZColor cap = interactive ? z_rgba(0x9a, 0xa4, 0xad, 0xff)
-                             : z_rgba(0x6b, 0x74, 0x7d, 0xff);
-    ZColor bodyc = interactive ? z_rgba(0xc6, 0xcf, 0xd8, 0xff)
-                               : z_rgba(0x8a, 0x93, 0x9e, 0xff);
-    ZColor bg = interactive ? z_rgba(0x1a, 0x20, 0x28, 0xff)
-                            : z_rgba(0x12, 0x17, 0x1e, 0xff);
+    ZColor cap = interactive ? Z_COLOR_TEXT_MUTED
+                             : Z_COLOR_TEXT_FAINT;
+    ZColor bodyc = interactive ? Z_COLOR_TEXT
+                               : Z_COLOR_TEXT_MUTED;
+    ZColor bg = interactive ? Z_COLOR_SURFACE_2
+                            : Z_COLOR_SURFACE;
 
     ZStackOpts row = {.padding = 16, .spacing = 16, .align = Z_ALIGN_CENTER};
     int k = 0;
@@ -251,7 +251,7 @@ static ZView notif_card(Banner *b, bool interactive) {
     row.children[k++] = Spacer();
     if (interactive && b->action_id[0]) {
         row.children[k++] = OnTapData(tap_action, b,
-            Background(z_rgba(0x2e, 0x9b, 0xff, 0xff),
+            Background(Z_COLOR_PRIMARY,
                 CornerRadius(12,
                     Padding(14,
                         Foreground(Z_COLOR_TEXT_INV,
@@ -288,8 +288,8 @@ static void toggle_bright(ZApp *app, void *state) {
 // One quick-settings toggle chip: a rounded label that recolours by its on/off
 // bool (accent on, dark off) and flips it on tap.
 static ZView qs_chip(ZAction on_tap, const char *label, bool on) {
-    ZColor bg = on ? z_rgba(0x2e, 0x9b, 0xff, 0xff)
-                   : z_rgba(0x1b, 0x22, 0x2c, 0xff);
+    ZColor bg = on ? Z_COLOR_PRIMARY
+                   : Z_COLOR_SURFACE_3;
     return Grow(1.0f,
         OnTap(on_tap,
             Background(bg,
@@ -410,7 +410,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
             // transparent. The OnPan strip catches the down-swipe.
             ZView strip = OnPan(on_shade_pan,
                 Frame((float)w, (float)GRAB_H,
-                    ZStack(Rect(.color = z_rgba(0x8a, 0x93, 0x9e, 0x88),
+                    ZStack(Rect(.color = Z_COLOR_TEXT_MUTED,
                                 .width = 64, .height = 5, .radius = 3),
                            .align = Z_ALIGN_CENTER)));
             return Fill(VStack(strip, Spacer(),
@@ -440,7 +440,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     ZStackOpts list = {.spacing = 10, .padding = 22, .align = Z_ALIGN_LEADING};
     int li = 0;
     list.children[li++] = qs_block(s);
-    list.children[li++] = Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
+    list.children[li++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("NOTIFICATIONS")));
     bool any = false;
     for (int i = 0; i < MAX_BANNERS && li < Z_MAX_CHILDREN - 4; i++) {
@@ -454,12 +454,12 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         any = true;
     }
     if (!any) {
-        list.children[li++] = Foreground(z_rgba(0x6b, 0x74, 0x7d, 0xff),
+        list.children[li++] = Foreground(Z_COLOR_TEXT_FAINT,
             Text("No notifications"));
     }
     list.children[li++] = Spacer();
     list.children[li++] = OnTap(close_shade,
-        Rect(.color = z_rgba(0x8a, 0x93, 0x9e, 0xff),
+        Rect(.color = Z_COLOR_TEXT_MUTED,
              .width = 64, .height = 5, .radius = 3));
 
     // The opaque panel, fixed to (full width x panel_h). Frame sizes the depth
@@ -467,7 +467,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     // its own content. absorb_tap keeps a panel-background tap from closing.
     ZView panel = Frame((float)w, (float)panel_h,
         OnTap(absorb_tap,
-            Background(z_rgba(0x0c, 0x10, 0x18, 0xff),
+            Background(Z_COLOR_BG,
                 ZStack(
                     Fill(z_stack(Z_AXIS_VERTICAL, &list)),
                     .align = Z_ALIGN_CENTER))));

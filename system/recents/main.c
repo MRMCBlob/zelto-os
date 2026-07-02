@@ -63,8 +63,8 @@ static void on_key(ZApp *app, void *state, uint32_t keysym) {
 static ZView task_card(const ZTask *t) {
     const char *title = t->title ? t->title
                                  : (t->app_id ? t->app_id : "App");
-    ZColor bg = t->active ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
-                          : z_rgba(0x26, 0x2f, 0x3a, 0xff);
+    ZColor bg = t->active ? Z_COLOR_SUCCESS_DIM
+                          : Z_COLOR_SURFACE_2;
     return OnTapData(on_pick, (void *)t,
         Background(bg,
             CornerRadius(16,
@@ -72,12 +72,12 @@ static ZView task_card(const ZTask *t) {
                     VStack(
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_CALLOUT, Text("%s", title))),
-                        Foreground(z_rgba(0xc6, 0xcf, 0xd8, 0xff),
+                        Foreground(Z_COLOR_TEXT_MUTED,
                             Text("%s", t->active ? "Active" : "Paused")),
                         .spacing = 4, .align = Z_ALIGN_LEADING),
                     Spacer(),
                     OnTapData(on_close, (void *)t,
-                        Background(z_rgba(0xc8, 0x3a, 0x3a, 0xff),
+                        Background(Z_COLOR_DANGER,
                             Frame(56.0f, 56.0f,
                                 CornerRadius(12,
                                     Foreground(Z_COLOR_TEXT_INV,
@@ -105,14 +105,14 @@ static ZView recents_body(ZApp *app, RecentsState *s) {
         shown++;
     }
     if (shown == 0) {
-        card_opts.children[k++] = Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
+        card_opts.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
             Text("No running apps"));
     }
-    card_opts.children[k++] = Background(z_rgba(0x3a, 0x42, 0x4c, 0xff),
+    card_opts.children[k++] = Background(Z_COLOR_SURFACE_3,
         Button(on_dismiss, "Close"));
 
     float card_h = 150.0f + 96.0f * (float)(shown + 1);
-    ZView card = Background(z_rgba(0x12, 0x17, 0x1e, 0xff),
+    ZView card = Background(Z_COLOR_SURFACE,
         CornerRadius(20,
             Frame(620.0f, card_h,
                 z_stack(Z_AXIS_VERTICAL, &card_opts))));
@@ -121,7 +121,7 @@ static ZView recents_body(ZApp *app, RecentsState *s) {
     // whole surface a keyboard target for Escape.
     return OnTap(on_dismiss,
         OnKey(on_key,
-            Background(z_rgba(0x00, 0x00, 0x00, 0xb0),
+            Background(Z_COLOR_SCRIM,
                 VStack(
                     Spacer(),
                     HStack(Spacer(), card, Spacer(), .align = Z_ALIGN_CENTER),

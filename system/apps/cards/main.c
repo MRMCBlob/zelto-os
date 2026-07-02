@@ -42,8 +42,8 @@ static void use_camera(ZApp *app, void *state) {
 // backgrounded. Driven by the xdg activated state the compositor broadcasts.
 static ZView lifecycle_banner(ZApp *app) {
     bool act = z_app_active(app);
-    return Background(act ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
-                          : z_rgba(0x5e, 0x49, 0x1d, 0xff),
+    return Background(act ? Z_COLOR_SUCCESS_DIM
+                          : Z_COLOR_WARN_DIM,
         Padding(10,
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_CALLOUT, Text(act ? "ACTIVE" : "PAUSED")))));
@@ -59,16 +59,16 @@ static ZView camera_section(ZApp *app, CardsState *s) {
                                                        : "camera: prompt";
     ZStackOpts opts = {.spacing = 10, .align = Z_ALIGN_CENTER};
     int k = 0;
-    opts.children[k++] = Foreground(z_rgba(0x9a, 0xc4, 0xf0, 0xff),
+    opts.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("%s", status_txt)));
     if (s->cam_requesting) {
-        opts.children[k++] = Foreground(z_rgba(0xf0, 0xd0, 0x6b, 0xff),
+        opts.children[k++] = Foreground(Z_COLOR_WARN,
             Font(Z_FONT_CALLOUT, Text("Requesting...")));
     } else {
         opts.children[k++] = Button(use_camera, "Use camera");
     }
     if (s->cam == Z_PERM_GRANTED) {
-        opts.children[k++] = Background(z_rgba(0x1d, 0x9e, 0x55, 0xff),
+        opts.children[k++] = Background(Z_COLOR_SUCCESS,
             CornerRadius(16,
                 Frame(220.0f, 64.0f,
                     Foreground(Z_COLOR_TEXT_INV,
@@ -85,13 +85,13 @@ static ZView cards_body(ZApp *app, CardsState *state) {
         state->cam = z_perm_status("camera");
     }
 
-    return Background(z_rgba(0x10, 0x2a, 0x44, 0xff),
+    return Background(Z_COLOR_BG,
         VStack(
             lifecycle_banner(app),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Cards"))),
             Frame(140.0f, 140.0f,
-                Background(z_rgba(0x2e, 0x9b, 0xff, 0xff),
+                Background(Z_COLOR_PRIMARY,
                     CornerRadius(24,
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_LARGE_TITLE,

@@ -100,8 +100,8 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // Wi-Fi reads as connected only when it is on AND not overridden by airplane
     // mode (airplane forces the radios off — the actuation the bar surfaces).
     bool wifi_live = state->wifi && !state->airplane;
-    ZColor wifi_col = wifi_live ? z_rgba(0x3d, 0xc7, 0x8c, 0xff)   // green: on
-                                : z_rgba(0x4a, 0x53, 0x5c, 0xff);  // grey: off
+    ZColor wifi_col = wifi_live ? Z_COLOR_SUCCESS   // green: on
+                                : Z_COLOR_BORDER;   // grey: off
     // Brightness pip: a little bar whose width grows with the level (1..5), so a
     // step in Settings visibly changes the bar too.
     int64_t lvl = state->brightness < 1 ? 1 : (state->brightness > 5 ? 5
@@ -114,18 +114,18 @@ static ZView bar_body(ZApp *app, BarState *state) {
     int k = 0;
     cluster.children[k++] = dot(wifi_col);                       // Wi-Fi
     if (state->airplane) {
-        cluster.children[k++] = dot(z_rgba(0xf0, 0xa0, 0x30, 0xff));  // airplane
+        cluster.children[k++] = dot(Z_COLOR_WARN);  // airplane
     }
     if (state->lock_enabled) {
-        cluster.children[k++] = lock_glyph(z_rgba(0xc6, 0xcf, 0xd8, 0xff)); // lock
+        cluster.children[k++] = lock_glyph(Z_COLOR_TEXT); // lock
     }
     cluster.children[k++] = Frame(pip_w, 10.0f,
-        Rect(.color = z_rgba(0xc6, 0xcf, 0xd8, 0xff), .radius = 3));  // brightness
+        Rect(.color = Z_COLOR_TEXT, .radius = 3));  // brightness
     cluster.children[k++] = Foreground(Z_COLOR_TEXT_INV, Text("%s", clock));
 
     // A long-press on the bar manually locks now (bumps sys.lock_now).
     return OnLongPress(bar_longpress, NULL,
-        Background(z_rgba(0x10, 0x14, 0x1a, 0xff),
+        Background(Z_COLOR_BG,
             HStack(
                 Foreground(Z_COLOR_TEXT_INV,
                     Font(Z_FONT_BODY, Text("Zelto"))),

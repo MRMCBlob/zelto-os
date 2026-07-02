@@ -47,25 +47,25 @@ static ZView pinger_body(ZApp *app, PingerState *state) {
     // action delivered before this runs, as for intents).
     z_on_notification_action(app, on_action, state);
 
-    ZColor panel_bg = state->got_action ? z_rgba(0x1d, 0x6e, 0x44, 0xff)
-                                         : z_rgba(0x2a, 0x30, 0x38, 0xff);
+    ZColor panel_bg = state->got_action ? Z_COLOR_SUCCESS_DIM
+                                         : Z_COLOR_SURFACE_2;
 
-    return Background(z_rgba(0x40, 0x16, 0x2a, 0xff),
+    return Background(Z_COLOR_BG,
         VStack(
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Pinger"))),
-            Foreground(z_rgba(0xe8, 0xb8, 0xc6, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT, Text("Posts heads-up notifications"))),
             Spacer(),
-            Background(z_rgba(0xb5, 0x3d, 0x6a, 0xff),
+            Background(Z_COLOR_PRIMARY,
                 Button(post_ping, "Post")),
-            Foreground(z_rgba(0xc0, 0x8c, 0x9a, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION, Text("posted %d", state->posts))),
             Background(panel_bg,
                 CornerRadius(14,
                     Frame(360.0f, 80.0f,
                         VStack(
-                            Foreground(z_rgba(0xd8, 0xbf, 0xcc, 0xff),
+                            Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("last action"))),
                             Foreground(Z_COLOR_TEXT_INV,
                                 Font(Z_FONT_CALLOUT,

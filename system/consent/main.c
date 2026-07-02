@@ -35,28 +35,28 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
     (void)app;
     // The modal card: title, the "<app> wants to use the <perm>" line, and the
     // Deny / Allow actions (tinted via Background over the default button fill).
-    ZView card = Background(z_rgba(0x1a, 0x20, 0x28, 0xff),
+    ZView card = Background(Z_COLOR_SURFACE,
         CornerRadius(20,
             Frame(580.0f, 300.0f,
                 VStack(
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_TITLE, Text("Permission request"))),
-                    Foreground(z_rgba(0xc6, 0xcf, 0xd8, 0xff),
+                    Foreground(Z_COLOR_TEXT_MUTED,
                         Font(Z_FONT_CALLOUT,
                             Text("\"%s\" wants to use the %s", s->app_id,
                                  s->perm))),
                     Spacer(),
                     HStack(
-                        Background(z_rgba(0x3a, 0x42, 0x4c, 0xff),
+                        Background(Z_COLOR_SURFACE_3,
                             Button(on_deny, "Deny")),
                         Spacer(),
-                        Background(z_rgba(0x1d, 0x9e, 0x55, 0xff),
+                        Background(Z_COLOR_SUCCESS,
                             Button(on_allow, "Allow")),
                         .spacing = 16, .align = Z_ALIGN_CENTER),
                     .padding = 28, .spacing = 18, .align = Z_ALIGN_LEADING))));
 
     // Dim full-screen backdrop with the card centred in it.
-    return Background(z_rgba(0x00, 0x00, 0x00, 0xb0),
+    return Background(Z_COLOR_SCRIM,
         VStack(
             Spacer(),
             HStack(Spacer(), card, Spacer(), .align = Z_ALIGN_CENTER),

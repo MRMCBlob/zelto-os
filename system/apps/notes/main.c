@@ -46,13 +46,13 @@ static void on_url(ZApp *app, const char *url, void *ud) {
 // A delivered-payload panel: green when something arrived, muted placeholder
 // otherwise. Distinct colour so a capture proves the intent reached us.
 static ZView payload_panel(const char *label, const char *value, bool got) {
-    ZColor bg = got ? z_rgba(0x1d, 0x6e, 0x44, 0xff)
-                    : z_rgba(0x2a, 0x30, 0x38, 0xff);
+    ZColor bg = got ? Z_COLOR_SUCCESS_DIM
+                    : Z_COLOR_SURFACE_2;
     return Background(bg,
         CornerRadius(14,
             Frame(520.0f, 96.0f,
                 VStack(
-                    Foreground(z_rgba(0xbf, 0xd8, 0xcc, 0xff),
+                    Foreground(Z_COLOR_TEXT_MUTED,
                         Font(Z_FONT_CAPTION, Text("%s", label))),
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_CALLOUT,
@@ -91,7 +91,7 @@ static ZView notes_body(ZApp *app, NotesState *state) {
                                       state->got_url);
     col.children[k++] = Spacer();
 
-    return Background(z_rgba(0x12, 0x20, 0x18, 0xff),
+    return Background(Z_COLOR_BG,
         z_stack(Z_AXIS_VERTICAL, &col));
 }
 

@@ -39,11 +39,11 @@ static void on_cancel(ZApp *app, void *state) {
 // One candidate row: a tappable bar showing the app_id, tinted like a list item.
 static ZView candidate_row(const char *app_id, int index) {
     return OnTapData(on_pick, (void *)(intptr_t)index,
-        Background(z_rgba(0x26, 0x2f, 0x3a, 0xff),
+        Background(Z_COLOR_SURFACE_2,
             CornerRadius(12,
                 HStack(
                     Frame(40.0f, 40.0f,
-                        Rect(.color = z_rgba(0x2e, 0x9b, 0xff, 0xff),
+                        Rect(.color = Z_COLOR_PRIMARY,
                              .radius = 10)),
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_CALLOUT, Text("%s", app_id))),
@@ -62,18 +62,18 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
     for (int i = 0; i < s->n && k < Z_MAX_CHILDREN - 2; i++) {
         card_opts.children[k++] = candidate_row(s->ids[i], i + 1);
     }
-    card_opts.children[k++] = Background(z_rgba(0x3a, 0x42, 0x4c, 0xff),
+    card_opts.children[k++] = Background(Z_COLOR_SURFACE_3,
         Button(on_cancel, "Cancel"));
 
     // Card height grows with the candidate count.
     float card_h = 150.0f + 64.0f * (float)(s->n + 1);
-    ZView card = Background(z_rgba(0x1a, 0x20, 0x28, 0xff),
+    ZView card = Background(Z_COLOR_SURFACE,
         CornerRadius(20,
             Frame(560.0f, card_h,
                 z_stack(Z_AXIS_VERTICAL, &card_opts))));
 
     // Dim full-screen backdrop with the card centred in it.
-    return Background(z_rgba(0x00, 0x00, 0x00, 0xb0),
+    return Background(Z_COLOR_SCRIM,
         VStack(
             Spacer(),
             HStack(Spacer(), card, Spacer(), .align = Z_ALIGN_CENTER),

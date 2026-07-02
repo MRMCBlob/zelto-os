@@ -321,7 +321,7 @@ static void on_digit(ZApp *app, void *state, void *data) {
 static ZView key_digit(int d) {
     return Grow(1.0f,
         OnTapData(on_digit, (void *)(intptr_t)d,
-            Background(z_rgba(0x1b, 0x22, 0x2c, 0xff),
+            Background(Z_COLOR_SURFACE_2,
                 CornerRadius(16.0f,
                     Frame(96.0f, 72.0f,
                         Foreground(Z_COLOR_TEXT_INV,
@@ -334,8 +334,8 @@ static ZView keypad(LockState *s) {
         dots[i] = '*';
     }
     return VStack(
-        Foreground(s->wrong ? z_rgba(0xf0, 0x6a, 0x6a, 0xff)
-                            : z_rgba(0xc6, 0xcf, 0xd8, 0xff),
+        Foreground(s->wrong ? Z_COLOR_DANGER
+                            : Z_COLOR_TEXT,
             Font(Z_FONT_TITLE, Text(s->wrong ? "Wrong code" : "Enter passcode"))),
         Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_LARGE_TITLE, Text("%s", dots))),
         HStack(key_digit(1), key_digit(2), key_digit(3),
@@ -366,14 +366,14 @@ static ZView lock_screen(ZApp *app, LockState *s) {
         content = VStack(
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("%s", clock))),
-            Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_TITLE, Text("%s", date))),
             Spacer(),
-            Foreground(z_rgba(0x8a, 0x93, 0x9e, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT,
                     Text(s->passcode[0] ? "Swipe up for passcode"
                                         : "Swipe up to unlock"))),
-            Rect(.color = z_rgba(0xc6, 0xcf, 0xd8, 0xff),
+            Rect(.color = Z_COLOR_TEXT_MUTED,
                  .width = 64, .height = 5, .radius = 3),
             .spacing = 16, .align = Z_ALIGN_CENTER);
     }
@@ -383,7 +383,7 @@ static ZView lock_screen(ZApp *app, LockState *s) {
     // buttons are OnTap targets nested inside — tap vs. swipe is decided by slop.
     return OnPan(on_lock_pan,
         OnTap(absorb,
-            Background(z_rgba(0x0a, 0x0d, 0x14, 0xff),
+            Background(Z_COLOR_BG,
                 Fill(ZStack(content, .align = Z_ALIGN_CENTER,
                             .padding = 40)))));
 }
@@ -409,7 +409,7 @@ static ZView lock_body(ZApp *app, LockState *s) {
         z_layer_set_keyboard(app, false);
         z_layer_set_input_none(app);   // mild dim: taps fall through + wake
         z_full_repaint(app);
-        return Background(z_rgba(0x00, 0x00, 0x00, DIM_ALPHA), Fill(Spacer()));
+        return Background(z_scrim(DIM_ALPHA), Fill(Spacer()));
     case ST_LOCKED:
         z_layer_set_keyboard(app, true);          // modal keyboard grab
         z_layer_set_input_region(app, 0, 0, 0, 0);// whole surface (block the app)
@@ -420,7 +420,7 @@ static ZView lock_body(ZApp *app, LockState *s) {
         z_layer_set_input_region(app, 0, 0, 0, 0);// whole surface: "screen off"
         z_full_repaint(app);
         return OnTap(absorb,
-            Background(z_rgba(0x00, 0x00, 0x00, 0xff), Fill(Spacer())));
+            Background(z_scrim(0xff), Fill(Spacer())));
     case ST_ACTIVE:
     default:
         z_layer_set_keyboard(app, false);

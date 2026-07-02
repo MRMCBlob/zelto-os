@@ -25,18 +25,18 @@ static void bump(ZApp *app, void *state) {
 
 static ZView widget_body(ZApp *app, WidgetState *state) {
     (void)app;
-    return Background(z_rgba(0x16, 0x2a, 0x1e, 0xff),
+    return Background(Z_COLOR_BG,
         VStack(
             Spacer(),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Widget"))),
-            Foreground(z_rgba(0x9f, 0xe6, 0xb8, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT,
                      Text("Installed at runtime from a signed .zap"))),
             Spacer(),
-            Background(z_rgba(0x2e, 0xb6, 0x6e, 0xff),
+            Background(Z_COLOR_PRIMARY,
                 Button(bump, "Tap me")),
-            Foreground(z_rgba(0xbf, 0xe8, 0xcf, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION, Text("taps: %d", state->taps))),
             Spacer(),
             .padding = 32, .spacing = 18, .align = Z_ALIGN_CENTER));

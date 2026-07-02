@@ -74,7 +74,7 @@ static bool g_home_scanned;
 // Parse "RRGGBB" hex into an opaque ZColor (defaults grey on a bad value).
 static ZColor parse_color(const char *hex) {
     if (!hex || strlen(hex) < 6) {
-        return z_rgba(0x3a, 0x42, 0x4c, 0xff);
+        return Z_COLOR_SURFACE_3;
     }
     long v = strtol(hex, NULL, 16);
     return z_rgba((uint8_t)((v >> 16) & 0xff), (uint8_t)((v >> 8) & 0xff),
@@ -96,7 +96,7 @@ static bool parse_manifest(const char *path, AppEntry *e) {
         return false;
     }
     memset(e, 0, sizeof(*e));
-    e->color = z_rgba(0x3a, 0x42, 0x4c, 0xff);
+    e->color = Z_COLOR_SURFACE_3;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         chomp(line);
@@ -531,11 +531,11 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                 Spacer(),
                 OnTap(open_drawer,
                     VStack(
-                        Rect(.color = z_rgba(0x8a, 0x93, 0x9e, 0xff),
+                        Rect(.color = Z_COLOR_TEXT_MUTED,
                              .width = 56, .height = 5, .radius = 3),
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_CALLOUT, Text("^"))),
-                        Foreground(z_rgba(0xb6, 0xbe, 0xc8, 0xff),
+                        Foreground(Z_COLOR_TEXT_MUTED,
                             Font(Z_FONT_CAPTION, Text("All apps"))),
                         .spacing = 4, .align = Z_ALIGN_CENTER)),
                 .spacing = 16, .padding = 24, .align = Z_ALIGN_CENTER)),
@@ -550,7 +550,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     float slide = (1.0f - drawer_v) * state->surface_h;
     ZView grabber = OnPan(on_drawer_pan,
         VStack(
-            Rect(.color = z_rgba(0x8a, 0x93, 0x9e, 0xff),
+            Rect(.color = Z_COLOR_TEXT_MUTED,
                  .width = 56, .height = 5, .radius = 3),
             HStack(
                 Foreground(Z_COLOR_TEXT_INV,
@@ -563,7 +563,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             .spacing = 10, .align = Z_ALIGN_CENTER));
 
     ZView drawer = Offset(NULL, slide, Fill(
-        Background(z_rgba(0x06, 0x08, 0x0d, 0xff),
+        Background(Z_COLOR_BG,
             VStack(
                 grabber,
                 Grow(1.0f, Scroll(app, app_grid(NULL, g_n_apps),
@@ -579,9 +579,9 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         const AppEntry *e = &g_apps[state->menu_idx];
         bool fav = fav_pos(state->menu_idx) >= 0;
         menu = Fill(ZStack(
-            OnTap(close_menu, Fill(Background(z_rgba(0x00, 0x00, 0x00, 0x99),
+            OnTap(close_menu, Fill(Background(Z_COLOR_SCRIM,
                                               Fill(Spacer())))),
-            Background(z_rgba(0x1b, 0x22, 0x2c, 0xff),
+            Background(Z_COLOR_SURFACE,
                 CornerRadius(20.0f,
                     Padding(24.0f,
                         VStack(
@@ -602,7 +602,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         z_invalidate(app);
         toast = Fill(VStack(
             Spacer(),
-            Background(z_rgba(0x24, 0x2a, 0x34, 0xf0),
+            Background(Z_COLOR_SURFACE_2,
                 CornerRadius(12.0f,
                     Padding(14.0f,
                         Foreground(Z_COLOR_TEXT_INV,

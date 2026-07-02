@@ -68,26 +68,26 @@ static void do_fetch(ZApp *app, void *state) {
 static ZView fetch_body(ZApp *app, FetchState *state) {
     state->app = app;   // capture for the off-loop net callback
 
-    ZColor panel_bg = state->error  ? z_rgba(0x6e, 0x1d, 0x2a, 0xff)
-                      : state->done ? z_rgba(0x1d, 0x4e, 0x6e, 0xff)
-                                    : z_rgba(0x2a, 0x30, 0x38, 0xff);
+    ZColor panel_bg = state->error  ? Z_COLOR_DANGER_DIM
+                      : state->done ? Z_COLOR_ACCENT_DIM
+                                    : Z_COLOR_SURFACE_2;
 
     const char *status_line =
         state->pending ? "fetching..."
         : state->done  ? (state->error ? "error" : "200 OK")
                        : "idle";
 
-    return Background(z_rgba(0x10, 0x20, 0x30, 0xff),
+    return Background(Z_COLOR_BG,
         VStack(
             Spacer(),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Fetch"))),
-            Foreground(z_rgba(0x9d, 0xc8, 0xe8, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT, Text("HTTP GET over the network permission"))),
             Spacer(),
-            Background(z_rgba(0x2e, 0x9b, 0xff, 0xff),
+            Background(Z_COLOR_PRIMARY,
                 Button(do_fetch, "Fetch")),
-            Foreground(z_rgba(0x8c, 0xa8, 0xc0, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION,
                      Text("requests %d   status: %s", state->requests,
                           status_line))),
@@ -95,7 +95,7 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
                 CornerRadius(14,
                     Frame(560.0f, 160.0f,
                         VStack(
-                            Foreground(z_rgba(0xbf, 0xd8, 0xe8, 0xff),
+                            Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("response body"))),
                             Foreground(Z_COLOR_TEXT_INV,
                                 Font(Z_FONT_BODY,

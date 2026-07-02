@@ -84,27 +84,27 @@ static void install_tampered(ZApp *app, void *state) {
 
 static ZView store_body(ZApp *app, StoreState *state) {
     (void)app;
-    ZColor panel_bg = !state->ran     ? z_rgba(0x2a, 0x30, 0x38, 0xff)
-                      : state->last_ok ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
-                                       : z_rgba(0x6e, 0x1d, 0x2a, 0xff);
-    return Background(z_rgba(0x0e, 0x14, 0x1c, 0xff),
+    ZColor panel_bg = !state->ran     ? Z_COLOR_SURFACE_2
+                      : state->last_ok ? Z_COLOR_SUCCESS_DIM
+                                       : Z_COLOR_DANGER_DIM;
+    return Background(Z_COLOR_BG,
         VStack(
             Spacer(),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Store"))),
-            Foreground(z_rgba(0x9d, 0xb4, 0xc8, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT,
                      Text("Install signed .zap packages onto the disk"))),
             Spacer(),
-            Background(z_rgba(0x2e, 0x9b, 0xff, 0xff),
+            Background(Z_COLOR_PRIMARY,
                 Button(install_widget, "Install Widget")),
-            Background(z_rgba(0xc8, 0x6b, 0x3a, 0xff),
+            Background(Z_COLOR_DANGER,
                 Button(install_tampered, "Install tampered")),
             Background(panel_bg,
                 CornerRadius(14,
                     Frame(620.0f, 96.0f,
                         VStack(
-                            Foreground(z_rgba(0xbf, 0xd8, 0xe8, 0xff),
+                            Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("result"))),
                             Foreground(Z_COLOR_TEXT_INV,
                                 Font(Z_FONT_BODY,

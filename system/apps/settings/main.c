@@ -196,8 +196,8 @@ static ZView chip(ZColor bg, const char *label) {
 
 // One label + On/Off toggle row.
 static ZView toggle_row(const char *label, bool on, ZAction act) {
-    ZColor bg = on ? z_rgba(0x2e, 0x9b, 0xff, 0xff)
-                   : z_rgba(0x1b, 0x22, 0x2c, 0xff);
+    ZColor bg = on ? Z_COLOR_PRIMARY
+                   : Z_COLOR_SURFACE_3;
     return HStack(
         Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label))),
         Spacer(),
@@ -208,7 +208,7 @@ static ZView toggle_row(const char *label, bool on, ZAction act) {
 // A label + [-] value [+] stepper row (idle timeout controls).
 static ZView stepper_row(const char *label, int64_t val, const char *unit,
                          ZAction dec, ZAction inc) {
-    ZColor dark = z_rgba(0x1b, 0x22, 0x2c, 0xff);
+    ZColor dark = Z_COLOR_SURFACE_3;
     return HStack(
         Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label))),
         Spacer(),
@@ -222,7 +222,7 @@ static ZView stepper_row(const char *label, int64_t val, const char *unit,
 static ZView settings_body(ZApp *app, SettingsState *state) {
     ensure_init(app, state);
 
-    ZColor dark = z_rgba(0x1b, 0x22, 0x2c, 0xff);
+    ZColor dark = Z_COLOR_SURFACE_3;
     ZStackOpts col = {.spacing = 14, .align = Z_ALIGN_LEADING};
     int k = 0;
     col.children[k++] = Foreground(Z_COLOR_TEXT_INV,
@@ -242,7 +242,7 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
         .spacing = 14, .align = Z_ALIGN_CENTER);
 
     // --- P20 lock screen section ---
-    col.children[k++] = Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
+    col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("LOCK SCREEN")));
     col.children[k++] = toggle_row("Lock screen", state->lock_enabled, t_lock);
     col.children[k++] = stepper_row("Dim after", state->dim_s, "s",
@@ -254,18 +254,18 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
     col.children[k++] = toggle_row("Passcode (1234)", state->passcode_set,
                                    t_passcode);
     col.children[k++] = OnTap(lock_now,
-        Background(z_rgba(0x2e, 0x9b, 0xff, 0xff),
+        Background(Z_COLOR_PRIMARY,
             CornerRadius(14.0f,
                 Padding(14.0f,
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_CALLOUT, Text("Lock now")))))));
-    col.children[k++] = Foreground(z_rgba(0x9a, 0xc4, 0xf0, 0xff),
+    col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION,
             Text("Shared with the shade — changes apply live, and persist")));
 
     // Scroll so the whole list stays reachable in the usable area (top bar +
     // bottom nav shrink it below the content height once the lock section is in).
-    return Background(z_rgba(0x14, 0x18, 0x24, 0xff),
+    return Background(Z_COLOR_BG,
         Fill(Scroll(app,
             VStack(
                 Frame(560.0f, 0.0f, z_stack(Z_AXIS_VERTICAL, &col)),

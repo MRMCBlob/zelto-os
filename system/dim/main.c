@@ -88,7 +88,7 @@ static ZView dim_body(ZApp *app, DimState *s) {
     // renderer keeps the alpha, so this tints (not covers) the app below; a
     // tint over transparent needs a full repaint.
     z_full_repaint(app);
-    return Background(z_rgba(0x00, 0x00, 0x00, (uint8_t)a), Fill(Spacer()));
+    return Background(z_scrim((uint8_t)a), Fill(Spacer()));
 }
 
 // OVERLAY (above the app + status bar), anchored to all four edges below the bar

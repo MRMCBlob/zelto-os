@@ -31,19 +31,19 @@ static void open_link(ZApp *app, void *state) {
 
 static ZView share_body(ZApp *app, ShareState *state) {
     (void)app;
-    return Background(z_rgba(0x2a, 0x16, 0x40, 0xff),
+    return Background(Z_COLOR_BG,
         VStack(
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Share"))),
-            Foreground(z_rgba(0xc6, 0xb8, 0xe8, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT,
                     Text("Hand content to another app"))),
             Spacer(),
-            Background(z_rgba(0x6a, 0x3d, 0xb5, 0xff),
+            Background(Z_COLOR_PRIMARY,
                 Button(share_text, "Share text")),
-            Background(z_rgba(0x3d, 0x5b, 0xb5, 0xff),
+            Background(Z_COLOR_SURFACE_3,
                 Button(open_link, "Open note link")),
-            Foreground(z_rgba(0x9a, 0x8c, 0xc0, 0xff),
+            Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION,
                     Text("shared %d time(s)", state->shares))),
             Spacer(),

@@ -99,7 +99,7 @@ static ZView nav_button(const char *glyph, const char *label, ZAction act) {
             VStack(
                 Foreground(Z_COLOR_TEXT_INV,
                     Font(Z_FONT_TITLE, Text("%s", glyph))),
-                Foreground(z_rgba(0x9a, 0xa4, 0xad, 0xff),
+                Foreground(Z_COLOR_TEXT_MUTED,
                     Font(Z_FONT_CAPTION, Text("%s", label))),
                 .spacing = 2, .align = Z_ALIGN_CENTER)));
 }
@@ -107,7 +107,7 @@ static ZView nav_button(const char *glyph, const char *label, ZAction act) {
 static ZView nav_body(ZApp *app, NavState *s) {
     (void)app;
     (void)s;
-    return Background(z_rgba(0x10, 0x14, 0x1a, 0xff),
+    return Background(Z_COLOR_BG,
         HStack(
             nav_button("<", "Back", on_back),
             nav_button("O", "Home", on_home),
