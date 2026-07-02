@@ -15,6 +15,7 @@ struct wlr_allocator;
 struct wlr_compositor;
 struct wlr_subcompositor;
 struct wlr_data_device_manager;
+struct wlr_data_control_manager_v1;
 struct wlr_output_layout;
 struct wlr_scene;
 struct wlr_scene_output_layout;
@@ -44,6 +45,16 @@ typedef struct ZcompServer {
     struct wlr_compositor *compositor;          // wl_compositor
     struct wlr_subcompositor *subcompositor;    // wl_subcompositor
     struct wlr_data_device_manager *ddm;        // wl_data_device_manager
+    // wlr-data-control-unstable-v1: focus-independent clipboard access. A normal
+    // client reads the selection only while it holds keyboard focus (wl_data_device
+    // delivers the offer to the focused client only); the on-screen keyboard is a
+    // layer surface that never takes keyboard focus, so it can't read the clipboard
+    // that way. data-control delivers the current selection to every bound client
+    // regardless of focus — it's how a clipboard manager (or our keyboard's Paste
+    // key) reads the CLIPBOARD selection. wlroots ships the marshalling in
+    // libwlroots (no compositor XML, like wl_data_device); Copy still goes through
+    // the core wl_data_device path (seat.c request_set_selection). See P22.
+    struct wlr_data_control_manager_v1 *data_control;
 
     // Scene graph: composites every surface over the background each vsync.
     struct wlr_output_layout *output_layout;

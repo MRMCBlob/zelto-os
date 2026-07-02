@@ -165,8 +165,18 @@ ZView z_button(ZAction on_tap, const char *fmt, ...);
 typedef struct ZTextField {
     char text[Z_TEXTFIELD_CAP];   // current contents (NUL-terminated)
     int len;                      // bytes in text (excluding the NUL)
-    // Fired from the app loop after the buffer changes (a committed string or a
-    // backspace), with the live app + the app state pointer. NULL = ignore.
+    // Selection + caret (P22). `caret` is the insertion point (byte offset, 0..len)
+    // where typed/pasted text lands and backspace deletes; `anchor` is the other
+    // end of the selection. When anchor == caret there is NO selection and the
+    // caret blinks at that offset; when they differ the run [min,max) is selected
+    // (highlighted, with drag handles). A tap focuses + collapses to the caret;
+    // long-press selects the word; a drag extends. Both default 0 (caret at start);
+    // the framework keeps them in 0..len as the buffer changes.
+    int caret;
+    int anchor;
+    // Fired from the app loop after the buffer changes (a committed string, a
+    // backspace, a paste or a cut), with the live app + the app state pointer.
+    // NULL = ignore.
     void (*on_change)(ZApp *app, void *state);
 } ZTextField;
 
@@ -199,6 +209,55 @@ void z_im_commit_text(ZApp *app, const char *utf8);
 
 // Delete one byte before the cursor in the focused field (backspace).
 void z_im_backspace(ZApp *app);
+
+// ---------------------------------------------------------------------------
+// Clipboard + text selection (P22).
+//
+// The system clipboard is the standard Wayland CLIPBOARD selection (wl_data_device):
+// Copy/Cut place text on it; Paste reads it back — so text copied in one app
+// pastes into a field in another, with neither app knowing about the other.
+//
+//   z_clipboard_set(text)      Take ownership of the clipboard, offering `text` as
+//                              text/plain. Creates a wl_data_source and sets the
+//                              seat selection (needs a recent input event serial,
+//                              which the framework tracks — call it from a tap
+//                              handler). Copies `text`.
+//   z_clipboard_get(cb, ud)    Read the current clipboard asynchronously. The
+//                              offer's data is piped from the source client; the
+//                              read fd is parked in the app loop (like a permission
+//                              reply) and `cb` fires with the text once complete —
+//                              nothing blocks the render loop. `text` is NULL/empty
+//                              when the clipboard is empty or holds no text. Reads
+//                              go through wlr-data-control so a focus-less client
+//                              (the on-screen keyboard) can paste too; writes use
+//                              the core wl_data_device selection. One get at a time.
+//
+// Selection lives on a focused ZTextField (anchor+caret byte range). The gestures
+// are wired into TextField automatically: a tap focuses and moves the caret,
+// long-press selects the word under the finger, and a drag extends the selection.
+// A small floating action bar (z_selection_bar) acts on the selection. These
+// operate on the app's currently-focused field.
+// ---------------------------------------------------------------------------
+typedef void (*ZClipboardCb)(ZApp *app, const char *text, void *ud);
+
+void z_clipboard_set(const char *text);
+void z_clipboard_get(ZClipboardCb cb, void *ud);
+
+// Selection actions on the focused field. Copy/Cut require a selection (no-op
+// without one); Paste inserts the clipboard at the caret, replacing any selection;
+// Select-all selects the whole field. Copy keeps the selection; Cut collapses it.
+void z_field_copy(ZApp *app);
+void z_field_cut(ZApp *app);
+void z_field_paste(ZApp *app);
+void z_field_select_all(ZApp *app);
+
+// The floating Copy / Cut / Paste / Select-all action bar for the focused field.
+// Returns a ZView to drop into your body() (e.g. pinned above the field) while a
+// selection is active, or NULL when there is no selection to act on — so
+// `z_selection_bar(app)` can be listed directly as an optional child (a NULL child
+// terminates a stack's list, so guard it or place it in its own slot). Built from
+// ordinary Buttons wired to the z_field_* actions above.
+ZView z_selection_bar(ZApp *app);
 
 // ---------------------------------------------------------------------------
 // Modifiers. Each wraps a ZView and returns it (apply outermost-last).

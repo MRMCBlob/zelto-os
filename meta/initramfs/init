@@ -191,6 +191,20 @@ launch_shell() {
         # launcher's initial size is computed (cosmetic; arrange re-runs anyway).
         sleep 1
         /usr/bin/zelto-launcher &
+        # P22 clipboard demo (CLIP harness only): auto-launch the two text-field
+        # demo apps so the test never taps a launcher tile — a tile tap is a
+        # TCG-flaky long-press (it becomes the curate menu ~half the time). Gated
+        # by a kernel cmdline flag so normal boots are unaffected. Notes first, then
+        # Notepad, so Notepad is frontmost (MRU) and the Switch chord (Tab) reaches
+        # Notes for the cross-app paste.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" zelto.clipdemo=1 "*)
+                sleep 2
+                [ -x /usr/bin/zelto-notes ] && /usr/bin/zelto-notes &
+                sleep 1
+                [ -x /usr/bin/zelto-notepad ] && /usr/bin/zelto-notepad &
+                ;;
+        esac
     else
         echo "[zelto-init] Wayland socket never appeared; shell not started"
     fi

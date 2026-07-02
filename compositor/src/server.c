@@ -10,6 +10,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_data_control_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
@@ -72,8 +73,17 @@ bool zcomp_server_init(ZcompServer *server) {
     server->compositor = wlr_compositor_create(server->display, 5,
                                                server->renderer);
     server->subcompositor = wlr_subcompositor_create(server->display);
-    // wl_data_device_manager (clipboard / drag-and-drop plumbing).
+    // wl_data_device_manager (clipboard / drag-and-drop plumbing). Copy/paste
+    // between focused clients rides this: a client offering a text/plain selection
+    // (Copy) fires seat.request_set_selection -> wlr_seat_set_selection (seat.c);
+    // the focused client reading the current wl_data_offer (Paste) gets it back.
     server->ddm = wlr_data_device_manager_create(server->display);
+    // wlr-data-control-unstable-v1 (P22): the same CLIPBOARD selection, but readable
+    // by clients that never hold keyboard focus. The on-screen keyboard is a layer
+    // surface (no focus), so its Paste key reads the clipboard through this instead
+    // of wl_data_device. wlroots ships the marshalling in libwlroots (no XML here).
+    server->data_control =
+        wlr_data_control_manager_v1_create(server->display);
 
     // --- Scene graph + output layout --------------------------------------
     server->output_layout = wlr_output_layout_create();

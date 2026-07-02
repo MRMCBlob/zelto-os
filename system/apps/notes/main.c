@@ -21,6 +21,8 @@ typedef struct NotesState {
     char shared[256];       // last shared text
     bool got_url;
     char url[256];          // last opened deep link
+    ZTextField field;       // paste target (P22): copy in Notepad, switch here,
+                            // paste — the clipboard crosses the process boundary
 } NotesState;
 
 // Incoming share: copy the first text item into our state and repaint.
@@ -68,17 +70,29 @@ static ZView notes_body(ZApp *app, NotesState *state) {
         z_on_open_url(app, on_url, state);
     }
 
+    // TOP-anchored content + an INLINE fixed-height action-bar slot below the
+    // shade's grab strip — same structure as Notepad (an overlay's buttons proved
+    // un-hittable).
+    ZView bar = z_selection_bar(app);
+    ZStackOpts col = {.padding = 28, .spacing = 14, .align = Z_ALIGN_CENTER};
+    int k = 0;
+    col.children[k++] = Rect(.height = 84.0f);   // clears the shade grab strip
+    col.children[k++] =
+        Frame(0.0f, 52.0f, bar ? bar : z_rect(&(ZRectOpts){.height = 1.0f}));
+    col.children[k++] =
+        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("Notes")));
+    // Paste target: focus this field and paste text copied in ANOTHER app — proof
+    // the clipboard crosses the process boundary (P22).
+    col.children[k++] = Frame(520.0f, 0.0f,
+        TextField(app, &state->field, "Paste copied text here..."));
+    col.children[k++] = payload_panel("Shared text", state->shared,
+                                      state->got_share);
+    col.children[k++] = payload_panel("Opened link", state->url,
+                                      state->got_url);
+    col.children[k++] = Spacer();
+
     return Background(z_rgba(0x12, 0x20, 0x18, 0xff),
-        VStack(
-            Foreground(Z_COLOR_TEXT_INV,
-                Font(Z_FONT_LARGE_TITLE, Text("Notes"))),
-            Foreground(z_rgba(0xa8, 0xc8, 0xb4, 0xff),
-                Font(Z_FONT_CALLOUT, Text("Receives shares + deep links"))),
-            Spacer(),
-            payload_panel("Shared text", state->shared, state->got_share),
-            payload_panel("Opened link", state->url, state->got_url),
-            Spacer(),
-            .padding = 32, .spacing = 18, .align = Z_ALIGN_CENTER));
+        z_stack(Z_AXIS_VERTICAL, &col));
 }
 
 Z_APP_ID(NotesState, notes_body, "os.zelto.notes")

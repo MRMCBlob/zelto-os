@@ -172,49 +172,165 @@ ZView z_button(ZAction on_tap, const char *fmt, ...) {
     return n;
 }
 
-// Tapping a text field focuses it (app.c then raises the on-screen keyboard via
-// text-input-v3). The field pointer rides tap_data.
+// Tapping a text field focuses it + moves the caret (app.c then raises the on-
+// screen keyboard via text-input-v3). Long-press selects the word under the
+// finger; a drag extends the selection. The field pointer rides tap_data /
+// long_press_data; the pan handler operates on the app's active field. All the
+// geometry (mapping x to a byte offset) lives in app.c (z_field_*), which owns the
+// laid-out tree it measures against.
 static void field_on_tap(ZApp *app, void *state, void *data) {
     (void)state;
-    z_app_focus_field(app, (ZTextField *)data);
+    z_field_tap(app, (ZTextField *)data);
+}
+static void field_on_long_press(ZApp *app, void *state, void *data, float x,
+                                float y) {
+    (void)state; (void)y;
+    z_field_select_word(app, (ZTextField *)data, x);
+}
+static void field_on_pan(ZApp *app, void *state, const ZPanEvent *e) {
+    (void)state;
+    ZTextField *f = z_app_active_field(app);
+    if (f) {
+        z_field_drag_extend(app, f, e->x, e->phase == Z_PAN_BEGIN);
+    }
 }
 
-// An editable text field. Built from primitives (a rounded box + a text child +
-// an optional caret) so layout/paint/hit-test stay uniform — no new node kind.
-// The `field` pointer marks it for app.c (which routes committed characters into
-// the buffer) and the tap handler focuses it.
+// One run of the field's text (a byte slice), optionally highlighted (selection).
+static ZView field_run(const char *text, int a, int b, bool highlight) {
+    char buf[Z_TEXTFIELD_CAP];
+    int n = b - a;
+    if (n < 0) {
+        n = 0;
+    }
+    if (n >= Z_TEXTFIELD_CAP) {
+        n = Z_TEXTFIELD_CAP - 1;
+    }
+    memcpy(buf, text + a, (size_t)n);
+    buf[n] = '\0';
+    ZView t = node_new(Z_K_TEXT);
+    t->text = z_arena_strdup(z_build_arena, buf);
+    t->fg = Z_COLOR_TEXT_INV;
+    if (highlight) {
+        t->has_bg = true;
+        t->bg = z_rgba(0x2e, 0x6b, 0xd0, 0xff);   // selection highlight
+    }
+    return t;
+}
+// A thin blinking-style caret (shown at the insertion point, no selection).
+static ZView field_caret(void) {
+    ZView c = node_new(Z_K_RECT);
+    c->color = Z_COLOR_TEXT_INV;
+    c->fixed_w = 2.0f;
+    c->fixed_h = 22.0f;
+    return c;
+}
+// A selection drag handle (a taller accent bar at each selection end).
+static ZView field_handle(void) {
+    ZView h = node_new(Z_K_RECT);
+    h->color = z_rgba(0x2e, 0x9b, 0xff, 0xff);
+    h->fixed_w = 4.0f;
+    h->fixed_h = 30.0f;
+    h->radius = 2.0f;
+    return h;
+}
+
+// An editable text field. Built from primitives (a rounded box + text runs + an
+// optional caret / selection handles) so layout/paint/hit-test stay uniform — no
+// new node kind. The `field` pointer marks it for app.c (which routes committed
+// characters + selection edits into the buffer). Segments are laid out with zero
+// spacing so they read as one line and the x->offset mapping stays accurate.
 ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
     bool active = f && z_app_field_active(app, f);
     bool empty = !f || f->len == 0;
-    const char *shown = empty ? (placeholder ? placeholder : "") : f->text;
-
-    ZView label = node_new(Z_K_TEXT);
-    label->text = z_arena_strdup(z_build_arena, shown);
-    // Dim placeholder; full-contrast real text.
-    label->fg = empty ? z_rgba(0x8a, 0x93, 0x9e, 0xff) : Z_COLOR_TEXT_INV;
 
     ZView n = node_new(Z_K_STACK);
     n->axis = Z_AXIS_HORIZONTAL;
     n->align = Z_ALIGN_CENTER;
-    n->spacing = 2.0f;
+    n->spacing = 0.0f;
     n->padding = 12.0f;                 // ~44px tall at body size
     n->has_bg = true;
-    // Field fill; a brighter ring when focused so the capture shows the target.
     n->bg = active ? z_rgba(0x22, 0x2b, 0x38, 0xff) : z_rgba(0x11, 0x16, 0x1f, 0xff);
     n->radius = 10.0f;
     n->on_tap_data = field_on_tap;
     n->tap_data = f;
     n->field = f;
     n->field_active = active;
-    n->children[n->n_children++] = label;
-    if (active) {
-        ZView caret = node_new(Z_K_RECT);
-        caret->color = Z_COLOR_TEXT_INV;
-        caret->fixed_w = 2.0f;
-        caret->fixed_h = 22.0f;
-        n->children[n->n_children++] = caret;
+    if (f) {
+        n->on_long_press = field_on_long_press;
+        n->long_press_data = f;
+        n->on_pan = field_on_pan;
+    }
+
+    if (empty) {
+        ZView label = node_new(Z_K_TEXT);
+        label->text = z_arena_strdup(z_build_arena, placeholder ? placeholder : "");
+        label->fg = z_rgba(0x8a, 0x93, 0x9e, 0xff);   // dim placeholder
+        n->children[n->n_children++] = label;
+        if (active) {
+            n->children[n->n_children++] = field_caret();
+        }
+        return n;
+    }
+
+    int caret = f->caret < 0 ? 0 : (f->caret > f->len ? f->len : f->caret);
+    int anchor = f->anchor < 0 ? 0 : (f->anchor > f->len ? f->len : f->anchor);
+    int lo = anchor < caret ? anchor : caret;
+    int hi = anchor < caret ? caret : anchor;
+    bool sel = active && lo != hi;
+
+    if (sel) {
+        // [before] |handleL| [selected+highlight] |handleR| [after]
+        if (lo > 0) {
+            n->children[n->n_children++] = field_run(f->text, 0, lo, false);
+        }
+        n->children[n->n_children++] = field_handle();
+        n->children[n->n_children++] = field_run(f->text, lo, hi, true);
+        n->children[n->n_children++] = field_handle();
+        if (hi < f->len) {
+            n->children[n->n_children++] = field_run(f->text, hi, f->len, false);
+        }
+    } else if (active) {
+        // [before caret] |caret| [after caret]
+        if (caret > 0) {
+            n->children[n->n_children++] = field_run(f->text, 0, caret, false);
+        }
+        n->children[n->n_children++] = field_caret();
+        if (caret < f->len) {
+            n->children[n->n_children++] =
+                field_run(f->text, caret, f->len, false);
+        }
+    } else {
+        n->children[n->n_children++] = field_run(f->text, 0, f->len, false);
     }
     return n;
+}
+
+// The floating Copy / Cut / Paste / Select-all action bar for the focused field's
+// selection. NULL when there is no selection to act on. Built from ordinary
+// Buttons wired to the z_field_* actions; the app drops it into its body (e.g.
+// pinned above the field) while a selection is live.
+static void sel_copy(ZApp *app, void *s) { (void)s; z_field_copy(app); }
+static void sel_cut(ZApp *app, void *s) { (void)s; z_field_cut(app); }
+static void sel_paste(ZApp *app, void *s) { (void)s; z_field_dbg_insert(app); }
+static void sel_all(ZApp *app, void *s) { (void)s; z_field_select_all(app); }
+
+ZView z_selection_bar(ZApp *app) {
+    ZTextField *f = z_app_active_field(app);
+    if (!f) {
+        return NULL;   // no focused field: no bar
+    }
+    // Always render all four actions so their positions are fixed regardless of
+    // whether there is a selection (Copy/Cut are no-ops without one). Paste and
+    // Select-all are useful on a bare caret (Android shows a paste bubble on tap),
+    // so the bar appears whenever a field is focused, not only on a selection.
+    // Plain Buttons in an HStack — the same tappable primitive an app's own buttons
+    // use — so the bar acts through ordinary hit-testing.
+    return HStack(
+        Button(sel_copy, "Copy"),
+        Button(sel_cut, "Cut"),
+        Button(sel_paste, "Paste"),
+        Button(sel_all, "Select all"),
+        .spacing = 8, .align = Z_ALIGN_CENTER);
 }
 
 // --- modifiers ------------------------------------------------------------

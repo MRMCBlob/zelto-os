@@ -125,6 +125,28 @@ input_method_client_code = custom_target(
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# wlr-data-control-unstable-v1 client bindings (P22 clipboard). The on-screen
+# keyboard's Paste key reads the CLIPBOARD selection through data-control because a
+# keyboard layer surface never holds keyboard focus, so the compositor never sends
+# it the core wl_data_device selection offer (that goes to the focused client
+# only). Like layer-shell/input-method this is a wlr-protocol not in
+# wayland-protocols, so the XML is vendored under protocols/. wlroots ships the
+# SERVER marshalling in libwlroots, so only the client side is generated here.
+data_control_xml = meson.project_source_root() / 'protocols/wlr-data-control-unstable-v1.xml'
+
+data_control_client_header = custom_target(
+  'wlr-data-control-unstable-v1-client-protocol.h',
+  input : data_control_xml,
+  output : 'wlr-data-control-unstable-v1-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+data_control_client_code = custom_target(
+  'wlr-data-control-unstable-v1-protocol.c',
+  input : data_control_xml,
+  output : 'wlr-data-control-unstable-v1-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 sdk_protocol_src = [
   xdg_client_header, xdg_client_code,
   layer_client_header, layer_client_code,
@@ -132,4 +154,5 @@ sdk_protocol_src = [
   idle_notify_client_header, idle_notify_client_code,
   text_input_client_header, text_input_client_code,
   input_method_client_header, input_method_client_code,
+  data_control_client_header, data_control_client_code,
 ]

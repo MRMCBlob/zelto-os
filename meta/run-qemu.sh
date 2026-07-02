@@ -1496,6 +1496,164 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # P22 system clipboard + text selection (CLIP=1): prove select/copy/paste moves
+    # text within a field, between two fields in one app, and ACROSS a process
+    # boundary. A SINGLE boot (the clipboard is runtime, not persisted). The
+    # selector is named CLIP (never a $CLIP build var), so it can't clobber a
+    # build-initramfs binary the way LOCK/KBD did (the P20/P21 trap).
+    #   1. Home; open the drawer and launch Notepad. Tap the note field -> the
+    #      keyboard slides up. Type "hi".
+    #   2. Long-press the word in the note field -> it selects (highlight + drag
+    #      handles) and the Copy/Cut/Paste/Select-all action bar appears. Tap Copy
+    #      -> the text is placed on the CLIPBOARD selection (core wl_data_device).
+    #   3. Tap the SECOND (title) field to move the caret there, then tap the
+    #      keyboard's Paste key -> "hi" appears in the title field (in-app move; the
+    #      keyboard read the clipboard through wlr-data-control and committed it via
+    #      input-method).
+    #   4. Home -> drawer -> launch Notes (a SEPARATE process). Tap its field, tap
+    #      the keyboard Paste key -> "hi" appears -> the clipboard crossed the
+    #      process boundary via wl_data_device, neither app knowing about the other.
+    # Coordinates overridable to retune from a captured frame (rerun SKIP_BUILD=1).
+    # TCG is slow + drops rapid taps: high SHOT_DELAY, spaced taps, launch as a
+    # batched down+up, and the screendump lags a frame (trust downstream state).
+    if [ "${CLIP:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # No launcher-tile taps: the two demo apps are auto-launched at boot (init,
+        # gated by zelto.clipdemo=1 which we append to the cmdline below), so the
+        # test only ever taps TEXT FIELDS (safe — a mis-fired long-press on an empty
+        # field just focuses it) and the Switch chord (a deterministic key event).
+        # Notepad is frontmost at boot; one Tab (Switch) brings Notes forward.
+        KCMD="$KCMD zelto.clipdemo=1"
+        # Notepad's two fields, KEYBOARD-DOWN full layout (retune from frame-clip-app):
+        # note ~364, title ~421, "Add note" ~480.
+        NOTE_X="${NOTE_X:-640}"; NOTE_Y="${NOTE_Y:-364}"
+        TITLE_X="${TITLE_X:-640}"; TITLE_Y="${TITLE_Y:-421}"
+        # Content is TOP-anchored + stable keyboard up/down. Notepad: note ~222,
+        # title ~277, action bar ~348. Notes: field ~222.
+        NFIELD_X="${NFIELD_X:-640}"; NFIELD_Y="${NFIELD_Y:-222}"
+        # The word to long-press: the note field is pre-filled "hello world"; aim
+        # over "hello" (left side). Retune from frame-clip-app.
+        SEL_X="${SEL_X:-500}"; SEL_Y="${SEL_Y:-222}"
+        # Title field (paste target for the in-app move). Retune from frame-clip-app.
+        TITLE_UP_Y="${TITLE_UP_Y:-277}"
+        # Action bar buttons — pinned at the top of the focused app, so their
+        # positions are fixed regardless of the keyboard's (per-boot-variable) row
+        # layout. Copy/Cut/Paste/Select-all sit at x~66/136/207/301, y~95. We paste
+        # through the bar (not the keyboard's Paste key) precisely because the bar
+        # is keyboard-independent. Retune from frame-clip-selected.
+        # The inline bar slot, KEYBOARD UP, sits at y~190 (below the shade strip).
+        # Buttons (left-aligned): Copy ~62, Cut ~132, Paste ~203, Select all ~297.
+        COPY_X="${COPY_X:-62}"; COPY_Y="${COPY_Y:-348}"
+        BPASTE_X="${BPASTE_X:-203}"; BPASTE_Y="${BPASTE_Y:-348}"
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.3; btn down; sleep 0.15; btn up; }
+        # A press held past the SDK long-press threshold (0.45s GUEST clock) with no
+        # motion -> selects the word. Hold long in WALL time: under TCG the guest
+        # clock lags real time, so 0.45 guest-seconds can take several wall seconds.
+        longpress() { move "$1" "$2"; sleep 0.5; btn down; sleep 3.0; btn up; }
+        # Launch tap: down+up as two commands over ONE socat connection (near-zero
+        # wall gap dodges the tile long-press; distinct timestamps dodge the drop).
+        # Warm up first: a move + a 3s settle lets the lagging TCG guest clock catch
+        # up BEFORE the press, so the guest-time gap between down and up stays tiny
+        # (the first input after a long idle is the worst case for a spurious long-
+        # press — the guest clock jumps ~600ms all at once on that first event).
+        launchtap() {
+            move "$1" "$2"; sleep 3
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' \
+                '{"execute":"qmp_capabilities"}' \
+                '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"left"}}]}}' \
+                '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"left"}}]}}' \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        clip_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        clip_kill() { sync; kill "$QPID" 2>/dev/null || true; wait "$QPID" 2>/dev/null || true; }
+
+        echo "==> [clip boot] Notepad + Notes auto-launched (Notepad in front)"
+        clip_boot
+        sleep "$SHOT_DELAY"
+        shot frame-clip-app                   # Notepad: note pre-filled "hello world"
+        echo "==> [clip] long-press 'hello' -> select the word + raise keyboard + bar"
+        longpress "$SEL_X" "$SEL_Y"
+        sleep 16; shot frame-clip-selected    # "hello" highlighted + handles + Copy bar
+        echo "==> [clip] tap Copy -> 'hello' on the clipboard (core wl_data_device)"
+        tap "$COPY_X" "$COPY_Y"
+        sleep 3; shot frame-clip-copied       # selection kept; bar still up
+        echo "==> [clip] focus title field + bar Paste -> in-app move"
+        tap "$TITLE_X" "$TITLE_UP_Y"
+        sleep 4
+        tap "$BPASTE_X" "$BPASTE_Y"
+        sleep 3; shot frame-clip-pasted       # title field now shows "hello" (in-app move)
+        echo "==> [clip] Switch chord (Tab x2: Notepad->launcher->Notes)"
+        # zcomp_switch focuses the LRU tail, so from Notepad the first Tab lands on
+        # the launcher and the second on Notes (a SEPARATE process).
+        for _ in 1 2; do
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":true,\"key\":{\"type\":\"qcode\",\"data\":\"tab\"}}}]}}"
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"key\",\"data\":{\"down\":false,\"key\":{\"type\":\"qcode\",\"data\":\"tab\"}}}]}}"
+            sleep 2
+        done
+        sleep 3; shot frame-clip-notes-app    # Notes: paste field, no keyboard
+        echo "==> [clip] tap Notes field, then bar Paste -> CROSS-APP paste"
+        tap "$NFIELD_X" "$NFIELD_Y"
+        sleep 6
+        tap "$BPASTE_X" "$BPASTE_Y"
+        sleep 3; shot frame-clip-crossapp     # Notes field shows "hello" (crossed procs)
+        sleep 8                               # let the guest serial drain before kill
+        clip_kill
+        echo "==> clip test done; frames in $OUT/frame-clip-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

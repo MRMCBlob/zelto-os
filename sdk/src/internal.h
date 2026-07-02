@@ -153,6 +153,21 @@ void *z_app_state(ZApp *app);
 // app's active text field; app.c drives text-input-v3 enable/disable off it.
 void z_app_focus_field(ZApp *app, ZTextField *f);
 bool z_app_field_active(ZApp *app, const ZTextField *f);
+// The app's currently-focused field, or NULL (P22 selection actions operate on it).
+ZTextField *z_app_active_field(ZApp *app);
+
+// Text-field selection gestures (P22). view.c builds the field node and wires
+// these as its tap/long-press/pan handlers; the geometry (mapping a surface-local
+// x to a byte offset) and the anchor/caret bookkeeping live in app.c, which owns
+// the laid-out tree (app->root) and the shaping context (app->text). All three
+// focus the field first. z_field_tap collapses the caret at the last pointer
+// position (a tap handler gets no coordinates); z_field_select_word selects the
+// word under x; z_field_drag_extend(begin) picks the moving end at begin, then
+// extends the selection to x on each subsequent call.
+void z_field_dbg_insert(ZApp *app);   // TEMP diagnostic: insert a literal marker
+void z_field_tap(ZApp *app, ZTextField *f);
+void z_field_select_word(ZApp *app, ZTextField *f, float x);
+void z_field_drag_extend(ZApp *app, ZTextField *f, float x, bool begin);
 // The active app's app_id (set for app_run's lifetime). Used by storage.c to
 // scope each app's private data directory.
 const char *z_active_app_id(void);

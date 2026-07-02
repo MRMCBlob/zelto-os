@@ -17,8 +17,12 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include <ctype.h>
+#include <fcntl.h>
+
 #include "internal.h"
 #include "ext-idle-notify-v1-client-protocol.h"
+#include "wlr-data-control-unstable-v1-client-protocol.h"
 #include "input-method-unstable-v2-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
@@ -186,6 +190,36 @@ struct ZApp {
     ZImVisibilityCb im_show_cb, im_hide_cb;
     void *im_ud;
 
+    // Clipboard (P22). Copy/Cut take ownership of the CLIPBOARD selection through
+    // the CORE wl_data_device (data_device_mgr + data_device): a wl_data_source is
+    // created whose send handler writes the copied text into the requesting
+    // client's pipe. last_serial is the most recent input-event serial, required by
+    // wl_data_device.set_selection. Paste READS through wlr-data-control (dc_manager
+    // + dc_device) instead, because that selection is delivered to every bound
+    // client regardless of keyboard focus — the on-screen keyboard is a focus-less
+    // layer surface, so it can only read the clipboard this way (the core
+    // wl_data_device offer goes to the focused client only). dc_offer is the current
+    // selection offer (or NULL); dc_offer_text whether it advertises a text mime;
+    // dc_pending_* accumulate a just-introduced offer's mimes until it is promoted
+    // to the selection. A z_clipboard_get pipes the offer's bytes into clip_fd,
+    // parked in the app loop like perm_fd until EOF, then fires clip_cb.
+    struct wl_data_device_manager *data_device_mgr;
+    struct wl_data_device *data_device;
+    struct wl_data_offer *core_offer;   // last core offer, destroyed to avoid leak
+    uint32_t last_serial;
+
+    struct zwlr_data_control_manager_v1 *dc_manager;
+    struct zwlr_data_control_device_v1 *dc_device;
+    struct zwlr_data_control_offer_v1 *dc_offer;
+    bool dc_offer_text;
+    struct zwlr_data_control_offer_v1 *dc_pending_offer;
+    bool dc_pending_text;
+    int clip_fd;                     // in-flight paste read (parked); -1 = idle
+    ZClipboardCb clip_cb;
+    void *clip_ud;
+    char clip_buf[Z_TEXTFIELD_CAP];
+    size_t clip_len;
+
     // Keyboard translation (raw keycodes -> keysyms) via xkbcommon.
     struct xkb_context *xkb_ctx;
     struct xkb_keymap *xkb_keymap;
@@ -262,7 +296,11 @@ static ZApp *z_active_app;
 const char *z_active_app_id(void) {
     return z_active_app ? z_active_app->app_id : NULL;
 }
+ZTextField *z_app_active_field(ZApp *app) {
+    return app ? app->active_field : NULL;
+}
 static void perm_handle_reply(ZApp *app);
+static void clip_handle_read(ZApp *app);
 static void ctrl_handle_read(ZApp *app);
 static void ctrl_connect_register(ZApp *app);
 static void deliver_action(ZApp *app, int64_t id, const char *action_id);
@@ -483,8 +521,8 @@ static void render(ZApp *app) {
                 ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
             zwp_text_input_v3_set_surrounding_text(
                 app->text_input, app->active_field->text,
-                (uint32_t)app->active_field->len,
-                (uint32_t)app->active_field->len);
+                (uint32_t)app->active_field->caret,
+                (uint32_t)app->active_field->caret);
             zwp_text_input_v3_commit(app->text_input);
             app->ti_enabled = true;
         } else if (!want && app->ti_enabled) {
@@ -833,8 +871,11 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
 
 static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
                            uint32_t time, uint32_t button, uint32_t state) {
-    (void)p; (void)serial; (void)time;
+    (void)p; (void)time;
     ZApp *app = data;
+    // Remember the serial: wl_data_device.set_selection (Copy) needs a recent
+    // input-event serial, and a Copy is driven by a tap (this button).
+    app->last_serial = serial;
     if (button != BTN_LEFT) {
         return;
     }
@@ -981,8 +1022,9 @@ static void kb_leave(void *data, struct wl_keyboard *kb, uint32_t serial,
 }
 static void kb_key(void *data, struct wl_keyboard *kb, uint32_t serial,
                    uint32_t time, uint32_t key, uint32_t state) {
-    (void)kb; (void)serial; (void)time;
+    (void)kb; (void)time;
     ZApp *app = data;
+    app->last_serial = serial;
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED) {
         return;
     }
@@ -1036,6 +1078,82 @@ static const struct wl_keyboard_listener keyboard_listener = {
 // The compositor sends enter/leave as this app's surface gains/loses keyboard
 // focus; commit_string / delete_surrounding_text carry the on-screen keyboard's
 // edits, which we apply straight into the focused ZTextField's buffer.
+// --- text-field buffer edits (caret + selection, P22) ----------------------
+// The buffer is edited at the caret, replacing any selection. The P21 keyboard
+// path (commit_string / delete_surrounding_text) and the P22 clipboard path
+// (paste / cut) both funnel through these, so a typed character, a pasted string
+// and a cut all respect the selection the same way.
+static void field_clamp(ZTextField *f) {
+    if (f->caret < 0) f->caret = 0;
+    if (f->caret > f->len) f->caret = f->len;
+    if (f->anchor < 0) f->anchor = 0;
+    if (f->anchor > f->len) f->anchor = f->len;
+}
+static bool field_has_sel(const ZTextField *f) { return f->anchor != f->caret; }
+static void field_sel_range(const ZTextField *f, int *lo, int *hi) {
+    *lo = f->anchor < f->caret ? f->anchor : f->caret;
+    *hi = f->anchor < f->caret ? f->caret : f->anchor;
+}
+
+// Replace the selection (or, with none, the empty range at the caret) with `ins`,
+// leaving the caret after the inserted text and the selection collapsed.
+static void field_replace(ZApp *app, ZTextField *f, const char *ins) {
+    if (!f) {
+        return;
+    }
+    field_clamp(f);
+    int lo, hi;
+    field_sel_range(f, &lo, &hi);
+    int add = ins ? (int)strlen(ins) : 0;
+    int tail = f->len - hi;
+    // Truncate the insert if it would overflow the fixed buffer.
+    if (lo + add + tail >= Z_TEXTFIELD_CAP) {
+        add = Z_TEXTFIELD_CAP - 1 - lo - tail;
+        if (add < 0) {
+            add = 0;
+        }
+    }
+    memmove(f->text + lo + add, f->text + hi, (size_t)tail);
+    if (add > 0) {
+        memcpy(f->text + lo, ins, (size_t)add);
+    }
+    f->len = lo + add + tail;
+    f->text[f->len] = '\0';
+    f->caret = lo + add;
+    f->anchor = f->caret;
+    if (f->on_change) {
+        f->on_change(app, app->state);
+    }
+}
+
+// Delete `count` bytes before the caret (backspace), or the selection if any.
+static void field_delete_before(ZApp *app, ZTextField *f, int count) {
+    if (!f) {
+        return;
+    }
+    if (field_has_sel(f)) {
+        field_replace(app, f, NULL);
+        return;
+    }
+    field_clamp(f);
+    int del = count;
+    if (del > f->caret) {
+        del = f->caret;
+    }
+    if (del <= 0) {
+        return;
+    }
+    memmove(f->text + f->caret - del, f->text + f->caret,
+            (size_t)(f->len - f->caret));
+    f->len -= del;
+    f->caret -= del;
+    f->anchor = f->caret;
+    f->text[f->len] = '\0';
+    if (f->on_change) {
+        f->on_change(app, app->state);
+    }
+}
+
 void z_app_focus_field(ZApp *app, ZTextField *f) {
     if (app->active_field == f) {
         return;
@@ -1073,19 +1191,11 @@ static void ti_commit_string(void *data, struct zwp_text_input_v3 *ti,
     (void)ti;
     ZApp *app = data;
     ZTextField *f = app->active_field;
-    if (!f || !text) {
+    if (!f || !text || !text[0]) {
         return;
     }
-    int add = (int)strlen(text);
-    if (add <= 0 || f->len + add >= Z_TEXTFIELD_CAP) {
-        return;
-    }
-    memcpy(f->text + f->len, text, (size_t)add);
-    f->len += add;
-    f->text[f->len] = '\0';
-    if (f->on_change) {
-        f->on_change(app, app->state);
-    }
+    // Insert at the caret, replacing any selection (P22) — not a blind append.
+    field_replace(app, f, text);
     z_invalidate(app);
 }
 static void ti_delete_surrounding_text(void *data, struct zwp_text_input_v3 *ti,
@@ -1097,15 +1207,8 @@ static void ti_delete_surrounding_text(void *data, struct zwp_text_input_v3 *ti,
     if (!f) {
         return;
     }
-    int del = (int)before_length;
-    if (del > f->len) {
-        del = f->len;
-    }
-    f->len -= del;
-    f->text[f->len] = '\0';
-    if (del > 0 && f->on_change) {
-        f->on_change(app, app->state);
-    }
+    // Delete before the caret (or the selection); caret-aware (P22).
+    field_delete_before(app, f, (int)before_length);
     z_invalidate(app);
 }
 static void ti_done(void *data, struct zwp_text_input_v3 *ti, uint32_t serial) {
@@ -1174,6 +1277,433 @@ static const struct zwp_input_method_v2_listener input_method_listener = {
     .done = im_done,
     .unavailable = im_unavailable,
 };
+
+// --- clipboard: core wl_data_device SET side (Copy/Cut) --------------------
+// A copy takes ownership of the CLIPBOARD selection: we make a wl_data_source that
+// offers text/plain and, on the receiving client's request, writes the copied
+// text into its pipe. The text is owned by the source (a ZClipSource), so a later
+// copy that replaces this source frees it cleanly on `cancelled` — no aliasing
+// with the app's own buffers.
+typedef struct ZClipSource {
+    char *text;
+} ZClipSource;
+
+static void ds_target(void *data, struct wl_data_source *src,
+                      const char *mime) {
+    (void)data; (void)src; (void)mime;
+}
+static void ds_send(void *data, struct wl_data_source *src, const char *mime,
+                    int32_t fd) {
+    (void)src; (void)mime;
+    ZClipSource *cs = data;
+    const char *s = cs && cs->text ? cs->text : "";
+    size_t n = strlen(s), off = 0;
+    while (off < n) {
+        ssize_t w = write(fd, s + off, n - off);
+        if (w <= 0) {
+            break;
+        }
+        off += (size_t)w;
+    }
+    close(fd);
+}
+static void ds_cancelled(void *data, struct wl_data_source *src) {
+    ZClipSource *cs = data;
+    wl_data_source_destroy(src);
+    if (cs) {
+        free(cs->text);
+        free(cs);
+    }
+}
+static void ds_dnd_drop_performed(void *data, struct wl_data_source *src) {
+    (void)data; (void)src;
+}
+static void ds_dnd_finished(void *data, struct wl_data_source *src) {
+    (void)data; (void)src;
+}
+static void ds_action(void *data, struct wl_data_source *src, uint32_t action) {
+    (void)data; (void)src; (void)action;
+}
+static const struct wl_data_source_listener data_source_listener = {
+    .target = ds_target,
+    .send = ds_send,
+    .cancelled = ds_cancelled,
+    .dnd_drop_performed = ds_dnd_drop_performed,
+    .dnd_finished = ds_dnd_finished,
+    .action = ds_action,
+};
+
+// Minimal core wl_data_device listener: we set the clipboard through this device
+// but read through data-control, so all we do here is destroy the offers the
+// compositor hands us while focused (they'd otherwise leak). DnD events are unused.
+static void dd_data_offer(void *data, struct wl_data_device *dev,
+                          struct wl_data_offer *offer) {
+    (void)dev;
+    ZApp *app = data;
+    if (app->core_offer) {
+        wl_data_offer_destroy(app->core_offer);
+    }
+    app->core_offer = offer;   // no listener attached; we never read it
+}
+static void dd_selection(void *data, struct wl_data_device *dev,
+                         struct wl_data_offer *offer) {
+    (void)dev;
+    ZApp *app = data;
+    if (!offer && app->core_offer) {
+        wl_data_offer_destroy(app->core_offer);
+        app->core_offer = NULL;
+    }
+}
+static void dd_enter(void *data, struct wl_data_device *dev, uint32_t serial,
+                     struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y,
+                     struct wl_data_offer *offer) {
+    (void)data; (void)dev; (void)serial; (void)surface; (void)x; (void)y;
+    (void)offer;
+}
+static void dd_leave(void *data, struct wl_data_device *dev) {
+    (void)data; (void)dev;
+}
+static void dd_motion(void *data, struct wl_data_device *dev, uint32_t time,
+                      wl_fixed_t x, wl_fixed_t y) {
+    (void)data; (void)dev; (void)time; (void)x; (void)y;
+}
+static void dd_drop(void *data, struct wl_data_device *dev) {
+    (void)data; (void)dev;
+}
+static const struct wl_data_device_listener data_device_listener = {
+    .data_offer = dd_data_offer,
+    .enter = dd_enter,
+    .leave = dd_leave,
+    .motion = dd_motion,
+    .drop = dd_drop,
+    .selection = dd_selection,
+};
+
+void z_clipboard_set(const char *text) {
+    ZApp *app = z_active_app;
+    if (!app || !app->data_device || !app->data_device_mgr || !text) {
+        return;
+    }
+    ZClipSource *cs = calloc(1, sizeof(*cs));
+    if (!cs) {
+        return;
+    }
+    cs->text = strdup(text);
+    struct wl_data_source *src =
+        wl_data_device_manager_create_data_source(app->data_device_mgr);
+    wl_data_source_add_listener(src, &data_source_listener, cs);
+    // Offer the common text flavours so any paster finds a match.
+    wl_data_source_offer(src, "text/plain");
+    wl_data_source_offer(src, "text/plain;charset=utf-8");
+    wl_data_source_offer(src, "UTF8_STRING");
+    wl_data_source_offer(src, "TEXT");
+    wl_data_source_offer(src, "STRING");
+    wl_data_device_set_selection(app->data_device, src, app->last_serial);
+    wl_display_flush(app->display);
+}
+
+// --- clipboard: data-control READ side (Paste) -----------------------------
+// Reads go through wlr-data-control so a client that never holds keyboard focus
+// (the on-screen keyboard) can still read the selection. The device fires
+// data_offer (introducing an offer) + offer (its mimes) + selection (promoting it
+// to the current selection); we track the current offer and whether it has text.
+static bool clip_is_text_mime(const char *m) {
+    return m && (strcmp(m, "text/plain") == 0 ||
+                 strcmp(m, "text/plain;charset=utf-8") == 0 ||
+                 strcmp(m, "UTF8_STRING") == 0 || strcmp(m, "TEXT") == 0 ||
+                 strcmp(m, "STRING") == 0 || strncmp(m, "text/", 5) == 0);
+}
+static void dco_offer(void *data, struct zwlr_data_control_offer_v1 *offer,
+                      const char *mime) {
+    ZApp *app = data;
+    if (offer == app->dc_pending_offer && clip_is_text_mime(mime)) {
+        app->dc_pending_text = true;
+    }
+}
+static const struct zwlr_data_control_offer_v1_listener dc_offer_listener = {
+    .offer = dco_offer,
+};
+
+static void dc_data_offer(void *data,
+                          struct zwlr_data_control_device_v1 *dev,
+                          struct zwlr_data_control_offer_v1 *offer) {
+    (void)dev;
+    ZApp *app = data;
+    // A new offer is being introduced; drop any prior introduced-but-unselected
+    // one (e.g. a primary-selection offer we ignore), then start tracking mimes.
+    if (app->dc_pending_offer && app->dc_pending_offer != app->dc_offer) {
+        zwlr_data_control_offer_v1_destroy(app->dc_pending_offer);
+    }
+    app->dc_pending_offer = offer;
+    app->dc_pending_text = false;
+    zwlr_data_control_offer_v1_add_listener(offer, &dc_offer_listener, app);
+}
+static void dc_selection(void *data,
+                         struct zwlr_data_control_device_v1 *dev,
+                         struct zwlr_data_control_offer_v1 *offer) {
+    (void)dev;
+    ZApp *app = data;
+    // Promote the introduced offer to the current selection. Destroy the previous
+    // current offer (unless it's the same object).
+    if (app->dc_offer && app->dc_offer != offer) {
+        zwlr_data_control_offer_v1_destroy(app->dc_offer);
+    }
+    app->dc_offer = offer;
+    app->dc_offer_text = (offer && offer == app->dc_pending_offer)
+                             ? app->dc_pending_text
+                             : false;
+    if (offer == app->dc_pending_offer) {
+        app->dc_pending_offer = NULL;   // it's now the current offer
+    }
+}
+static void dc_finished(void *data,
+                        struct zwlr_data_control_device_v1 *dev) {
+    ZApp *app = data;
+    zwlr_data_control_device_v1_destroy(dev);
+    if (app->dc_device == dev) {
+        app->dc_device = NULL;
+    }
+}
+static void dc_primary_selection(void *data,
+                                 struct zwlr_data_control_device_v1 *dev,
+                                 struct zwlr_data_control_offer_v1 *offer) {
+    (void)data; (void)dev; (void)offer;
+    // We don't use the primary selection; its introduced offer is cleaned up by
+    // the next data_offer (dc_data_offer drops an unselected pending offer).
+}
+static const struct zwlr_data_control_device_v1_listener dc_device_listener = {
+    .data_offer = dc_data_offer,
+    .selection = dc_selection,
+    .finished = dc_finished,
+    .primary_selection = dc_primary_selection,
+};
+
+void z_clipboard_get(ZClipboardCb cb, void *ud) {
+    ZApp *app = z_active_app;
+    if (!cb) {
+        return;
+    }
+    // Busy (a get already in flight), no text on the clipboard, or no device:
+    // report empty rather than blocking.
+    if (!app || app->clip_fd >= 0 || !app->dc_offer || !app->dc_offer_text) {
+        cb(app, NULL, ud);
+        return;
+    }
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC) < 0) {
+        cb(app, NULL, ud);
+        return;
+    }
+    zwlr_data_control_offer_v1_receive(app->dc_offer, "text/plain", fds[1]);
+    close(fds[1]);
+    wl_display_flush(app->display);
+    app->clip_fd = fds[0];
+    app->clip_cb = cb;
+    app->clip_ud = ud;
+    app->clip_len = 0;
+}
+
+// The paste pipe is readable: accumulate until EOF (or the buffer fills), then
+// fire the callback with the collected text.
+static void clip_handle_read(ZApp *app) {
+    if (app->clip_len < sizeof(app->clip_buf) - 1) {
+        ssize_t r = read(app->clip_fd, app->clip_buf + app->clip_len,
+                         sizeof(app->clip_buf) - 1 - app->clip_len);
+        if (r > 0) {
+            app->clip_len += (size_t)r;
+            if (app->clip_len < sizeof(app->clip_buf) - 1) {
+                return;   // more may come
+            }
+        }
+        // r <= 0 (EOF/error) or the buffer is now full: finish below.
+    }
+    app->clip_buf[app->clip_len] = '\0';
+    close(app->clip_fd);
+    app->clip_fd = -1;
+    ZClipboardCb cb = app->clip_cb;
+    void *ud = app->clip_ud;
+    app->clip_cb = NULL;
+    app->clip_ud = NULL;
+    if (cb) {
+        cb(app, app->clip_buf, ud);
+    }
+}
+
+// --- text-field selection geometry + gestures (P22) ------------------------
+// Map a surface-local x to a byte offset in the field, and drive word-select /
+// drag-extend. The mapping measures text prefixes against the field's text origin
+// (its laid-out frame + padding), read from the retained tree.
+static ZView find_field_node(ZView n, const ZTextField *f) {
+    if (!n) {
+        return NULL;
+    }
+    if (n->field == f) {
+        return n;
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        ZView r = find_field_node(n->children[i], f);
+        if (r) {
+            return r;
+        }
+    }
+    return NULL;
+}
+
+static int field_offset_at_x(ZApp *app, ZTextField *f, float x) {
+    if (!f || f->len <= 0) {
+        return 0;
+    }
+    ZView node = find_field_node(app->root, f);
+    float ox = node ? node->x + node->padding : 0.0f;
+    float size = (float)Z_FONT_BODY;
+    char buf[Z_TEXTFIELD_CAP];
+    int best = 0;
+    float bestd = 1e30f;
+    for (int i = 0; i <= f->len; i++) {
+        memcpy(buf, f->text, (size_t)i);
+        buf[i] = '\0';
+        float asc, desc;
+        float w = app->text ? z_text_measure(app->text, buf, size, &asc, &desc)
+                            : 0.0f;
+        float d = ox + w - x;
+        if (d < 0.0f) {
+            d = -d;
+        }
+        if (d < bestd) {
+            bestd = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+void z_field_dbg_insert(ZApp *app) {
+    if (app && app->active_field) {
+        field_replace(app, app->active_field, "TAP");
+        z_invalidate(app);
+    }
+}
+void z_field_tap(ZApp *app, ZTextField *f) {
+    z_app_focus_field(app, f);
+    int off = field_offset_at_x(app, f, (float)app->ptr_x);
+    f->caret = off;
+    f->anchor = off;
+    z_invalidate(app);
+}
+
+void z_field_select_word(ZApp *app, ZTextField *f, float x) {
+    z_app_focus_field(app, f);
+    if (f->len <= 0) {
+        f->caret = f->anchor = 0;
+        z_invalidate(app);
+        return;
+    }
+    int off = field_offset_at_x(app, f, x);
+    if (off >= f->len) {
+        off = f->len - 1;
+    }
+    int s = off, e = off;
+    while (s > 0 && !isspace((unsigned char)f->text[s - 1])) {
+        s--;
+    }
+    while (e < f->len && !isspace((unsigned char)f->text[e])) {
+        e++;
+    }
+    if (s == e) {
+        // Landed on whitespace: select that one character so there's something.
+        s = off;
+        e = off < f->len ? off + 1 : off;
+    }
+    f->anchor = s;
+    f->caret = e;
+    z_invalidate(app);
+}
+
+void z_field_drag_extend(ZApp *app, ZTextField *f, float x, bool begin) {
+    z_app_focus_field(app, f);
+    int off = field_offset_at_x(app, f, x);
+    if (begin) {
+        if (field_has_sel(f)) {
+            // Grab the near handle: keep the far selection end as the anchor.
+            int lo, hi;
+            field_sel_range(f, &lo, &hi);
+            f->anchor = (abs(off - lo) < abs(off - hi)) ? hi : lo;
+            f->caret = off;
+        } else {
+            f->anchor = off;
+            f->caret = off;
+        }
+    } else {
+        f->caret = off;
+    }
+    z_invalidate(app);
+}
+
+// --- clipboard: field actions (Copy/Cut/Paste/Select-all) ------------------
+// These act on the app's focused field. Copy/Cut require a selection; Paste
+// inserts the clipboard at the caret (replacing any selection) asynchronously.
+static void field_copy_text(ZTextField *f, char *out, size_t cap) {
+    int lo, hi;
+    field_sel_range(f, &lo, &hi);
+    int n = hi - lo;
+    if (n >= (int)cap) {
+        n = (int)cap - 1;
+    }
+    if (n < 0) {
+        n = 0;
+    }
+    memcpy(out, f->text + lo, (size_t)n);
+    out[n] = '\0';
+}
+
+void z_field_copy(ZApp *app) {
+    ZTextField *f = app ? app->active_field : NULL;
+    if (!f || !field_has_sel(f)) {
+        return;
+    }
+    char buf[Z_TEXTFIELD_CAP];
+    field_copy_text(f, buf, sizeof(buf));
+    z_clipboard_set(buf);
+}
+
+void z_field_cut(ZApp *app) {
+    ZTextField *f = app ? app->active_field : NULL;
+    if (!f || !field_has_sel(f)) {
+        return;
+    }
+    char buf[Z_TEXTFIELD_CAP];
+    field_copy_text(f, buf, sizeof(buf));
+    z_clipboard_set(buf);
+    field_replace(app, f, NULL);   // delete the selection
+    z_invalidate(app);
+}
+
+static void field_paste_cb(ZApp *app, const char *text, void *ud) {
+    (void)ud;
+    ZTextField *f = app->active_field;
+    if (!f) {
+        return;
+    }
+    // DIAGNOSTIC: mark an empty read so a captured frame distinguishes "paste
+    // fired but clipboard empty" from "the Paste tap missed the button".
+    field_replace(app, f, (text && text[0]) ? text : "<EMPTY>");
+    z_invalidate(app);
+}
+
+void z_field_paste(ZApp *app) {
+    (void)app;
+    z_clipboard_get(field_paste_cb, NULL);
+}
+
+void z_field_select_all(ZApp *app) {
+    ZTextField *f = app ? app->active_field : NULL;
+    if (!f) {
+        return;
+    }
+    f->anchor = 0;
+    f->caret = f->len;
+    z_invalidate(app);
+}
 
 // --- seat -----------------------------------------------------------------
 static void seat_capabilities(void *data, struct wl_seat *seat,
@@ -1365,6 +1895,19 @@ static void registry_global(void *data, struct wl_registry *registry,
         // app binds the manager harmlessly, the keyboard alone creates the object.
         app->im_manager = wl_registry_bind(
             registry, name, &zwp_input_method_manager_v2_interface, 1);
+    } else if (strcmp(interface, wl_data_device_manager_interface.name) == 0) {
+        // Clipboard (P22): every app binds it to Copy (set the CLIPBOARD selection).
+        app->data_device_mgr = wl_registry_bind(
+            registry, name, &wl_data_device_manager_interface,
+            version < 3 ? version : 3);
+    } else if (strcmp(interface,
+                      zwlr_data_control_manager_v1_interface.name) == 0) {
+        // Clipboard READ (P22): data-control delivers the selection regardless of
+        // focus, so the focus-less keyboard (and any app) can Paste. Bound when the
+        // compositor advertises it.
+        app->dc_manager = wl_registry_bind(
+            registry, name, &zwlr_data_control_manager_v1_interface,
+            version < 2 ? version : 2);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (!app->output) {
             app->output = wl_registry_bind(registry, name, &wl_output_interface,
@@ -1454,6 +1997,7 @@ static int app_run(ZApp *app) {
     app->running = true;
     app->perm_fd = -1;
     app->ctrl_fd = -1;
+    app->clip_fd = -1;
     z_active_app = app;
 
     const char *font = getenv("ZELTO_FONT");
@@ -1502,6 +2046,22 @@ static int app_run(ZApp *app) {
                                        app);
     }
 
+    // Clipboard (P22): the core wl_data_device is the Copy (set-selection) side;
+    // the data-control device is the focus-independent Paste (read) side. Both are
+    // per-seat and role-independent (xdg apps + layer apps, incl. the keyboard).
+    if (app->data_device_mgr && app->seat) {
+        app->data_device = wl_data_device_manager_get_data_device(
+            app->data_device_mgr, app->seat);
+        wl_data_device_add_listener(app->data_device, &data_device_listener,
+                                    app);
+    }
+    if (app->dc_manager && app->seat) {
+        app->dc_device = zwlr_data_control_manager_v1_get_data_device(
+            app->dc_manager, app->seat);
+        zwlr_data_control_device_v1_add_listener(app->dc_device,
+                                                 &dc_device_listener, app);
+    }
+
     // Open the persistent intents control connection and register this app_id as
     // a mailbox, so zsysd can push delivered deep links / shares to us (and we
     // can send resolve requests on it). Best-effort: no broker -> no intents.
@@ -1519,12 +2079,13 @@ static int app_run(ZApp *app) {
         }
         wl_display_flush(dpy);
 
-        struct pollfd pfds[3 + Z_NET_POLL_MAX];
+        struct pollfd pfds[4 + Z_NET_POLL_MAX];
         pfds[0].fd = wl_display_get_fd(dpy);
         pfds[0].events = POLLIN;
         pfds[0].revents = 0;
         nfds_t nf = 1;
-        int perm_slot = -1, ctrl_slot = -1, net_slot = -1, net_n = 0;
+        int perm_slot = -1, ctrl_slot = -1, clip_slot = -1, net_slot = -1,
+            net_n = 0;
         if (app->perm_fd >= 0) {
             perm_slot = (int)nf;
             pfds[nf].fd = app->perm_fd;
@@ -1535,6 +2096,14 @@ static int app_run(ZApp *app) {
         if (app->ctrl_fd >= 0) {
             ctrl_slot = (int)nf;
             pfds[nf].fd = app->ctrl_fd;
+            pfds[nf].events = POLLIN;
+            pfds[nf].revents = 0;
+            nf++;
+        }
+        // Async clipboard paste read (P22): the data-control offer's pipe.
+        if (app->clip_fd >= 0) {
+            clip_slot = (int)nf;
+            pfds[nf].fd = app->clip_fd;
             pfds[nf].events = POLLIN;
             pfds[nf].revents = 0;
             nf++;
@@ -1582,6 +2151,11 @@ static int app_run(ZApp *app) {
             (pfds[ctrl_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
             ctrl_handle_read(app);
         }
+        // Clipboard paste pipe: read the offered bytes (fires clip_cb at EOF).
+        if (clip_slot >= 0 &&
+            (pfds[clip_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
+            clip_handle_read(app);
+        }
         // Drive any ready HTTP/WebSocket sockets (callbacks fire from here).
         if (net_n > 0) {
             z_net_handle_ready(&pfds[net_slot], net_n);
@@ -1611,6 +2185,10 @@ static int app_run(ZApp *app) {
     if (app->ctrl_fd >= 0) {
         close(app->ctrl_fd);
         app->ctrl_fd = -1;
+    }
+    if (app->clip_fd >= 0) {
+        close(app->clip_fd);
+        app->clip_fd = -1;
     }
     z_active_app = NULL;
 
