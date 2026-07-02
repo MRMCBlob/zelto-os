@@ -19,11 +19,63 @@ mount -t sysfs    none /sys       2>/dev/null
 mount -t devtmpfs none /dev       2>/dev/null || mount -t tmpfs none /dev
 mount -t tmpfs    none /tmp       2>/dev/null
 mount -t tmpfs    none /run       2>/dev/null
+# POSIX shm: wlroots allocates the xkb keymap through shm_open(), which needs
+# /dev/shm. Without it the compositor sends clients an empty keymap and the
+# keyboard can't be translated to keysyms.
+mkdir -p /dev/shm
+mount -t tmpfs    none /dev/shm   2>/dev/null
 
 # DRM render/card nodes appear under /dev/dri via devtmpfs; make sure the dir is
 # there even if no device showed up (helps diagnostics).
 mkdir -p /dev/dri /dev/pts
 mount -t devpts none /dev/pts 2>/dev/null
+
+# Persistent storage (P11): a virtio-blk disk (QEMU -device virtio-blk-pci,
+# drive=data) appears as /dev/vda. We mount it (ext4) at /var/zelto, the writable
+# data root each app's private dir lives under. Unlike the RAM-only initramfs,
+# this survives a reboot, so prefs / files / SQLite written by apps persist.
+# Best-effort: if the device or the filesystem is missing we fall back to a
+# tmpfs with a loud warning so boot never hangs (data just won't persist).
+ZELTO_DATA_DIR=/var/zelto
+export ZELTO_DATA_DIR
+mkdir -p "$ZELTO_DATA_DIR"
+if [ -b /dev/vda ] && mount -t ext4 /dev/vda "$ZELTO_DATA_DIR" 2>/dev/null; then
+    echo "[zelto-init] mounted /dev/vda (ext4) at $ZELTO_DATA_DIR (persistent)"
+else
+    echo "[zelto-init] WARNING: no virtio-blk ext4 disk at /dev/vda;"
+    echo "[zelto-init] WARNING: falling back to tmpfs — storage will NOT persist!"
+    mount -t tmpfs none "$ZELTO_DATA_DIR" 2>/dev/null
+fi
+mkdir -p "$ZELTO_DATA_DIR/apps"
+# Periodic flush: push the page cache through virtio-blk to the host image so a
+# write is durable even if QEMU is killed without a clean unmount. Apps fsync on
+# every write too; this is belt-and-suspenders for the two-boot persistence test.
+( while true; do sync; sleep 2; done ) &
+
+# Networking (P12): QEMU user-mode networking (-netdev user) provides a virtio-net
+# NIC with NAT to the host. The host is reachable at 10.0.2.2, the guest gets
+# 10.0.2.15. We configure the interface statically (deterministic — no DHCP round
+# trip) so apps with the `network` permission can reach a host endpoint. udev may
+# rename the NIC (enp0s* etc.), so we pick the first non-loopback interface.
+# Best-effort: failure must not block boot (apps just can't reach the network).
+NET_IF=""
+for nif in /sys/class/net/*; do
+    dev=$(basename "$nif")
+    [ "$dev" = "lo" ] && continue
+    NET_IF="$dev"
+    break
+done
+ifconfig lo 127.0.0.1 up 2>/dev/null
+if [ -n "$NET_IF" ]; then
+    if ifconfig "$NET_IF" 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null; then
+        route add default gw 10.0.2.2 2>/dev/null
+        echo "[zelto-init] network up: $NET_IF = 10.0.2.15 (gw 10.0.2.2)"
+    else
+        echo "[zelto-init] WARNING: could not configure $NET_IF; no network"
+    fi
+else
+    echo "[zelto-init] WARNING: no virtio-net interface found; no network"
+fi
 
 # binderfs: Android-container IPC (docs/overview/how-it-runs-apks.md). Best-effort
 # now (Waydroid is a later phase); failure must not block boot.
@@ -38,22 +90,119 @@ fi
 echo "[zelto-init] DRM nodes:"; ls -l /dev/dri 2>/dev/null || echo "  (none)"
 echo "[zelto-init] input nodes:"; ls /dev/input 2>/dev/null || echo "  (none)"
 
-# wlroots/EGL knobs for the QEMU software path (no host GL / virgl):
-#   - WLR_RENDERER=gles2 keeps the GLES path that the task requires.
-#   - LIBGL_ALWAYS_SOFTWARE + the swrast DRI driver give GLES via llvmpipe on the
-#     virtio-gpu dumb-buffer KMS device.
-#   - WLR_BACKENDS=drm/libinput: we are a real DRM compositor, not nested.
+# Compositor environment.
+#   - WLR_BACKENDS=drm,libinput: we are a real DRM compositor, not nested.
+#   - libseat builtin backend: run as root (PID 1) and let libseat open the DRM
+#     and evdev nodes directly via its embedded builtin seat. This keeps the
+#     known-good display path; seatd is bundled but not required here.
 export XDG_RUNTIME_DIR=/run
-export WLR_RENDERER=gles2
 export WLR_BACKENDS=drm,libinput
-export LIBGL_ALWAYS_SOFTWARE=1
-export WLR_RENDERER_ALLOW_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
+export LIBSEAT_BACKEND=builtin
 
-echo "[zelto-init] starting zcomp..."
+# Input: bring up udev so libinput can enumerate the virtio keyboard/pointer and
+# tag them with the ID_INPUT/seat properties it filters on. zcomp's new_input
+# handler then wires keyboards (xkbcommon) and pointers and routes events to the
+# focused surface.
+#
+# WLR_LIBINPUT_NO_DEVICES is intentionally NOT set: once udevd tags the evdev
+# nodes (ID_INPUT=1, confirmed by the diag below), libinput enumerates the
+# virtio keyboard + tablet at coldplug, so wlroots' real device path works and
+# we want its "zero devices" guard active. Set ZCOMP_NO_INPUT=1 on the kernel
+# cmdline to fall back to the no-devices guard if enumeration ever regresses.
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" ZCOMP_NO_INPUT=1 "*) export WLR_LIBINPUT_NO_DEVICES=1 ;;
+esac
+mkdir -p /run/udev
+if [ -x /usr/lib/systemd/systemd-udevd ] && [ -x /usr/bin/udevadm ]; then
+    echo "[zelto-init] starting udevd + coldplug..."
+    /usr/lib/systemd/systemd-udevd --daemon
+    udevadm trigger --type=subsystems --action=add
+    udevadm trigger --type=devices --action=add
+    udevadm settle --timeout=5
+    # Confirm the evdev nodes were tagged (ID_INPUT) so libinput will enumerate.
+    echo "[zelto-init] tagged input devices:"
+    for ev in /dev/input/event*; do
+        [ -e "$ev" ] || continue
+        if udevadm info --query=property "$ev" 2>/dev/null | grep -q '^ID_INPUT=1'; then
+            echo "  $ev: ID_INPUT=1"
+        fi
+    done
+    # A real seat daemon (the builtin libseat seat already works for root; this
+    # just exercises the seatd path when the binary is bundled).
+    [ -x /usr/sbin/seatd ] && /usr/sbin/seatd >/dev/null 2>&1 &
+else
+    echo "[zelto-init] udevd not bundled; running without device enumeration"
+fi
+
+# Renderer selection. We try the GLES2 path first (EGL/GLES, the documented GPU
+# path) and fall back to the pixman software renderer if GL is unavailable:
+#   - With QEMU's virtio-gpu-gl (virgl), GLES2 is host-accelerated.
+#   - With plain virtio-gpu (KMS only), GLES2 has no 3D, so pixman renders on the
+#     CPU and presents through the virtio-gpu dumb-buffer KMS path.
+# Either way zcomp clears the screen and draws the rectangle.
+# Launch the System UI (status bar + app launcher) once the compositor's Wayland
+# socket appears, so zcomp composites a real shell rather than just the
+# background. The bar is a wlr-layer-shell client anchored at the top with an
+# exclusive zone; the launcher is a back toplevel filling the area below it and
+# fork/execs an app binary when a tile is tapped. Both inherit WAYLAND_DISPLAY +
+# ZELTO_FONT from this environment, so apps the launcher spawns find them too.
+# The socket is wayland-0 under XDG_RUNTIME_DIR.
+export WAYLAND_DISPLAY=wayland-0
+export ZELTO_FONT=/usr/share/zelto/fonts/ZeltoSans.ttf
+launch_shell() {
+    [ -x /usr/bin/zelto-launcher ] || return 0
+    i=0
+    while [ ! -e "$XDG_RUNTIME_DIR/wayland-0" ] && [ "$i" -lt 15 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ -e "$XDG_RUNTIME_DIR/wayland-0" ]; then
+        echo "[zelto-init] launching System UI (bar + launcher)..."
+        # The system-service broker (zsysd): the permission authority. Started
+        # before the shell so an app's z_perm_request reaches it; it inherits
+        # WAYLAND_DISPLAY + ZELTO_FONT so the consent dialog it spawns on a
+        # prompt can connect to the compositor and render.
+        [ -x /usr/bin/zsysd ] && /usr/bin/zsysd &
+        [ -x /usr/bin/zelto-bar ] && /usr/bin/zelto-bar &
+        # The bottom navigation bar (Back/Home/Recents): a layer-shell client
+        # anchored at the bottom with an exclusive zone, so apps map between the
+        # top bar and it. Always-running like the bar; its buttons drive the
+        # window manager (foreign-toplevel activate + fork/exec zelto-recents).
+        [ -x /usr/bin/zelto-nav ] && /usr/bin/zelto-nav &
+        # The notification shade: an OVERLAY layer-shell sink that subscribes to
+        # zsysd and renders heads-up banners. Always-running like the bar.
+        [ -x /usr/bin/zelto-shade ] && /usr/bin/zelto-shade &
+        # The brightness dim overlay (P19): an OVERLAY layer-shell scrim that
+        # observes sys.brightness and dims the whole screen. Input-transparent;
+        # always-running like the shade. Started after it so it composites on top.
+        [ -x /usr/bin/zelto-dim ] && /usr/bin/zelto-dim &
+        # The lock screen + idle lifecycle (P20): an OVERLAY layer-shell app that
+        # dims/locks/blanks the screen on inactivity (ext-idle-notify + the
+        # sys.lock_* broker settings) and gates it behind a swipe/passcode.
+        # Started LAST so it is the topmost overlay (above the shade + dim). Inert
+        # until sys.lock_enabled is turned on.
+        [ -x /usr/bin/zelto-lock ] && /usr/bin/zelto-lock &
+        # Small stagger so the bar's exclusive zone is applied before the
+        # launcher's initial size is computed (cosmetic; arrange re-runs anyway).
+        sleep 1
+        /usr/bin/zelto-launcher &
+    else
+        echo "[zelto-init] Wayland socket never appeared; shell not started"
+    fi
+}
+
+run_zcomp() {
+    echo "[zelto-init] starting zcomp (renderer=$1)..."
+    # Background waiter starts the shell as soon as the socket is up.
+    launch_shell &
+    WLR_RENDERER="$1" /usr/bin/zcomp
+    rc=$?
+    echo "[zelto-init] zcomp (renderer=$1) exited ($rc)."
+    return $rc
+}
+
 if [ -x /usr/bin/zcomp ]; then
-    /usr/bin/zcomp
-    echo "[zelto-init] zcomp exited ($?)."
+    run_zcomp gles2 || run_zcomp pixman || true
 else
     echo "[zelto-init] /usr/bin/zcomp not found!"
 fi

@@ -1,0 +1,27 @@
+# EditorConfig — matches docs/contributing/coding-standards.md.
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# C sources/headers: C17, 4-space indent, ~100-col soft limit.
+[*.{c,h}]
+indent_size = 4
+max_line_length = 100
+
+# Meson build files use 2-space indent by convention.
+[meson.build]
+indent_size = 2
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+# Makefiles (if any) require real tabs.
+[Makefile]
+indent_style = tab

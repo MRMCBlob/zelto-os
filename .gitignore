@@ -1,0 +1,59 @@
+# --- Build output ----------------------------------------------------------
+# Meson/Ninja build directories (host + cross). Match any build* dir at root.
+/build/
+/build-arm64/
+/build*/
+builddir/
+
+# Generated build-system glue and work areas.
+/meta/build/
+
+# Per-device build artifacts: kernel Image, initramfs, captured frames, configs.
+# These are large and reproducible from sources (build-kernel.sh / build-initramfs.sh).
+/device/*/out/
+
+# --- Compiled objects ------------------------------------------------------
+*.o
+*.a
+*.so
+*.so.*
+*.lo
+*.obj
+
+# --- Kernel / image artifacts (in case they land outside out/) -------------
+Image
+*.cpio
+*.cpio.gz
+*.img
+*.qcow2
+vmlinux
+System.map
+
+# --- Captured frames / runtime sockets -------------------------------------
+*.ppm
+*.png
+!docs/**/*.png
+*.sock
+
+# --- Tooling / IDE ---------------------------------------------------------
+compile_commands.json
+.cache/
+.clangd/
+.vscode/
+*.code-workspace
+
+# --- OS / editor junk ------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+
+# --- Allow ------------------------------------------------------------
+!resources/
+!resources/icons/
+!resources/icons/**
+!resources/icons/Duocolor/
+!resources/icons/Duocolor/**
+!resources/wallpaper/
+!resources/wallpaper/**

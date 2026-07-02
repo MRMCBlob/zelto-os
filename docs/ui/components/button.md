@@ -59,8 +59,17 @@ custom buttons without changing layout ([../../guides/gestures.md](../../guides/
 
 ## C
 
+In C the tap handler is a named `ZAction` (see the handler note in
+[../../api-reference/c/ui.md](../../api-reference/c/ui.md)). `Button` is live in
+the MVP — a rounded, filled, padded label that fires `on_tap` on a pointer tap
+or, while focused, on Enter/Space. Style variants (`.filled()`, `.tinted()`,
+roles) are still **Planned**; the MVP button is the filled accent style.
+
 ```c
-Filled(Button(ZACT({ save(); }), "Save"));
+static void save(ZApp *app, void *state) { /* ... */ z_invalidate(app); }
+
+// in body():
+Button(save, "Save");
 ```
 
 See [../../api-reference/c/ui.md](../../api-reference/c/ui.md).

@@ -46,14 +46,16 @@ if have_graphics
     'src/main.c',
     'src/server.c',
     'src/output.c',
-    'src/render.c',
+    'src/toplevel.c',
+    'src/layer.c',
+    'src/seat.c',
   )
 
   executable(
     'zcomp',
     zcomp_src,
     protocol_src,
-    include_directories : zcomp_inc,
+    include_directories : [zcomp_inc, include_directories('protocols')],
     dependencies : zcomp_deps,
     install : true,
   )

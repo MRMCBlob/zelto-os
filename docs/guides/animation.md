@@ -87,13 +87,22 @@ See [navigation.md](navigation.md).
 
 ## C API
 
+In C the change is a named `ZAction` (no inline closures under strict ISO C), and
+an animated value is a persistent scalar bound to a transform via `Offset`:
+
 ```c
-z_with_animation(Z_SPRING_STANDARD, ZACT({ s->expanded = true; z_invalidate(app); }));
-ZAnimated *x = z_animated_value(app, 0.0f);
-z_animated_spring(x, 0.0f);
+static void expand(ZApp *app, void *state) { App *s = state; s->open = true; }
+// ...
+z_with_animation(app, Z_SPRING_STANDARD, expand);   // runs `expand`, springs under it
+
+ZAnimated *x = z_animated_value(app, 0.0f);          // persistent (by call order)
+z_animated_spring(x, 120.0f);                        // spring toward 120
+return Offset(x, 0.0f, Card());                      // Card tracks x each frame
 ```
 
-See [../api-reference/c/ui.md](../api-reference/c/ui.md).
+Springs advance on the wl_surface frame callback: continuous repaint while any
+value is in flight, idle once settled. See
+[../api-reference/c/ui.md](../api-reference/c/ui.md).
 
 ## Next
 
