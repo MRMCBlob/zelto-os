@@ -27,4 +27,5 @@ if zelto_dep.found()
   subdir('shade')
   subdir('dim')
   subdir('lock')
+  subdir('keyboard')
 endif

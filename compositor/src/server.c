@@ -23,6 +23,7 @@
 #include "zcomp/layer.h"
 #include "zcomp/output.h"
 #include "zcomp/seat.h"
+#include "zcomp/text_input.h"
 #include "zcomp/toplevel.h"
 
 // Zelto teal background (matches the bootstrap clear colour).
@@ -116,6 +117,12 @@ bool zcomp_server_init(ZcompServer *server) {
 
     // --- Seat + input ------------------------------------------------------
     zcomp_seat_init(server);
+
+    // --- text-input-v3 + input-method-v2 (on-screen keyboard bridge) -------
+    // Advertise both globals and bring up the relay that bridges an app's text
+    // field (text-input) to the on-screen keyboard (input-method). Must follow
+    // the seat: the relay routes text-input focus off seat keyboard focus.
+    zcomp_text_input_init(server);
 
     if (!wlr_backend_start(server->backend)) {
         wlr_log(WLR_ERROR, "wlr_backend_start failed");

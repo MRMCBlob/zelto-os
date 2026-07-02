@@ -24,6 +24,7 @@ typedef struct NotepadState {
     int64_t loaded;                // what we read from disk at startup
     int row_count;                 // rows currently loaded for display
     char rows[NP_MAX_ROWS][80];    // "#<n>: <note>" most-recent-first
+    ZTextField note;               // typed note text (P21 soft-keyboard demo)
 } NotepadState;
 
 // Reload the most-recent rows from the DB into the display snapshot.
@@ -66,17 +67,26 @@ static void ensure_init(NotepadState *s) {
 }
 
 // "Add note": persist a bumped counter (prefs) + INSERT a row (DB), then reload.
+// The note text is whatever was typed into the soft-keyboard-backed field; if the
+// field is empty it falls back to an auto-generated label so a tap still works.
 static void add_note(ZApp *app, void *state) {
     NotepadState *s = state;
     s->count++;
     z_prefs_set_int("count", s->count);
     if (s->db) {
-        char note[48];
-        snprintf(note, sizeof(note), "note number %lld", (long long)s->count);
+        char note[Z_TEXTFIELD_CAP + 32];
+        if (s->note.len > 0) {
+            snprintf(note, sizeof(note), "%s", s->note.text);
+        } else {
+            snprintf(note, sizeof(note), "note number %lld", (long long)s->count);
+        }
         z_db_run(s->db, "INSERT INTO notes(n, note) VALUES(?, ?)",
                  z_args(s->count, note));
         refresh_rows(s);
     }
+    // Clear the field for the next note.
+    s->note.len = 0;
+    s->note.text[0] = '\0';
     z_invalidate(app);
 }
 
@@ -99,7 +109,6 @@ static ZView rows_panel(NotepadState *s) {
 }
 
 static ZView notepad_body(ZApp *app, NotepadState *state) {
-    (void)app;
     ensure_init(state);
 
     return Background(z_rgba(0x14, 0x18, 0x24, 0xff),
@@ -120,6 +129,9 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
             Foreground(z_rgba(0x9a, 0xc4, 0xf0, 0xff),
                 Font(Z_FONT_CALLOUT,
                     Text("loaded count=%lld from disk", (long long)state->loaded))),
+            // Tap this field -> the on-screen keyboard slides up; type the note.
+            Frame(360.0f, 0.0f,
+                TextField(app, &state->note, "Type a note...")),
             Background(z_rgba(0xfa, 0x66, 0x26, 0xff),
                 Button(add_note, "Add note")),
             rows_panel(state),

@@ -148,6 +148,59 @@ ZView z_button(ZAction on_tap, const char *fmt, ...);
 #define Button(action, ...) z_button(action, __VA_ARGS__)
 
 // ---------------------------------------------------------------------------
+// Text field (editable text) — the on-screen-keyboard front end (P21).
+//
+// A ZTextField is a retained text buffer + length the app owns (put it in the
+// app's state struct so it survives rebuilds). TextField renders it as a padded,
+// rounded box showing the text (or a dim placeholder when empty) with a caret
+// while the field is focused. Tapping the field focuses it, which — under the
+// hood via text-input-v3 — tells the compositor to raise the on-screen keyboard;
+// each key the keyboard sends is inserted into the buffer (backspace deletes),
+// and the app simply reads `field.text`. No wl_keyboard handling in the app.
+// Register an on_change callback to react to edits (NULL to ignore). See
+// docs/platform/soft-keyboard.md.
+// ---------------------------------------------------------------------------
+#define Z_TEXTFIELD_CAP 256
+
+typedef struct ZTextField {
+    char text[Z_TEXTFIELD_CAP];   // current contents (NUL-terminated)
+    int len;                      // bytes in text (excluding the NUL)
+    // Fired from the app loop after the buffer changes (a committed string or a
+    // backspace), with the live app + the app state pointer. NULL = ignore.
+    void (*on_change)(ZApp *app, void *state);
+} ZTextField;
+
+// Build an editable text field bound to `f`. `placeholder` shows (dimmed) when
+// the field is empty. Takes `app` so the widget can reflect focus/caret state.
+ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder);
+#define TextField(appp, f, placeholder) z_text_field(appp, f, placeholder)
+
+// ---------------------------------------------------------------------------
+// Input method (the on-screen keyboard's back end) — P21.
+//
+// The keyboard app (zelto-keyboard) is the system's single input-method client.
+// It binds the input method with z_im_bind and is told when to show/hide: the
+// compositor raises the "show" callback when any app's text field is focused and
+// "hide" when it blurs (driven by the text-input/input-method handshake). While
+// shown, each key the user taps calls z_im_commit_text (insert) or z_im_backspace
+// (delete one char before the cursor); the character lands in whatever field owns
+// focus, in whatever app, with no cooperation from that app. Only the keyboard
+// app calls these. See docs/platform/soft-keyboard.md.
+// ---------------------------------------------------------------------------
+typedef void (*ZImVisibilityCb)(ZApp *app, void *ud);
+
+// Bind the input method and register show/hide callbacks. No-op (callbacks never
+// fire) if the compositor does not advertise input-method-v2 or no seat is bound.
+void z_im_bind(ZApp *app, ZImVisibilityCb on_show, ZImVisibilityCb on_hide,
+               void *ud);
+
+// Insert `utf8` into the focused text field (a committed string).
+void z_im_commit_text(ZApp *app, const char *utf8);
+
+// Delete one byte before the cursor in the focused field (backspace).
+void z_im_backspace(ZApp *app);
+
+// ---------------------------------------------------------------------------
 // Modifiers. Each wraps a ZView and returns it (apply outermost-last).
 // ---------------------------------------------------------------------------
 ZView Background(ZColor color, ZView view);
@@ -398,6 +451,13 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
 // Passing 0 on an axis lets the compositor size it from the anchors. No-op for
 // an xdg (non-layer) app. The new size arrives via the next configure + repaint.
 void z_layer_resize(ZApp *app, int width, int height);
+
+// Change a layer surface's exclusive zone at runtime — the px it reserves from
+// the app area. A surface that reserves space only some of the time (the on-
+// screen keyboard, which reserves its height while shown and nothing while
+// hidden, so app content shrinks to keep the focused field visible above it)
+// toggles it here. Deduped; applied on the next commit. No-op for a non-layer app.
+void z_layer_set_exclusive_zone(ZApp *app, int zone);
 
 // Restrict the surface's INPUT region to a rectangle (surface-local px); pointer
 // events outside it fall through to whatever is beneath. A layer surface that is

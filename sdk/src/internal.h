@@ -54,6 +54,8 @@ struct ZNode {
     ZPanHandler on_pan;   // pan/drag recognizer (NULL = none)
     ZLongPressHandler on_long_press;  // press-and-hold recognizer (NULL = none)
     void *long_press_data;            // per-view data passed to on_long_press
+    struct ZTextField *field;         // Z_K_STACK built by TextField: its buffer
+    bool field_active;                // this field currently has input focus (caret)
     bool focusable;
     bool focused;         // set by the app loop on the focused node (focus ring)
     uint64_t key;         // stable identity for keyed reconcile (0 = positional)
@@ -147,6 +149,10 @@ typedef struct ZUI {
 // declared publicly in <zelto/ui.h> (included above).
 ZUI *z_app_ui(ZApp *app);
 void *z_app_state(ZApp *app);
+// Text-field focus (P21). z_text_field (view.c) uses these to reflect + set the
+// app's active text field; app.c drives text-input-v3 enable/disable off it.
+void z_app_focus_field(ZApp *app, ZTextField *f);
+bool z_app_field_active(ZApp *app, const ZTextField *f);
 // The active app's app_id (set for app_run's lifetime). Used by storage.c to
 // scope each app's private data directory.
 const char *z_active_app_id(void);

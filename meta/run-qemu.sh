@@ -1332,6 +1332,170 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # ---------------------------------------------------------------------
+    # P21 on-screen keyboard (KBD=1): prove a soft QWERTY keyboard auto-appears
+    # when a text field is focused, types into whatever app owns the field via the
+    # text-input-v3 <-> input-method-v2 handshake, and hides again — then that the
+    # typed text persists (it is saved to /var/zelto and survives a reboot). A
+    # TWO-BOOT test against the same data.img (reuses the P11 persistence rig):
+    #   Boot #1 — home; open the drawer (swipe up) and launch Notepad. Its note
+    #     TextField shows a placeholder, no keyboard. TAP THE FIELD -> the QWERTY
+    #     keyboard slides up from the bottom (a real exclusive zone shrinks Notepad
+    #     so the field stays visible above it) and the field shows a caret. Inject
+    #     taps on several letter keys -> the characters appear IN THE FIELD (in
+    #     Notepad, which knows nothing about the keyboard). Tap backspace -> the
+    #     last char is removed. Tap "Add note" -> the typed note is written to the
+    #     SQLite DB on /var/zelto and listed. Tap the keyboard's hide key -> it
+    #     slides away and the field keeps its (now cleared) state. Sync + kill.
+    #   Boot #2 — FRESH QEMU, SAME disk: relaunch Notepad -> the persisted counter
+    #     and the typed note row are read back from /var/zelto (survived the
+    #     reboot). Also confirms the keyboard does NOT show on the home screen (no
+    #     focused field) — frame-kbd-home has no keyboard.
+    # Coordinates are overridable to retune to the rendered layout from a captured
+    # frame (rerun SKIP_BUILD=1 + overrides — first guesses miss). Boot is slow
+    # under TCG: keep SHOT_DELAY high; TCG drops rapid taps so keys are spaced, and
+    # the screendump lags a frame so trust the downstream state.
+    if [ "${KBD:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        SWIPE_X="${SWIPE_X:-640}"
+        # Notepad drawer tile: alphabetical 4-col grid, row 1 col 3 on a fresh
+        # image (Cards, Fetch, Notepad, Notes). Retune from frame-kbd-drawer.
+        NOTEPAD_X="${NOTEPAD_X:-786}"; NOTEPAD_Y="${NOTEPAD_Y:-165}"
+        # Notepad's note field + the "Add note" button (retune from frame-kbd-app).
+        FIELD_X="${FIELD_X:-640}"; FIELD_Y="${FIELD_Y:-372}"
+        ADD_X="${ADD_X:-640}"; ADD_Y="${ADD_Y:-452}"
+        # Keyboard keys @1280x800. The keyboard sits ABOVE the 64px nav bar, so the
+        # KBD_H=300 strip lands at y~436..736 and the four settled row centres are
+        # ~row1 488, row2 561, row3 634, row4 707. Letters typed: h (row2), i (row1).
+        H_X="${H_X:-751}"; H_Y="${H_Y:-561}"
+        I_X="${I_X:-915}"; I_Y="${I_Y:-488}"
+        BKSP_X="${BKSP_X:-1177}"; BKSP_Y="${BKSP_Y:-634}"   # row3 rightmost (<x)
+        HIDE_X="${HIDE_X:-1183}"; HIDE_Y="${HIDE_Y:-707}"   # row4 rightmost (v)
+        ax() { echo $(( $1 * 32767 / OUTW )); }
+        ay() { echo $(( $1 * 32767 / OUTH )); }
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        move() {
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
+        }
+        btn() {
+            local d=true; [ "$1" = up ] && d=false
+            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
+        }
+        tap() { move "$1" "$2"; sleep 0.3; btn down; sleep 0.15; btn up; }
+        # Launch tap: press then release as two separate input-send-events over ONE
+        # socat connection, so the down->up gap is ~microseconds of wall time. Two
+        # separate qmp() calls each spawn socat (~100ms+ apart), and the TCG guest
+        # clock jumps ahead unpredictably in that gap — long enough to trip the
+        # drawer icons' long-press (curate menu) or to be dropped. One connection
+        # with two distinct commands is a reliable tap (distinct timestamps dodge
+        # debounce; near-zero gap dodges long-press).
+        launchtap() {
+            move "$1" "$2"; sleep 0.3
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' \
+                '{"execute":"qmp_capabilities"}' \
+                '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"left"}}]}}' \
+                '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"left"}}]}}' \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        drag() {
+            local x="$1" y1="$2" y2="$3"
+            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
+            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
+            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
+            move "$x" "$y2"; sleep 0.4; btn up
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        kbd_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        kbd_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [kbd boot 1/2] home (no keyboard; no focused field)"
+        kbd_boot
+        sleep "$SHOT_DELAY"
+        shot frame-kbd-home
+        echo "==> [kbd 1] open drawer + launch Notepad"
+        drag "$SWIPE_X" 690 110
+        # Let the drawer slide-up fully settle: a launch tap on a mid-slide tile
+        # misses (tile still moving) and simply does nothing.
+        sleep 8; shot frame-kbd-drawer            # read the Notepad tile y off this
+        launchtap "$NOTEPAD_X" "$NOTEPAD_Y"
+        sleep 6; shot frame-kbd-app               # Notepad: field + Add note, no kbd
+        echo "==> [kbd 1] tap the note field -> keyboard slides up"
+        tap "$FIELD_X" "$FIELD_Y"
+        # Let the slide-up spring fully settle before typing: under TCG it takes
+        # several wall seconds, and key taps that land mid-slide hit above the keys.
+        sleep 18; shot frame-kbd-shown            # QWERTY fully up; field has a caret
+        echo "==> [kbd 1] type 'h' then 'i' -> chars land in the field"
+        tap "$H_X" "$H_Y"
+        sleep 2
+        tap "$I_X" "$I_Y"
+        sleep 3; shot frame-kbd-typed             # field shows "hi" (allow for shot lag)
+        echo "==> [kbd 1] backspace -> one char removed"
+        tap "$BKSP_X" "$BKSP_Y"
+        sleep 3; shot frame-kbd-backspace         # field shows "h"
+        echo "==> [kbd 1] tap hide -> keyboard slides away, field keeps its text"
+        tap "$HIDE_X" "$HIDE_Y"
+        # Let the slide-DOWN fully complete so Notepad relayouts to full height and
+        # the Add-note button returns to its keyboard-down position before we tap it.
+        sleep 7; shot frame-kbd-hidden            # keyboard gone, Notepad full; "h" kept
+        echo "==> [kbd 1] Add note -> the typed note is written to /var/zelto"
+        tap "$ADD_X" "$ADD_Y"
+        sleep 2; shot frame-kbd-added             # note row "#1: h" listed; field cleared
+        echo "==> [kbd 1] sync + shutdown"
+        sleep 3
+        kbd_kill
+
+        echo "==> [kbd boot 2/2] REBOOT same disk; typed note + counter persisted"
+        kbd_boot
+        sleep "$SHOT_DELAY"
+        shot frame-kbd-reboot                      # home, no keyboard
+        echo "==> [kbd 2] open drawer + relaunch Notepad -> note row survived"
+        drag "$SWIPE_X" 690 110
+        sleep 8
+        launchtap "$NOTEPAD_X" "$NOTEPAD_Y"
+        sleep 6; shot frame-kbd-persisted          # loaded count=N + the typed row
+        kbd_kill
+        echo "==> kbd test done; frames in $OUT/frame-kbd-*.png"
+        exit 0
+    fi
+
     # The QMP unix socket must live on a native fs (9p/drvfs can't bind sockets).
     QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
     rm -f "$QMP_SOCK"

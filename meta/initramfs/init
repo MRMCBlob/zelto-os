@@ -169,6 +169,11 @@ launch_shell() {
         # top bar and it. Always-running like the bar; its buttons drive the
         # window manager (foreign-toplevel activate + fork/exec zelto-recents).
         [ -x /usr/bin/zelto-nav ] && /usr/bin/zelto-nav &
+        # The on-screen keyboard (P21): a bottom-anchored TOP-layer layer-shell
+        # app and the seat's single input-method-v2 client. Started after the nav
+        # bar so it composites above it (a phone keyboard sits over the nav).
+        # Always-running but shown only while a text field is focused.
+        [ -x /usr/bin/zelto-keyboard ] && /usr/bin/zelto-keyboard &
         # The notification shade: an OVERLAY layer-shell sink that subscribes to
         # zsysd and renders heads-up banners. Always-running like the bar.
         [ -x /usr/bin/zelto-shade ] && /usr/bin/zelto-shade &

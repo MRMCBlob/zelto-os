@@ -84,9 +84,52 @@ idle_notify_client_code = custom_target(
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# text-input-unstable-v3 client bindings (P21 on-screen keyboard). An app's text
+# field is a text-input client: it enables on focus, ships surrounding text, and
+# receives committed strings from the keyboard (relayed by the compositor). Like
+# ext-idle-notify this protocol SHIPS in wayland-protocols (unstable), so use the
+# system XML directly. libwayland-client ships no marshalling, so generate both
+# the client header and the private code.
+text_input_xml = wl_protocol_dir / 'unstable/text-input/text-input-unstable-v3.xml'
+
+text_input_client_header = custom_target(
+  'text-input-unstable-v3-client-protocol.h',
+  input : text_input_xml,
+  output : 'text-input-unstable-v3-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+text_input_client_code = custom_target(
+  'text-input-unstable-v3-protocol.c',
+  input : text_input_xml,
+  output : 'text-input-unstable-v3-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+# input-method-unstable-v2 client bindings (P21). The on-screen keyboard
+# (zelto-keyboard) is the single input-method client: it is told activate/
+# deactivate (show/hide) and sends commit_string / delete_surrounding_text back.
+# Unlike text-input-v3 this one is NOT in wayland-protocols (it is a wlr-protocol),
+# so the XML is vendored under protocols/ exactly like layer-shell/foreign-toplevel.
+input_method_xml = meson.project_source_root() / 'protocols/input-method-unstable-v2.xml'
+
+input_method_client_header = custom_target(
+  'input-method-unstable-v2-client-protocol.h',
+  input : input_method_xml,
+  output : 'input-method-unstable-v2-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+input_method_client_code = custom_target(
+  'input-method-unstable-v2-protocol.c',
+  input : input_method_xml,
+  output : 'input-method-unstable-v2-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 sdk_protocol_src = [
   xdg_client_header, xdg_client_code,
   layer_client_header, layer_client_code,
   foreign_toplevel_client_header, foreign_toplevel_client_code,
   idle_notify_client_header, idle_notify_client_code,
+  text_input_client_header, text_input_client_code,
+  input_method_client_header, input_method_client_code,
 ]

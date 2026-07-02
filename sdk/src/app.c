@@ -19,6 +19,8 @@
 
 #include "internal.h"
 #include "ext-idle-notify-v1-client-protocol.h"
+#include "input-method-unstable-v2-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -160,6 +162,29 @@ struct ZApp {
     // including this app). Folded into ctrl_dispatch_line like the notify sink.
     ZSettingsCb settings_cb;
     void *settings_ud;
+
+    // text-input-v3 (P21, the app-with-a-text-field side). One text_input per
+    // app for the seat; the compositor sends enter/leave as the surface gains/
+    // loses keyboard focus. active_field is the focused TextField (set by a tap);
+    // when one is active AND the surface is entered we enable the text input, so
+    // the compositor raises the on-screen keyboard, and route its commit_string /
+    // delete_surrounding_text into that field's buffer.
+    struct zwp_text_input_manager_v3 *ti_manager;
+    struct zwp_text_input_v3 *text_input;
+    bool ti_entered;                 // compositor sent enter (surface has focus)
+    bool ti_enabled;                 // we called enable+commit for active_field
+    ZTextField *active_field;        // focused text field (NULL = none)
+
+    // input-method-v2 (P21, the on-screen-keyboard side). Only zelto-keyboard
+    // binds it (via z_im_bind). The compositor drives activate/deactivate (show/
+    // hide); the keyboard sends commit_string / delete_surrounding_text back. The
+    // commit serial equals the number of `done` events received (im_serial).
+    struct zwp_input_method_manager_v2 *im_manager;
+    struct zwp_input_method_v2 *input_method;
+    uint32_t im_serial;              // count of done events (commit serial)
+    bool im_active, im_pending_active;
+    ZImVisibilityCb im_show_cb, im_hide_cb;
+    void *im_ud;
 
     // Keyboard translation (raw keycodes -> keysyms) via xkbcommon.
     struct xkb_context *xkb_ctx;
@@ -443,6 +468,30 @@ static void render(ZApp *app) {
     app->focused = find_focusable(new_root);
     if (app->focused) {
         app->focused->focused = true;
+    }
+
+    // Drive text-input-v3 off the focused text field (P21): enable when a field
+    // is focused AND our surface has text-input focus (compositor sent enter),
+    // which makes the compositor raise the on-screen keyboard; disable otherwise
+    // (blur / app backgrounded), which hides it. The flags dedup the commits.
+    if (app->text_input) {
+        bool want = app->active_field != NULL && app->ti_entered;
+        if (want && !app->ti_enabled) {
+            zwp_text_input_v3_enable(app->text_input);
+            zwp_text_input_v3_set_content_type(
+                app->text_input, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+                ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+            zwp_text_input_v3_set_surrounding_text(
+                app->text_input, app->active_field->text,
+                (uint32_t)app->active_field->len,
+                (uint32_t)app->active_field->len);
+            zwp_text_input_v3_commit(app->text_input);
+            app->ti_enabled = true;
+        } else if (!want && app->ti_enabled) {
+            zwp_text_input_v3_disable(app->text_input);
+            zwp_text_input_v3_commit(app->text_input);
+            app->ti_enabled = false;
+        }
     }
 
     // Diff against the previous tree to find the changed regions.
@@ -983,6 +1032,149 @@ static const struct wl_keyboard_listener keyboard_listener = {
     .repeat_info = kb_repeat_info,
 };
 
+// --- text-input-v3 (app text field side) ----------------------------------
+// The compositor sends enter/leave as this app's surface gains/loses keyboard
+// focus; commit_string / delete_surrounding_text carry the on-screen keyboard's
+// edits, which we apply straight into the focused ZTextField's buffer.
+void z_app_focus_field(ZApp *app, ZTextField *f) {
+    if (app->active_field == f) {
+        return;
+    }
+    app->active_field = f;
+    z_invalidate(app);   // render() re-evaluates text-input enable state
+}
+bool z_app_field_active(ZApp *app, const ZTextField *f) {
+    return app && f && app->active_field == f;
+}
+
+static void ti_enter(void *data, struct zwp_text_input_v3 *ti,
+                     struct wl_surface *surface) {
+    (void)ti; (void)surface;
+    ZApp *app = data;
+    app->ti_entered = true;
+    app->ti_enabled = false;   // fresh focus: render() re-enables if a field is up
+    z_invalidate(app);
+}
+static void ti_leave(void *data, struct zwp_text_input_v3 *ti,
+                     struct wl_surface *surface) {
+    (void)ti; (void)surface;
+    ZApp *app = data;
+    app->ti_entered = false;
+    app->ti_enabled = false;
+}
+static void ti_preedit_string(void *data, struct zwp_text_input_v3 *ti,
+                              const char *text, int32_t cursor_begin,
+                              int32_t cursor_end) {
+    (void)data; (void)ti; (void)text; (void)cursor_begin; (void)cursor_end;
+    // Composing (preedit) text is not shown inline in the MVP.
+}
+static void ti_commit_string(void *data, struct zwp_text_input_v3 *ti,
+                             const char *text) {
+    (void)ti;
+    ZApp *app = data;
+    ZTextField *f = app->active_field;
+    if (!f || !text) {
+        return;
+    }
+    int add = (int)strlen(text);
+    if (add <= 0 || f->len + add >= Z_TEXTFIELD_CAP) {
+        return;
+    }
+    memcpy(f->text + f->len, text, (size_t)add);
+    f->len += add;
+    f->text[f->len] = '\0';
+    if (f->on_change) {
+        f->on_change(app, app->state);
+    }
+    z_invalidate(app);
+}
+static void ti_delete_surrounding_text(void *data, struct zwp_text_input_v3 *ti,
+                                       uint32_t before_length,
+                                       uint32_t after_length) {
+    (void)ti; (void)after_length;
+    ZApp *app = data;
+    ZTextField *f = app->active_field;
+    if (!f) {
+        return;
+    }
+    int del = (int)before_length;
+    if (del > f->len) {
+        del = f->len;
+    }
+    f->len -= del;
+    f->text[f->len] = '\0';
+    if (del > 0 && f->on_change) {
+        f->on_change(app, app->state);
+    }
+    z_invalidate(app);
+}
+static void ti_done(void *data, struct zwp_text_input_v3 *ti, uint32_t serial) {
+    (void)data; (void)ti; (void)serial;
+    // We apply commit_string / delete eagerly above (our single trusted keyboard
+    // sends them immediately before done), so done needs no extra work.
+}
+static const struct zwp_text_input_v3_listener text_input_listener = {
+    .enter = ti_enter,
+    .leave = ti_leave,
+    .preedit_string = ti_preedit_string,
+    .commit_string = ti_commit_string,
+    .delete_surrounding_text = ti_delete_surrounding_text,
+    .done = ti_done,
+};
+
+// --- input-method-v2 (on-screen keyboard side) -----------------------------
+// zelto-keyboard binds this. activate/deactivate (batched, applied on done) tell
+// it to show/hide; it sends commit_string / delete back through z_im_*.
+static void im_activate(void *data, struct zwp_input_method_v2 *im) {
+    (void)im;
+    ((ZApp *)data)->im_pending_active = true;
+}
+static void im_deactivate(void *data, struct zwp_input_method_v2 *im) {
+    (void)im;
+    ((ZApp *)data)->im_pending_active = false;
+}
+static void im_surrounding_text(void *data, struct zwp_input_method_v2 *im,
+                                const char *text, uint32_t cursor,
+                                uint32_t anchor) {
+    (void)data; (void)im; (void)text; (void)cursor; (void)anchor;
+}
+static void im_text_change_cause(void *data, struct zwp_input_method_v2 *im,
+                                 uint32_t cause) {
+    (void)data; (void)im; (void)cause;
+}
+static void im_content_type(void *data, struct zwp_input_method_v2 *im,
+                            uint32_t hint, uint32_t purpose) {
+    (void)data; (void)im; (void)hint; (void)purpose;
+}
+static void im_done(void *data, struct zwp_input_method_v2 *im) {
+    (void)im;
+    ZApp *app = data;
+    app->im_serial++;   // commit serial = number of done events received
+    if (app->im_pending_active != app->im_active) {
+        app->im_active = app->im_pending_active;
+        if (app->im_active) {
+            if (app->im_show_cb) app->im_show_cb(app, app->im_ud);
+        } else {
+            if (app->im_hide_cb) app->im_hide_cb(app, app->im_ud);
+        }
+        z_invalidate(app);
+    }
+}
+static void im_unavailable(void *data, struct zwp_input_method_v2 *im) {
+    (void)im;
+    // Another input method already owns the seat: we will get nothing. Drop it.
+    ((ZApp *)data)->input_method = NULL;
+}
+static const struct zwp_input_method_v2_listener input_method_listener = {
+    .activate = im_activate,
+    .deactivate = im_deactivate,
+    .surrounding_text = im_surrounding_text,
+    .text_change_cause = im_text_change_cause,
+    .content_type = im_content_type,
+    .done = im_done,
+    .unavailable = im_unavailable,
+};
+
 // --- seat -----------------------------------------------------------------
 static void seat_capabilities(void *data, struct wl_seat *seat,
                               uint32_t caps) {
@@ -1162,6 +1354,17 @@ static void registry_global(void *data, struct wl_registry *registry,
         app->idle_notifier = wl_registry_bind(
             registry, name, &ext_idle_notifier_v1_interface,
             version < 1 ? version : 1);
+    } else if (strcmp(interface, zwp_text_input_manager_v3_interface.name) == 0) {
+        // Text-input (P21): every app with a text field binds it; a text_input
+        // object is created per app in app_run. Harmless for apps with no field.
+        app->ti_manager = wl_registry_bind(
+            registry, name, &zwp_text_input_manager_v3_interface, 1);
+    } else if (strcmp(interface,
+                      zwp_input_method_manager_v2_interface.name) == 0) {
+        // Input-method (P21): only zelto-keyboard uses it (via z_im_bind); every
+        // app binds the manager harmlessly, the keyboard alone creates the object.
+        app->im_manager = wl_registry_bind(
+            registry, name, &zwp_input_method_manager_v2_interface, 1);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (!app->output) {
             app->output = wl_registry_bind(registry, name, &wl_output_interface,
@@ -1289,6 +1492,16 @@ static int app_run(ZApp *app) {
 
     create_surface(app);
 
+    // text-input-v3 (P21): create one text_input for the seat so a TextField can
+    // raise the on-screen keyboard when focused. Independent of the surface role
+    // (works for xdg apps and layer apps). Harmless if the app has no text field.
+    if (app->ti_manager && app->seat) {
+        app->text_input = zwp_text_input_manager_v3_get_text_input(
+            app->ti_manager, app->seat);
+        zwp_text_input_v3_add_listener(app->text_input, &text_input_listener,
+                                       app);
+    }
+
     // Open the persistent intents control connection and register this app_id as
     // a mailbox, so zsysd can push delivered deep links / shares to us (and we
     // can send resolve requests on it). Best-effort: no broker -> no intents.
@@ -1401,6 +1614,13 @@ static int app_run(ZApp *app) {
     }
     z_active_app = NULL;
 
+    if (app->text_input) {
+        zwp_text_input_v3_destroy(app->text_input);
+    }
+    if (app->input_method) {
+        zwp_input_method_v2_destroy(app->input_method);
+    }
+
     if (app->xkb_state) {
         xkb_state_unref(app->xkb_state);
     }
@@ -1474,6 +1694,19 @@ void z_layer_resize(ZApp *app, int width, int height) {
     wl_surface_commit(app->surface);
 }
 
+void z_layer_set_exclusive_zone(ZApp *app, int zone) {
+    if (!app || !app->is_layer || !app->layer_surface) {
+        return;
+    }
+    if (app->layer_opts.exclusive_zone == zone) {
+        return;   // unchanged: don't spam set_exclusive_zone/commit
+    }
+    app->layer_opts.exclusive_zone = zone;
+    zwlr_layer_surface_v1_set_exclusive_zone(app->layer_surface, zone);
+    // Commit so the compositor re-arranges the usable area (zcomp_arrange).
+    wl_surface_commit(app->surface);
+}
+
 void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h) {
     if (!app || !app->is_layer || !app->surface || !app->compositor) {
         return;
@@ -1544,6 +1777,43 @@ void z_layer_set_keyboard(ZApp *app, bool exclusive) {
     // Commit so the request takes effect; the compositor grabs/releases the
     // keyboard (layer.c layer_sync_keyboard / layer_release_keyboard on commit).
     wl_surface_commit(app->surface);
+}
+
+// --- input method (on-screen keyboard side, P21) ---------------------------
+// zelto-keyboard calls z_im_bind to become the seat's input method; the
+// compositor then drives show/hide (im_activate/deactivate -> the callbacks) and
+// each key tap sends a committed string or a backspace to the focused field.
+void z_im_bind(ZApp *app, ZImVisibilityCb on_show, ZImVisibilityCb on_hide,
+               void *ud) {
+    if (!app) {
+        return;
+    }
+    app->im_show_cb = on_show;
+    app->im_hide_cb = on_hide;
+    app->im_ud = ud;
+    if (!app->input_method && app->im_manager && app->seat) {
+        app->input_method = zwp_input_method_manager_v2_get_input_method(
+            app->im_manager, app->seat);
+        zwp_input_method_v2_add_listener(app->input_method,
+                                         &input_method_listener, app);
+    }
+}
+
+void z_im_commit_text(ZApp *app, const char *utf8) {
+    if (!app || !app->input_method || !utf8 || !utf8[0]) {
+        return;
+    }
+    zwp_input_method_v2_commit_string(app->input_method, utf8);
+    zwp_input_method_v2_commit(app->input_method, app->im_serial);
+}
+
+void z_im_backspace(ZApp *app) {
+    if (!app || !app->input_method) {
+        return;
+    }
+    // Delete one byte before the cursor (ASCII in the MVP); commit the batch.
+    zwp_input_method_v2_delete_surrounding_text(app->input_method, 1, 0);
+    zwp_input_method_v2_commit(app->input_method, app->im_serial);
 }
 
 // --- idle notifications (ext-idle-notify-v1) -------------------------------

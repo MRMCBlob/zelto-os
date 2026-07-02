@@ -24,6 +24,9 @@ struct wlr_layer_shell_v1;
 struct wlr_layer_surface_v1;
 struct wlr_foreign_toplevel_manager_v1;
 struct wlr_idle_notifier_v1;
+struct wlr_text_input_manager_v3;
+struct wlr_input_method_manager_v2;
+struct ZcompTextInputRelay;
 struct wlr_xdg_shell;
 struct wlr_seat;
 struct wlr_cursor;
@@ -86,6 +89,16 @@ typedef struct ZcompServer {
     // into it on every input event; the timeout POLICY lives in the client, so
     // the compositor stays free of idle/lock policy (see seat.c notify_activity).
     struct wlr_idle_notifier_v1 *idle_notifier;
+
+    // text-input-v3 + input-method-v2: the on-screen-keyboard bridge (P21). The
+    // managers advertise the two globals (apps' text fields bind text-input; the
+    // keyboard binds input-method); text_relay owns the bookkeeping that routes a
+    // focused, enabled text field to the keyboard and relays committed strings
+    // back — so any app's field drives the keyboard with no per-app code. See
+    // text_input.c + docs/platform/soft-keyboard.md.
+    struct wlr_text_input_manager_v3 *text_input_manager;
+    struct wlr_input_method_manager_v2 *input_method_manager;
+    struct ZcompTextInputRelay *text_relay;
 
     // Area left for app windows after subtracting layer exclusive zones.
     // Recomputed by zcomp_arrange().

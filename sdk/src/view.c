@@ -172,6 +172,51 @@ ZView z_button(ZAction on_tap, const char *fmt, ...) {
     return n;
 }
 
+// Tapping a text field focuses it (app.c then raises the on-screen keyboard via
+// text-input-v3). The field pointer rides tap_data.
+static void field_on_tap(ZApp *app, void *state, void *data) {
+    (void)state;
+    z_app_focus_field(app, (ZTextField *)data);
+}
+
+// An editable text field. Built from primitives (a rounded box + a text child +
+// an optional caret) so layout/paint/hit-test stay uniform — no new node kind.
+// The `field` pointer marks it for app.c (which routes committed characters into
+// the buffer) and the tap handler focuses it.
+ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
+    bool active = f && z_app_field_active(app, f);
+    bool empty = !f || f->len == 0;
+    const char *shown = empty ? (placeholder ? placeholder : "") : f->text;
+
+    ZView label = node_new(Z_K_TEXT);
+    label->text = z_arena_strdup(z_build_arena, shown);
+    // Dim placeholder; full-contrast real text.
+    label->fg = empty ? z_rgba(0x8a, 0x93, 0x9e, 0xff) : Z_COLOR_TEXT_INV;
+
+    ZView n = node_new(Z_K_STACK);
+    n->axis = Z_AXIS_HORIZONTAL;
+    n->align = Z_ALIGN_CENTER;
+    n->spacing = 2.0f;
+    n->padding = 12.0f;                 // ~44px tall at body size
+    n->has_bg = true;
+    // Field fill; a brighter ring when focused so the capture shows the target.
+    n->bg = active ? z_rgba(0x22, 0x2b, 0x38, 0xff) : z_rgba(0x11, 0x16, 0x1f, 0xff);
+    n->radius = 10.0f;
+    n->on_tap_data = field_on_tap;
+    n->tap_data = f;
+    n->field = f;
+    n->field_active = active;
+    n->children[n->n_children++] = label;
+    if (active) {
+        ZView caret = node_new(Z_K_RECT);
+        caret->color = Z_COLOR_TEXT_INV;
+        caret->fixed_w = 2.0f;
+        caret->fixed_h = 22.0f;
+        n->children[n->n_children++] = caret;
+    }
+    return n;
+}
+
 // --- modifiers ------------------------------------------------------------
 ZView Background(ZColor color, ZView view) {
     view->has_bg = true;

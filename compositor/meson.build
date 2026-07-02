@@ -49,6 +49,7 @@ if have_graphics
     'src/toplevel.c',
     'src/layer.c',
     'src/seat.c',
+    'src/text_input.c',
   )
 
   executable(
