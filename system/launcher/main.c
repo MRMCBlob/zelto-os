@@ -1103,14 +1103,29 @@ static void on_wp_setting(ZApp *app, const char *key, const char *value,
 }
 
 // --- cell content ---------------------------------------------------------
-// An app icon over its rounded tile with the app name below.
+// A clean monogram (the app name's initial) drawn on the tile when an app ships
+// no icon of its own — nicer than the shared checkerboard placeholder bitmap,
+// and it needs no asset. Uppercased ASCII initial, '?' for an empty name.
+static ZView app_monogram(const AppEntry *e) {
+    char c = e->name[0];
+    if (c >= 'a' && c <= 'z') {
+        c = (char)(c - 32);
+    }
+    if (c == '\0') {
+        c = '?';
+    }
+    return Foreground(Z_COLOR_TEXT_INV,
+        Font(Z_FONT_LARGE_TITLE, Text("%c", c)));
+}
+
+// An app icon over its rounded tile with the app name below. Apps with their own
+// icon draw it inset; icon-less apps get a monogram on the coloured tile.
 static ZView app_icon_tile(const AppEntry *e) {
     bool own = e->icon_path[0] && z_image_loads(e->icon_path);
-    const char *icon = own ? e->icon_path : zelto_placeholder_icon();
     ZView art = own
         ? Frame(ICON_SIZE - 2.0f * ICON_INSET, ICON_SIZE - 2.0f * ICON_INSET,
-                Image(icon))
-        : Frame(ICON_SIZE, ICON_SIZE, CornerRadius(ICON_RADIUS, Image(icon)));
+                Image(e->icon_path))
+        : app_monogram(e);
     return Frame(ICON_SIZE, ICON_SIZE,
         Background(e->color,
             CornerRadius(ICON_RADIUS,
