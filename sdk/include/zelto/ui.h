@@ -663,6 +663,47 @@ void z_after(ZApp *app, int ms, ZTimerCb cb, void *ud);
 void z_after_cancel(ZApp *app);
 
 // ---------------------------------------------------------------------------
+// Repeating tick (widget refresh cadence).
+//
+// Request a periodic rebuild at `ms` cadence — a heartbeat the framework wakes
+// the loop for and z_invalidate()s (no busy-wait, and independent of the single
+// one-shot z_after slot). Re-declared every build (call it from body()): the
+// SHORTEST interval requested during a build wins, so several widgets with
+// different cadences share ONE timer, and a build that requests none disarms it.
+// This is what drives a clock widget's once-a-second tick without spinning the
+// render loop (a settled frame only re-renders when the interval elapses, not
+// every vsync). Use z_after for a one-shot; z_tick_every for a steady beat.
+// ---------------------------------------------------------------------------
+void z_tick_every(ZApp *app, int ms);
+
+// ---------------------------------------------------------------------------
+// Home-screen widgets.
+//
+// A widget is a self-contained glanceable card: a titled panel whose live
+// content a callback builds, refreshed on a declared cadence the SDK drives.
+// z_widget wraps the callback's view in standard chrome (a rounded, padded
+// Surface card captioned with the title) and — when refresh_ms > 0 — arms a
+// z_tick_every so the card re-renders on its own (a clock ticking; a glance
+// re-reading a brokered value on a timer). The body callback gets the live app
+// and the app's state pointer (the same one body() receives), so it reads state
+// / brokered settings and returns the content view. The result composes with
+// Frame/Background/Grow like any view, so a host (the launcher) can size and lay
+// several out over the wallpaper. A widget that updates from a live source (a
+// settings observer, a notification count) needs no cadence — leave refresh_ms 0
+// and invalidate from the source; the cadence is only for wall-clock ticking.
+// ---------------------------------------------------------------------------
+typedef ZView (*ZWidgetFn)(ZApp *app, void *state);
+
+typedef struct ZWidgetOpts {
+    const char *title;     // caption atop the card (NULL/"" = untitled)
+    ZWidgetFn body;        // builds the card's live content
+    int refresh_ms;        // self-refresh cadence (0 = only on invalidate)
+} ZWidgetOpts;
+
+ZView z_widget(ZApp *app, const ZWidgetOpts *opts);
+#define Widget(appp, ...) z_widget(appp, &(ZWidgetOpts){__VA_ARGS__})
+
+// ---------------------------------------------------------------------------
 // Permissions.
 //
 // Sensitive capabilities (camera, location, ...) are declared in the app's

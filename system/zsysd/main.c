@@ -170,6 +170,11 @@ static int g_batt_tick_ms = BATT_TICK_MS;
 static int64_t g_next_batt_ms;  // monotonic ms of the next tick
 static bool g_low_warned;       // one-shot latch for the low-battery notification
 
+// Forward declarations: the notification store (defined early) publishes a live
+// count through the settings store (defined later), and vice versa.
+static bool settings_apply(const char *key, const char *value);
+static void publish_notif_count(void);
+
 // Strip a trailing CR/LF in place.
 static void chomp(char *s) {
     size_t n = strlen(s);
@@ -697,6 +702,7 @@ static void notif_drop(int64_t id) {
     if (g_shade_fd >= 0) {
         send_notify_hide(g_shade_fd, id);
     }
+    publish_notif_count();
 }
 
 // notify_post: perm-gate (the consent prompt blocks here exactly like a
@@ -762,6 +768,7 @@ static void handle_notify_post(int fd, const char *line) {
     if (g_shade_fd >= 0) {
         send_notify_show(g_shade_fd, n);
     }
+    publish_notif_count();
 }
 
 // An action tapped on the shade: route it to the poster's mailbox (launch-if-
@@ -948,6 +955,27 @@ static bool settings_apply(const char *key, const char *value) {
     return true;
 }
 
+// Publish the number of live (stored) notifications as the brokered setting
+// sys.notif_count, so the home-screen notifications widget reads it through the
+// settings fan-out it already observes. The launcher can't become a second
+// notify sink (the sink is last-subscriber-wins — it would steal the shade's),
+// so routing the count through the settings store reuses one observer instead of
+// a new protocol. Called on every store change (post / drop / system post); the
+// store is in-memory (lost on reboot), so main() republishes 0 at startup to
+// clear any count persisted on a prior boot. settings_apply is idempotent, so an
+// unchanged count is a no-op (no disk churn, no fan-out).
+static void publish_notif_count(void) {
+    int n = 0;
+    for (int i = 0; i < MAX_NOTIFS; i++) {
+        if (g_notifs[i].used) {
+            n++;
+        }
+    }
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", n);
+    settings_apply("sys.notif_count", buf);
+}
+
 // --- power source (battery) ------------------------------------------------
 
 static int64_t now_ms(void) {
@@ -1028,6 +1056,7 @@ static void post_system_notification(const char *title, const char *body) {
     if (g_shade_fd >= 0) {
         send_notify_show(g_shade_fd, n);
     }
+    publish_notif_count();
 }
 
 // Post the low-battery warning once when the level crosses at/below the
@@ -1272,6 +1301,7 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
     load_manifests();
     settings_load();
+    publish_notif_count();   // store is empty at boot -> clear any stale count
     battery_init();
 
     const char *runtime = getenv("XDG_RUNTIME_DIR");

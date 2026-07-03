@@ -37,6 +37,7 @@
 // stored set the launcher seeds a default (the first few apps) and writes it.
 // Tapping any icon fork()+exec()s the app's `exec=` binary.
 #include <dirent.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -286,6 +287,188 @@ static void ensure_home(void) {
     seed_default_favs();
 }
 
+// --- home-screen widgets (P26) --------------------------------------------
+// A widget is an SDK primitive (z_widget): a titled card whose live content a
+// callback builds, self-refreshing on a declared cadence. The launcher ships
+// three built-ins and hosts them on the home surface above the favourites grid.
+// Each reads its live source directly — the clock ticks on its own z_tick_every
+// cadence; the status + notifications glances re-read the brokered sys.* keys on
+// every rebuild and stay current because the launcher's settings observer (which
+// already watches sys.wallpaper) repaints on any change. The ACTIVE set + order
+// is curated like favourites and persisted as a home.widgets CSV of widget ids.
+
+// The clock/date card: big time over a muted date. Ticks once a second.
+static ZView w_clock(ZApp *app, void *state) {
+    (void)app;
+    (void)state;
+    char hhmm[8] = "--:--";
+    char date[32] = "";
+    time_t t = time(NULL);
+    struct tm tmv;
+    if (gmtime_r(&t, &tmv)) {
+        snprintf(hhmm, sizeof(hhmm), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+        strftime(date, sizeof(date), "%a %d %b", &tmv);
+    }
+    return VStack(
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", hhmm))),
+        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", date))),
+        .spacing = 2, .align = Z_ALIGN_LEADING);
+}
+
+// The status glance: battery % (green charging / red low) + the connectivity
+// mode, both from the brokered sys.* keys the P23 power source + P18 settings own.
+static ZView w_battery(ZApp *app, void *state) {
+    (void)app;
+    (void)state;
+    int pct = (int)z_setting_get_int("sys.battery_pct", 100);
+    bool charging = z_setting_get_int("sys.battery_charging", 0) != 0;
+    bool wifi = z_setting_get_int("sys.wifi", 1) != 0;
+    bool airplane = z_setting_get_int("sys.airplane", 0) != 0;
+    if (pct < 0) {
+        pct = 0;
+    } else if (pct > 100) {
+        pct = 100;
+    }
+    ZColor pc = charging ? Z_COLOR_SUCCESS
+              : (pct <= 20 ? Z_COLOR_DANGER : Z_COLOR_TEXT);
+    const char *net = airplane ? "Airplane" : (wifi ? "Wi-Fi" : "Offline");
+    return VStack(
+        Foreground(pc, Font(Z_FONT_TITLE, Text("%d%%", pct))),
+        Foreground(Z_COLOR_TEXT_MUTED,
+            Font(Z_FONT_CAPTION,
+                 Text("%s%s", charging ? "Charging \xc2\xb7 " : "", net))),
+        .spacing = 2, .align = Z_ALIGN_LEADING);
+}
+
+// The notifications glance: the live count of stored notifications, read from the
+// brokered sys.notif_count key zsysd publishes off its notification store.
+static ZView w_notifs(ZApp *app, void *state) {
+    (void)app;
+    (void)state;
+    int n = (int)z_setting_get_int("sys.notif_count", 0);
+    return VStack(
+        Foreground(n > 0 ? Z_COLOR_ACCENT : Z_COLOR_TEXT_MUTED,
+                   Font(Z_FONT_LARGE_TITLE, Text("%d", n))),
+        Foreground(Z_COLOR_TEXT_MUTED,
+            Font(Z_FONT_CAPTION,
+                 Text("%s", n == 1 ? "notification" : "notifications"))),
+        .spacing = 2, .align = Z_ALIGN_LEADING);
+}
+
+typedef struct WidgetDef {
+    const char *id;        // stable key persisted in the home.widgets CSV
+    const char *title;     // card caption
+    ZWidgetFn build;       // content builder (z_widget body)
+    int refresh_ms;        // self-refresh cadence (0 = source-driven only)
+} WidgetDef;
+
+static const WidgetDef g_widget_defs[] = {
+    {"clock",   "Clock",         w_clock,   1000},
+    {"battery", "Status",        w_battery, 0},
+    {"notifs",  "Notifications", w_notifs,  0},
+};
+#define N_WIDGET_DEFS ((int)(sizeof(g_widget_defs) / sizeof(g_widget_defs[0])))
+
+// The active widgets: indices into g_widget_defs, in display order, resolved from
+// the persisted home.widgets CSV (or seeded to all built-ins on first run).
+static int g_widgets[N_WIDGET_DEFS];
+static int g_n_widgets;
+static bool g_widgets_scanned;
+
+static int find_widget_def(const char *id) {
+    for (int i = 0; i < N_WIDGET_DEFS; i++) {
+        if (strcmp(g_widget_defs[i].id, id) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Position of def index `di` in g_widgets, or -1 if inactive.
+static int widget_pos(int di) {
+    for (int i = 0; i < g_n_widgets; i++) {
+        if (g_widgets[i] == di) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Serialise g_widgets (as widget ids) into the home.widgets prefs string so the
+// set + order survive a reboot. Mirrors write_favs_csv.
+static void write_widgets_csv(void) {
+    char csv[256];
+    size_t off = 0;
+    csv[0] = '\0';
+    for (int i = 0; i < g_n_widgets; i++) {
+        int m = snprintf(csv + off, sizeof(csv) - off, "%s%s",
+                         i ? "," : "", g_widget_defs[g_widgets[i]].id);
+        if (m > 0 && (size_t)m < sizeof(csv) - off) {
+            off += (size_t)m;
+        }
+    }
+    z_prefs_set_str("home.widgets", csv);
+    fprintf(stderr, "launcher: wrote widgets: %s\n", csv);
+}
+
+// Resolve the active widget set once from home.widgets, else seed all built-ins.
+static void ensure_widgets(void) {
+    if (g_widgets_scanned) {
+        return;
+    }
+    g_widgets_scanned = true;
+    const char *pref = z_prefs_get_str("home.widgets", NULL);
+    if (pref && pref[0]) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "%s", pref);
+        g_n_widgets = 0;
+        for (char *tok = strtok(buf, ","); tok && g_n_widgets < N_WIDGET_DEFS;
+             tok = strtok(NULL, ",")) {
+            int di = find_widget_def(tok);
+            if (di >= 0 && widget_pos(di) < 0) {
+                g_widgets[g_n_widgets++] = di;
+            }
+        }
+        fprintf(stderr, "launcher: widgets loaded from prefs: %s\n", pref);
+        return;   // an empty stored set is legitimate (user removed them all)
+    }
+    g_n_widgets = 0;
+    for (int i = 0; i < N_WIDGET_DEFS; i++) {
+        g_widgets[g_n_widgets++] = i;
+    }
+    write_widgets_csv();
+}
+
+// Curate ops (persist on each change). Add appends a built-in; remove compacts;
+// move-up swaps a card with its predecessor (the reorder affordance).
+static void widget_add(int di) {
+    if (di < 0 || di >= N_WIDGET_DEFS || widget_pos(di) >= 0 ||
+        g_n_widgets >= N_WIDGET_DEFS) {
+        return;
+    }
+    g_widgets[g_n_widgets++] = di;
+    write_widgets_csv();
+}
+static void widget_remove_at(int pos) {
+    if (pos < 0 || pos >= g_n_widgets) {
+        return;
+    }
+    for (int i = pos; i < g_n_widgets - 1; i++) {
+        g_widgets[i] = g_widgets[i + 1];
+    }
+    g_n_widgets--;
+    write_widgets_csv();
+}
+static void widget_move_up(int pos) {
+    if (pos <= 0 || pos >= g_n_widgets) {
+        return;
+    }
+    int tmp = g_widgets[pos - 1];
+    g_widgets[pos - 1] = g_widgets[pos];
+    g_widgets[pos] = tmp;
+    write_widgets_csv();
+}
+
 // Launcher persistent state. drawer_anim (0 hidden .. 1 covering) drives the
 // drawer's vertical Offset; surface_h is the launcher's pixel height, both
 // refreshed every build. drawer_anim is a retained hook: it MUST be allocated at
@@ -310,6 +493,14 @@ typedef struct LauncherState {
     int menu_idx;
     double toast_until;       // monotonic seconds; 0 = no toast
     char toast[64];
+
+    // Widget curate (P26). A long-press on a widget card opens a per-card menu
+    // (remove / move up) keyed by its position in g_widgets; the "+ Add widget"
+    // pill opens a sheet listing the inactive built-ins. Both are modal overlays
+    // built only while open (no retained hooks), like the app curate menu.
+    bool wmenu_open;
+    int wmenu_pos;            // position in g_widgets the card menu acts on
+    bool wadd_open;
 } LauncherState;
 
 // --- shared cell ----------------------------------------------------------
@@ -465,16 +656,21 @@ static ZView wallpaper(LauncherState *s) {
     return wallpaper_gradient();
 }
 
-// A brokered setting changed: re-resolve the wallpaper when it is sys.wallpaper
-// (idempotent — re-reading the value we just set is a harmless no-op) and repaint.
+// A brokered setting changed. Re-resolve the wallpaper when it is sys.wallpaper
+// (idempotent — re-reading the value we just set is a harmless no-op), and repaint
+// on ANY change so the home widgets that read brokered keys directly (the status +
+// notifications glances read sys.battery_*/sys.notif_count each rebuild) update
+// live — a battery drain, a Settings toggle, or a new notification re-renders the
+// glance with no reboot. The rebuild is cheap and the reads are pure, so observing
+// every key rather than a curated subset is simplest and never loops.
 static void on_wp_setting(ZApp *app, const char *key, const char *value,
                           void *ud) {
     (void)value;
     LauncherState *s = ud;
     if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
         s->wp_ok = zelto_wallpaper_active(s->wp_path, sizeof(s->wp_path));
-        z_invalidate(app);
     }
+    z_invalidate(app);
 }
 
 // --- drawer open/close ----------------------------------------------------
@@ -530,6 +726,56 @@ static void do_remove_fav(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
+// --- widget curate --------------------------------------------------------
+// Long-press a widget card -> open its per-card menu (remove / move up). `data`
+// is the card's position in g_widgets, encoded in the pointer (like OnLongPress
+// on the app cells, but a small integer identity rather than an AppEntry*).
+static void on_widget_longpress(ZApp *app, void *state, void *data, float x,
+                                float y) {
+    (void)x;
+    (void)y;
+    LauncherState *s = state;
+    s->wmenu_pos = (int)(intptr_t)data;
+    s->wmenu_open = true;
+    z_invalidate(app);
+}
+static void close_wmenu(ZApp *app, void *state) {
+    LauncherState *s = state;
+    s->wmenu_open = false;
+    z_invalidate(app);
+}
+static void do_widget_remove(ZApp *app, void *state) {
+    LauncherState *s = state;
+    widget_remove_at(s->wmenu_pos);
+    s->wmenu_open = false;
+    z_invalidate(app);
+}
+static void do_widget_move_up(ZApp *app, void *state) {
+    LauncherState *s = state;
+    widget_move_up(s->wmenu_pos);
+    s->wmenu_open = false;
+    z_invalidate(app);
+}
+// The "+ Add widget" pill opens the add sheet; a row in it adds one built-in.
+static void open_widget_add(ZApp *app, void *state) {
+    LauncherState *s = state;
+    s->wadd_open = true;
+    z_invalidate(app);
+}
+static void close_widget_add(ZApp *app, void *state) {
+    LauncherState *s = state;
+    s->wadd_open = false;
+    z_invalidate(app);
+}
+// `data` is the WidgetDef* of the inactive built-in to add (recover its index).
+static void do_widget_add(ZApp *app, void *state, void *data) {
+    LauncherState *s = state;
+    const WidgetDef *d = data;
+    widget_add((int)(d - g_widget_defs));
+    s->wadd_open = false;
+    z_invalidate(app);
+}
+
 static float clamp01(float a) {
     return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
 }
@@ -578,6 +824,49 @@ static void on_drawer_pan(ZApp *app, void *state, const ZPanEvent *e) {
     }
 }
 
+// --- widget host ----------------------------------------------------------
+// One widget card: the SDK z_widget wrapped in a long-press target (its position
+// carries the curate identity) and Grow(1) so a pair splits the row evenly.
+static ZView widget_card(ZApp *app, int pos) {
+    const WidgetDef *d = &g_widget_defs[g_widgets[pos]];
+    ZView w = Widget(app, .title = d->title, .body = d->build,
+                     .refresh_ms = d->refresh_ms);
+    return Grow(1.0f,
+        OnLongPress(on_widget_longpress, (void *)(intptr_t)pos, w));
+}
+
+// The widget area above the favourites grid: the active cards in a two-column
+// grid (a partial last row padded with a Spacer so a card stays one column wide),
+// then — while any built-in is inactive — a dashed "+ Add widget" pill. Returns
+// NULL when there is nothing to show (no active widgets AND all built-ins active,
+// which can't both hold, but guard anyway); the caller drops a NULL child.
+#define WIDGET_COLS 2
+static ZView widget_host(ZApp *app) {
+    ZStackOpts grid = {.spacing = 12, .align = Z_ALIGN_LEADING};
+    int k = 0;
+    for (int i = 0; i < g_n_widgets && k < Z_MAX_CHILDREN; i += WIDGET_COLS) {
+        ZStackOpts row = {.spacing = 12, .align = Z_ALIGN_LEADING};
+        for (int c = 0; c < WIDGET_COLS; c++) {
+            int j = i + c;
+            row.children[c] = j < g_n_widgets ? widget_card(app, j) : Spacer();
+        }
+        grid.children[k++] = z_stack(Z_AXIS_HORIZONTAL, &row);
+    }
+    // Add-widget pill (only when something can be added).
+    if (g_n_widgets < N_WIDGET_DEFS && k < Z_MAX_CHILDREN) {
+        grid.children[k++] = OnTap(open_widget_add,
+            Background(Z_COLOR_SURFACE_2,
+                CornerRadius(14.0f,
+                    Padding(12.0f,
+                        Foreground(Z_COLOR_TEXT_MUTED,
+                            Font(Z_FONT_CALLOUT, Text("+ Add widget")))))));
+    }
+    if (k == 0) {
+        return NULL;
+    }
+    return z_stack(Z_AXIS_VERTICAL, &grid);
+}
+
 // --- body -----------------------------------------------------------------
 static ZView launcher_body(ZApp *app, LauncherState *state) {
     // Retained hooks, allocated FIRST + unconditionally every rebuild so their
@@ -587,6 +876,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     state->drawer_anim = z_animated_value(app, 0.0f);
     state->surface_h = (float)z_app_height(app);
     ensure_home();
+    ensure_widgets();
 
     // Wallpaper: on the first build observe the brokered sys.wallpaper key (so a
     // pick in Settings updates the home surface live) and, as its single owner,
@@ -606,24 +896,35 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                                               sizeof(state->wp_path));
     }
 
-    // (1) HOME surface: wallpaper + favourites grid + a drawer handle, the whole
-    // thing an OnPan target so an up-swipe anywhere opens the drawer.
+    // (1) HOME surface: wallpaper + a widget area + the favourites grid + a
+    // drawer handle, the whole thing an OnPan target so an up-swipe anywhere opens
+    // the drawer. The content column is assembled explicitly because the widget
+    // host is an optional (possibly NULL) leading child — a NULL positional child
+    // would truncate a stack literal's list.
+    ZView drawer_handle = OnTap(open_drawer,
+        VStack(
+            Rect(.color = Z_COLOR_TEXT_MUTED,
+                 .width = 56, .height = 5, .radius = 3),
+            Foreground(Z_COLOR_TEXT_INV,
+                Font(Z_FONT_CALLOUT, Text("^"))),
+            Foreground(Z_COLOR_TEXT_MUTED,
+                Font(Z_FONT_CAPTION, Text("All apps"))),
+            .spacing = 4, .align = Z_ALIGN_CENTER));
+
+    ZStackOpts hcol = {.spacing = 16, .padding = 24, .align = Z_ALIGN_CENTER};
+    int hk = 0;
+    ZView wh = widget_host(app);
+    if (wh) {
+        hcol.children[hk++] = wh;
+    }
+    hcol.children[hk++] = app_grid(g_favs, g_n_favs);
+    hcol.children[hk++] = Spacer();
+    hcol.children[hk++] = drawer_handle;
+
     ZView home = OnPan(on_home_pan, Fill(
         ZStack(
             wallpaper(state),
-            Fill(VStack(
-                app_grid(g_favs, g_n_favs),
-                Spacer(),
-                OnTap(open_drawer,
-                    VStack(
-                        Rect(.color = Z_COLOR_TEXT_MUTED,
-                             .width = 56, .height = 5, .radius = 3),
-                        Foreground(Z_COLOR_TEXT_INV,
-                            Font(Z_FONT_CALLOUT, Text("^"))),
-                        Foreground(Z_COLOR_TEXT_MUTED,
-                            Font(Z_FONT_CAPTION, Text("All apps"))),
-                        .spacing = 4, .align = Z_ALIGN_CENTER)),
-                .spacing = 16, .padding = 24, .align = Z_ALIGN_CENTER)),
+            Fill(z_stack(Z_AXIS_VERTICAL, &hcol)),
             .align = Z_ALIGN_CENTER)));
 
     // (2) APP DRAWER: an opaque dark panel (the renderer can't do real
@@ -695,11 +996,66 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             .spacing = 0, .padding = 48, .align = Z_ALIGN_CENTER));
     }
 
-    // A layer in motion (the sliding drawer) or a translucent overlay (the menu
+    // (5) WIDGET CURATE MENU (long-press a card): a dimmed modal with Remove and
+    // — for any card but the first — Move up (the reorder affordance). Built with
+    // an explicit child list so the conditional Move up doesn't truncate the stack.
+    ZView wmenu = NULL;
+    if (state->wmenu_open && state->wmenu_pos >= 0 &&
+        state->wmenu_pos < g_n_widgets) {
+        const WidgetDef *d = &g_widget_defs[g_widgets[state->wmenu_pos]];
+        ZStackOpts col = {.spacing = 14, .align = Z_ALIGN_CENTER};
+        int c = 0;
+        col.children[c++] = Foreground(Z_COLOR_TEXT_INV,
+            Font(Z_FONT_TITLE, Text("%s", d->title)));
+        if (state->wmenu_pos > 0) {
+            col.children[c++] = Button(do_widget_move_up, "Move up");
+        }
+        col.children[c++] = Button(do_widget_remove, "Remove");
+        col.children[c++] = Button(close_wmenu, "Cancel");
+        wmenu = Fill(ZStack(
+            OnTap(close_wmenu, Fill(Background(Z_COLOR_SCRIM, Fill(Spacer())))),
+            Background(Z_COLOR_SURFACE,
+                CornerRadius(20.0f,
+                    Padding(24.0f, z_stack(Z_AXIS_VERTICAL, &col)))),
+            .align = Z_ALIGN_CENTER));
+    }
+
+    // (6) ADD-WIDGET SHEET: a dimmed modal listing each inactive built-in as a
+    // tappable row (OnTapData carries the WidgetDef*). Explicit child list.
+    ZView wadd = NULL;
+    if (state->wadd_open) {
+        ZStackOpts col = {.spacing = 12, .align = Z_ALIGN_CENTER};
+        int c = 0;
+        col.children[c++] = Foreground(Z_COLOR_TEXT_INV,
+            Font(Z_FONT_TITLE, Text("Add widget")));
+        for (int i = 0; i < N_WIDGET_DEFS && c < Z_MAX_CHILDREN - 1; i++) {
+            if (widget_pos(i) >= 0) {
+                continue;   // already on the home screen
+            }
+            col.children[c++] = OnTapData(do_widget_add,
+                (void *)&g_widget_defs[i],
+                Background(Z_COLOR_SURFACE_2,
+                    CornerRadius(12.0f,
+                        Padding(14.0f,
+                            Foreground(Z_COLOR_TEXT_INV,
+                                Font(Z_FONT_BODY,
+                                     Text("%s", g_widget_defs[i].title)))))));
+        }
+        col.children[c++] = Button(close_widget_add, "Cancel");
+        wadd = Fill(ZStack(
+            OnTap(close_widget_add,
+                  Fill(Background(Z_COLOR_SCRIM, Fill(Spacer())))),
+            Background(Z_COLOR_SURFACE,
+                CornerRadius(20.0f,
+                    Padding(24.0f, z_stack(Z_AXIS_VERTICAL, &col)))),
+            .align = Z_ALIGN_CENTER));
+    }
+
+    // A layer in motion (the sliding drawer) or a translucent overlay (any menu
     // scrim / toast) must paint as a full repaint, or the partial-repaint path
     // re-blends over already-correct pixels and darkens them cumulatively. Force
     // it whenever the drawer is off its rest position or an overlay is up.
-    if (drawer_v > 0.001f || menu || toast) {
+    if (drawer_v > 0.001f || menu || toast || wmenu || wadd) {
         z_full_repaint(app);
     }
 
@@ -711,6 +1067,12 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     root.children[k++] = drawer;
     if (menu) {
         root.children[k++] = menu;
+    }
+    if (wmenu) {
+        root.children[k++] = wmenu;
+    }
+    if (wadd) {
+        root.children[k++] = wadd;
     }
     if (toast) {
         root.children[k++] = toast;

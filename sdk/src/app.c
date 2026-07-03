@@ -261,6 +261,17 @@ struct ZApp {
     ZTimerCb after_cb;
     void *after_ud;
 
+    // Repeating tick (z_tick_every): a periodic z_invalidate heartbeat for
+    // self-refreshing widgets (a clock). Independent of the one-shot z_after.
+    // tick_want is the shortest interval requested during the CURRENT build
+    // (reset to 0 before body(), set by each z_tick_every call); after the build
+    // tick_interval/tick_deadline are (re)armed from it, so a build requesting
+    // none disarms the beat.
+    bool tick_armed;
+    double tick_interval;        // armed cadence (s)
+    double tick_deadline;        // monotonic s of the next fire
+    double tick_want;            // min interval requested this build (0 = none)
+
     // Retained build output: the laid-out root from the most recent build, used
     // to hit-test pointer events and route keys until the next build replaces it.
     ZView root;
@@ -506,7 +517,22 @@ static void render(ZApp *app) {
     app->ui.transitioning = false;   // the Navigator re-asserts this if mid-slide
 
     ZView old_root = app->root;
+    app->tick_want = 0.0;   // widgets re-declare their cadence each build
     ZView new_root = app->body(app, app->state);
+
+    // Widget heartbeat: (re)arm the repeating tick from what this build asked for
+    // (the shortest z_tick_every cadence). Only re-seed the deadline when the beat
+    // starts or its interval changes, so a steady 1s tick keeps counting down
+    // rather than resetting to a full second on every rebuild.
+    if (app->tick_want > 0.0) {
+        if (!app->tick_armed || app->tick_interval != app->tick_want) {
+            app->tick_interval = app->tick_want;
+            app->tick_deadline = z_now_seconds() + app->tick_interval;
+            app->tick_armed = true;
+        }
+    } else {
+        app->tick_armed = false;
+    }
 
     z_layout(new_root, (float)app->width, (float)app->height, app->text);
 
@@ -2131,6 +2157,14 @@ static int app_run(ZApp *app) {
                 timeout = at;
             }
         }
+        // The repeating widget tick bounds the wait the same way (a clock beat).
+        if (app->tick_armed) {
+            double remain = app->tick_deadline - z_now_seconds();
+            int tt = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
+            if (timeout < 0 || tt < timeout) {
+                timeout = tt;
+            }
+        }
 
         if (poll(pfds, nf, timeout) < 0) {
             wl_display_cancel_read(dpy);
@@ -2191,6 +2225,14 @@ static int app_run(ZApp *app) {
             if (cb) {
                 cb(app, ud);
             }
+        }
+
+        // Repeating widget tick: re-arm the next beat off the deadline (no drift
+        // catch-up) and invalidate so the clock/glance re-renders. Only fires once
+        // per interval, so a settled home screen repaints on the beat, not per vsync.
+        if (app->tick_armed && z_now_seconds() >= app->tick_deadline) {
+            app->tick_deadline = z_now_seconds() + app->tick_interval;
+            z_invalidate(app);
         }
 
         // Render when state is dirty and no frame is in flight; render() arms a
@@ -2505,6 +2547,20 @@ void z_after_cancel(ZApp *app) {
     app->after_armed = false;
     app->after_cb = NULL;
     app->after_ud = NULL;
+}
+
+// Repeating tick: record the desired cadence for THIS build. The loop arms the
+// beat off the shortest request after the build (see build()); calling it every
+// build keeps the beat alive, and not calling it lets the beat lapse. Sub-slot of
+// the app loop, so it never collides with the one-shot z_after.
+void z_tick_every(ZApp *app, int ms) {
+    if (!app || ms <= 0) {
+        return;
+    }
+    double want = (double)ms / 1000.0;
+    if (app->tick_want <= 0.0 || want < app->tick_want) {
+        app->tick_want = want;
+    }
 }
 
 // --- permission broker (zsysd) client -------------------------------------

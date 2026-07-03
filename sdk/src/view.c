@@ -417,3 +417,34 @@ ZView OnKey(ZKeyAction action, ZView view) {
     view->focusable = true;
     return view;
 }
+
+// --- widgets --------------------------------------------------------------
+// A home-screen widget: a titled card whose live content a callback builds,
+// self-refreshing on a declared cadence. The chrome is a rounded, padded Surface
+// card (opaque, so it stays legible over the wallpaper with no alpha-blend
+// bookkeeping) with the title as a muted caption above the content. When
+// refresh_ms > 0 we arm the shared repeating tick so the card re-renders on its
+// own beat (a clock). The body callback runs during this build and returns the
+// content view; it receives the live app + the app's state pointer.
+ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
+    if (!opts) {
+        return z_spacer();
+    }
+    if (opts->refresh_ms > 0) {
+        z_tick_every(app, opts->refresh_ms);
+    }
+    ZView content =
+        opts->body ? opts->body(app, z_app_state(app)) : z_spacer();
+
+    ZStackOpts col = {.spacing = 6, .align = Z_ALIGN_LEADING};
+    int k = 0;
+    if (opts->title && opts->title[0]) {
+        col.children[k++] = Foreground(
+            Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, z_text("%s", opts->title)));
+    }
+    col.children[k++] = content;
+
+    return Background(Z_COLOR_SURFACE,
+        CornerRadius(18.0f,
+            Padding(16.0f, z_stack(Z_AXIS_VERTICAL, &col))));
+}
