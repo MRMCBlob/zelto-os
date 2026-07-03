@@ -68,9 +68,22 @@ composited transforms each vsync ([../guides/animation.md](../guides/animation.m
 
 ## The simulator
 
-In the simulator, `zcomp` runs as a **nested Wayland client** of the host instead of
-driving DRM/KMS — same code, different backend
+In the simulator, `zcomp` runs as a **nested Wayland client** of the host (or the
+**headless** backend) instead of driving DRM/KMS — same code, different backend
 ([../tooling/simulator.md](../tooling/simulator.md)).
+
+To make the nested/headless compositor testable without a device or QEMU's QMP channel,
+`zcomp` advertises a few extra globals (`compositor/src/server.c`, `seat.c`):
+
+- **wlr-screencopy** — lets `grim` capture a frame (the screenshot path).
+- **wlr-virtual-pointer** + **virtual-keyboard** — let `wlrctl`/`wtype` inject taps and
+  keystrokes; a virtual device is wired into the seat's `wlr_cursor`/keyboard exactly like
+  a real one, so injected events are indistinguishable from hardware.
+- **xdg-output-manager** — reports output geometry so screenshot tools don't guess a 0×0
+  region.
+
+These are harmless on a real device (the seat only sees a virtual device if a tool creates
+one) and are the desktop analog of `run-qemu.sh`'s QMP screendump + `input-send-event`.
 
 ## See also
 

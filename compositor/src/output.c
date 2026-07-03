@@ -3,6 +3,7 @@
 // client surface) with damage tracking.
 #include "zcomp/output.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #include <wlr/types/wlr_output.h>
@@ -65,9 +66,18 @@ void zcomp_output_create(ZcompServer *server, struct wlr_output *wlr_output) {
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
-    struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
-    if (mode) {
-        wlr_output_state_set_mode(&state, mode);
+    // ZCOMP_OUTPUT_SIZE="WxH" forces a custom output size — the desktop simulator
+    // uses it to make the virtual (headless/wayland/x11) output phone-shaped, e.g.
+    // 720x1440 portrait. Unset (a real device / DRM output) → the preferred mode.
+    int ow = 0, oh = 0;
+    const char *size_env = getenv("ZCOMP_OUTPUT_SIZE");
+    if (size_env && sscanf(size_env, "%dx%d", &ow, &oh) == 2 && ow > 0 && oh > 0) {
+        wlr_output_state_set_custom_mode(&state, ow, oh, 0);
+    } else {
+        struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
+        if (mode) {
+            wlr_output_state_set_mode(&state, mode);
+        }
     }
     if (!wlr_output_commit_state(wlr_output, &state)) {
         wlr_log(WLR_ERROR, "failed to commit initial state for %s",

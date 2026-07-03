@@ -19,16 +19,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 OUT="$REPO_ROOT/device/qemu-virt/out"
 
-MEM="${MEM:-4096}"
-SMP="${SMP:-4}"
-CPU="${CPU:-cortex-a72}"
+MEM="${MEM:-8224}"
+SMP="${SMP:-12}"
+CPU="${CPU:-cortex-a76}"
 SHOT_DELAY="${SHOT_DELAY:-16}"
 # There is no aarch64 KVM on an x86 host, so QEMU emulates via TCG. Multi-threaded
 # TCG (one host thread per vCPU) plus a larger translation-block cache is the
 # biggest lever we have on the lag (the "[libinput] your system is too slow"
 # warning is the guest clock outrunning emulation). Override with ACCEL= if a
 # host ever offers KVM.
-ACCEL="${ACCEL:-tcg,thread=multi,tb-size=1024}"
+ACCEL="${ACCEL:-tcg,thread=multi,tb-size=2048}"
 
 KERNEL="$OUT/Image"
 INITRD="$OUT/initramfs.cpio.gz"

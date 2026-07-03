@@ -1,7 +1,35 @@
 # The Simulator
 
 The simulator runs `zcomp` and your app **nested inside your desktop session**, so you
-can develop Zelto apps without a phone. It is the primary inner-loop tool.
+can develop Zelto apps without a phone. It is the primary inner-loop tool. It runs the
+host (x86_64) build natively — no VM and no aarch64 emulation, so it is far faster than
+booting the QEMU image ([../tooling/simulator.md](../tooling/simulator.md) for internals).
+
+## Run the OS shell today (`meta/run-sim.sh`)
+
+The `zelto run --simulator` CLI below is the intended front-end; the working entry point
+right now is the repo script, which boots the whole System UI (bar, launcher, keyboard,
+apps) in a phone-shaped window on your desktop (WSLg / any Wayland or X11 session):
+
+```sh
+meta/run-sim.sh                 # build the host binaries + run in a window
+SKIP_BUILD=1 meta/run-sim.sh    # run the existing build-host/ artifacts (no rebuild)
+SIM_APP=zelto-notepad meta/run-sim.sh   # also auto-launch an app
+SIM_SIZE=1080x2340 meta/run-sim.sh      # phone resolution (default 720x1440 portrait)
+```
+
+The window is a portrait handset by default (720×1440); `SIM_SIZE=WxH` picks another
+device size (or a landscape `1280x720`).
+
+Headless (no window) + a screenshot, for CI or an agent:
+
+```sh
+HEADLESS=1 SHOT=out.png meta/run-sim.sh
+```
+
+The host build needs `libsqlite3-dev`; headless screenshots/input use `grim` + `wlrctl` +
+`wtype` (`apt install grim wlrctl wtype`). Details, including scripting taps and typing:
+[../tooling/simulator.md](../tooling/simulator.md).
 
 ## Run an app
 

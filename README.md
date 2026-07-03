@@ -96,6 +96,26 @@ Builds a mainline stable kernel (default `6.12.x`) with `defconfig` + the Zelto 
 virtio input, and the Android-container prerequisites (`ANDROID_BINDER_IPC`,
 `ANDROID_BINDERFS`, memfd). Override the version with `KERNEL_VERSION=6.x.y`.
 
+## Run in the simulator (fast, native — no VM, no ARM)
+
+The quickest inner loop: run `zcomp` + the full System UI **nested on your desktop**
+(WSLg / Wayland / X11) from the native x86_64 build — no aarch64 emulation, so it starts
+instantly and runs at host speed. `zcomp` opens as one phone-shaped window and every Zelto
+surface connects to it.
+
+```sh
+meta/run-sim.sh                          # build host binaries + run in a window
+SKIP_BUILD=1 meta/run-sim.sh             # run existing build-host/ artifacts (no build)
+SIM_APP=zelto-notepad meta/run-sim.sh    # also auto-launch an app
+SIM_SIZE=1080x2340 meta/run-sim.sh       # phone resolution (default 720x1440 portrait)
+HEADLESS=1 SHOT=out.png meta/run-sim.sh  # headless: boot, screenshot with grim, exit
+```
+
+Needs `libsqlite3-dev` to build the SDK, and `grim` + `wlrctl` + `wtype` for headless
+screenshots/input (`apt install grim wlrctl wtype`). See
+[`docs/getting-started/simulator.md`](docs/getting-started/simulator.md). Use QEMU below
+when you need real kernel/DRM/virtio fidelity.
+
 ## Run in QEMU
 
 ```sh

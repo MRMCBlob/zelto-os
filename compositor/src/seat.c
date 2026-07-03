@@ -16,6 +16,8 @@
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
@@ -95,13 +97,19 @@ static void process_cursor_motion(ZcompServer *server, uint32_t time) {
         wlr_seat_pointer_notify_motion(server->seat, time, sx, sy);
         return;
     }
+    // Always show the default arrow. Zelto is touch-first and its surfaces don't
+    // set a pointer cursor, so without this the cursor would be invisible whenever
+    // it is over a (usually full-screen) surface — only the bare background showed
+    // one. A client that sets its own cursor via request_set_cursor still overrides
+    // this. (Mainly matters in the desktop simulator, where you drive it by mouse.)
+    wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+
     double sx, sy;
     struct wlr_surface *surface =
         zcomp_surface_at(server, server->cursor->x, server->cursor->y, &sx, &sy);
     if (!surface) {
-        // Nothing under the cursor: show the default arrow, drop focus + hover.
+        // Nothing under the cursor: drop focus + hover (cursor already set above).
         server->hover_surface = NULL;
-        wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
         wlr_seat_pointer_clear_focus(server->seat);
         return;
     }
@@ -353,4 +361,44 @@ void zcomp_seat_init(ZcompServer *server) {
                   &server->request_set_selection);
 
     update_capabilities(server);
+}
+
+// --- virtual input (simulator injection) ---------------------------------
+// A tool (wlrctl) created a virtual pointer: attach it to the seat's cursor so
+// its motion/button/axis events flow through exactly the same handlers as a real
+// pointer — the injected taps are indistinguishable from hardware ones.
+static void handle_new_virtual_pointer(struct wl_listener *listener,
+                                       void *data) {
+    ZcompServer *server =
+        wl_container_of(listener, server, new_virtual_pointer);
+    struct wlr_virtual_pointer_v1_new_pointer_event *event = data;
+    wlr_log(WLR_INFO, "new virtual pointer (simulator input)");
+    wlr_cursor_attach_input_device(server->cursor,
+                                   &event->new_pointer->pointer.base);
+}
+
+// A tool (wtype) created a virtual keyboard: set it up like any keyboard (xkb
+// keymap + key/modifier routing) so its keystrokes reach the focused surface.
+static void handle_new_virtual_keyboard(struct wl_listener *listener,
+                                        void *data) {
+    ZcompServer *server =
+        wl_container_of(listener, server, new_virtual_keyboard);
+    struct wlr_virtual_keyboard_v1 *keyboard = data;
+    wlr_log(WLR_INFO, "new virtual keyboard (simulator input)");
+    new_keyboard(server, &keyboard->keyboard.base);
+    update_capabilities(server);
+}
+
+void zcomp_virtual_input_init(ZcompServer *server) {
+    server->virtual_pointer =
+        wlr_virtual_pointer_manager_v1_create(server->display);
+    server->new_virtual_pointer.notify = handle_new_virtual_pointer;
+    wl_signal_add(&server->virtual_pointer->events.new_virtual_pointer,
+                  &server->new_virtual_pointer);
+
+    server->virtual_keyboard =
+        wlr_virtual_keyboard_manager_v1_create(server->display);
+    server->new_virtual_keyboard.notify = handle_new_virtual_keyboard;
+    wl_signal_add(&server->virtual_keyboard->events.new_virtual_keyboard,
+                  &server->new_virtual_keyboard);
 }

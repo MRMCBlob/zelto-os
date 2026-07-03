@@ -32,6 +32,9 @@ struct wlr_xdg_shell;
 struct wlr_seat;
 struct wlr_cursor;
 struct wlr_xcursor_manager;
+struct wlr_screencopy_manager_v1;
+struct wlr_virtual_pointer_manager_v1;
+struct wlr_virtual_keyboard_manager_v1;
 
 // ZcompServer is the root of the compositor. One per process.
 typedef struct ZcompServer {
@@ -149,6 +152,19 @@ typedef struct ZcompServer {
     // Outputs.
     struct wl_listener new_output;
     struct wl_list outputs;                     // ZcompOutput.link
+
+    // Headless-simulator test harness (docs/tooling/simulator.md). screencopy
+    // lets `grim` capture a frame from the nested/headless compositor; the
+    // virtual pointer/keyboard managers let `wlrctl`/`wtype` inject taps and
+    // keystrokes, so the simulator is scriptable the way the QEMU QMP harness is.
+    // Advertised unconditionally — harmless on a real device (the seat only ever
+    // sees a virtual device if some tool creates one), and the whole point on the
+    // desktop simulator, where there is no QMP to drive input or dump frames.
+    struct wlr_screencopy_manager_v1 *screencopy;
+    struct wlr_virtual_pointer_manager_v1 *virtual_pointer;
+    struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard;
+    struct wl_listener new_virtual_pointer;
+    struct wl_listener new_virtual_keyboard;
 } ZcompServer;
 
 // Bring up the display, backend, renderer, allocator and every global, and start

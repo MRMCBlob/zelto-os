@@ -17,7 +17,9 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
@@ -87,6 +89,11 @@ bool zcomp_server_init(ZcompServer *server) {
 
     // --- Scene graph + output layout --------------------------------------
     server->output_layout = wlr_output_layout_create();
+    // xdg-output-manager: reports each output's logical position + size. Nothing
+    // in the shell needs it, but screenshot tools (`grim`, via the simulator)
+    // enumerate outputs through it — without it grim guesses a 0x0 region and
+    // writes an empty PNG. Cheap to advertise, so always on.
+    wlr_xdg_output_manager_v1_create(server->display, server->output_layout);
     server->scene = wlr_scene_create();
     server->scene_layout =
         wlr_scene_attach_output_layout(server->scene, server->output_layout);
@@ -125,8 +132,21 @@ bool zcomp_server_init(ZcompServer *server) {
     // per-timeout notifications and run the dim/lock/off policy themselves.
     server->idle_notifier = wlr_idle_notifier_v1_create(server->display);
 
+    // --- Simulator test harness (screencopy) -------------------------------
+    // wlr-screencopy lets an external tool (`grim`) capture a frame from the
+    // nested/headless compositor — the desktop simulator's screenshot path,
+    // replacing QEMU's QMP screendump. Harmless on a real device. The matching
+    // virtual pointer/keyboard managers are set up with the seat below.
+    server->screencopy = wlr_screencopy_manager_v1_create(server->display);
+
     // --- Seat + input ------------------------------------------------------
     zcomp_seat_init(server);
+
+    // Virtual pointer + keyboard (wlr-virtual-pointer / virtual-keyboard): lets
+    // `wlrctl` / `wtype` inject taps + keystrokes into the simulator, the way the
+    // QEMU harness drove input over QMP. Follows the seat (it wires devices into
+    // the seat's cursor + keyboard). See seat.c + docs/tooling/simulator.md.
+    zcomp_virtual_input_init(server);
 
     // --- text-input-v3 + input-method-v2 (on-screen keyboard bridge) -------
     // Advertise both globals and bring up the relay that bridges an app's text

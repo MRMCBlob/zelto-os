@@ -26,4 +26,9 @@ void zcomp_seat_init(ZcompServer *server);
 // backend new_input handler.
 void zcomp_handle_new_input(struct wl_listener *listener, void *data);
 
+// Advertise the wlr-virtual-pointer + virtual-keyboard globals and wire any
+// virtual device a tool (wlrctl/wtype) creates into the seat's cursor/keyboard.
+// The simulator's input-injection path — see server.c + docs/tooling/simulator.md.
+void zcomp_virtual_input_init(ZcompServer *server);
+
 #endif  // ZCOMP_SEAT_H
