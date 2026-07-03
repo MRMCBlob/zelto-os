@@ -83,6 +83,12 @@ mkdir -p "$ZELTO_DATA_DIR/apps"
 # icon= at the in-repo resources/ tree instead (the ZELTO_RECENTS_BIN idiom).
 export ZELTO_PLACEHOLDER_ICON="${ZELTO_PLACEHOLDER_ICON:-$REPO_ROOT/resources/app-icons/Placeholder.png}"
 
+# Wallpapers (P25). On the device build-initramfs.sh installs them to a system dir
+# and the launcher seeds sys.wallpaper to the first one; here the apps run from the
+# repo, so point the wallpaper dir at the in-repo resources/ tree (same idiom).
+# The launcher/lock/settings read $ZELTO_WALLPAPER_DIR via system/common/wallpaper.h.
+export ZELTO_WALLPAPER_DIR="${ZELTO_WALLPAPER_DIR:-$REPO_ROOT/resources/wallpaper}"
+
 # P23 power source: the host has no phone battery, so drive a fake drain by
 # default (the status-bar battery glyph then shows a real level and slowly
 # discharges). Off with ZELTO_FAKE_BATTERY=0; tune the cadence with

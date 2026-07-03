@@ -216,6 +216,22 @@ else
     echo "WARN: Placeholder.png missing at $ICON_PNG_SRC (icon fallback will be blank)"
 fi
 
+# --- wallpapers (P25) -------------------------------------------------------
+# Full-screen home/lock backgrounds. Installed to /usr/share/zelto/wallpaper
+# (ZELTO_WALLPAPER_DIR_DEFAULT in system/common/wallpaper.h — keep these in step).
+# The launcher seeds the brokered sys.wallpaper to the first one on first boot,
+# the Settings picker lists this dir, and the lock screen reuses the choice.
+WALLPAPER_SRC="$REPO_ROOT/resources/wallpaper"
+mkdir -p "$ROOT/usr/share/zelto/wallpaper"
+if [ -d "$WALLPAPER_SRC" ]; then
+    for wp in "$WALLPAPER_SRC"/*.png; do
+        [ -f "$wp" ] && cp "$wp" "$ROOT/usr/share/zelto/wallpaper/"
+    done
+    echo "    wallpapers: $(ls "$ROOT/usr/share/zelto/wallpaper"/*.png 2>/dev/null | wc -l) png"
+else
+    echo "WARN: wallpaper dir missing at $WALLPAPER_SRC (home falls back to a drawn gradient)"
+fi
+
 # --- P13 trusted root key + staged .zap packages ----------------------------
 # The single trusted public key the installer verifies every package against
 # (the dev key's raw 32-byte Ed25519 pubkey; real publisher keys are Planned).

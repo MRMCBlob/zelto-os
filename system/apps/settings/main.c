@@ -14,6 +14,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/wallpaper.h"
+
 typedef struct SettingsState {
     bool inited;
     bool wifi, mute, bright, airplane;
@@ -23,6 +25,14 @@ typedef struct SettingsState {
     int64_t dim_s, lock_s, off_s;
     bool passcode_set;
     int64_t lock_now;
+
+    // P25 wallpaper picker. The wallpaper dir listed once into wp_paths (kept in
+    // state so the OnTapData pointer we hand each thumbnail stays valid across the
+    // per-frame rebuild), and wp_current mirrors the brokered sys.wallpaper so the
+    // selected tile is highlighted and updates live when it changes.
+    char wp_paths[ZELTO_WALLPAPER_MAX][ZELTO_WALLPAPER_PATH_MAX];
+    int wp_count;
+    char wp_current[ZELTO_WALLPAPER_PATH_MAX];
 } SettingsState;
 
 // A setting changed (here or in the shade): re-read the field it maps to and
@@ -50,6 +60,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->off_s = v;
     } else if (strcmp(key, "sys.passcode") == 0) {
         s->passcode_set = value[0] != '\0';
+    } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
+        snprintf(s->wp_current, sizeof(s->wp_current), "%s", value ? value : "");
     }
     z_invalidate(app);
 }
@@ -72,7 +84,20 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->off_s = z_setting_get_int("sys.idle_off_s", 120);
     s->passcode_set = z_setting_get_str("sys.passcode", "")[0] != '\0';
     s->lock_now = z_setting_get_int("sys.lock_now", 0);
+    // Wallpaper picker: enumerate the directory once and record the active choice.
+    s->wp_count = zelto_wallpaper_list(s->wp_paths, ZELTO_WALLPAPER_MAX);
+    snprintf(s->wp_current, sizeof(s->wp_current), "%s",
+             z_setting_get_str(ZELTO_WALLPAPER_KEY, ""));
     z_settings_observe(app, on_changed, s);
+}
+
+// Tap a wallpaper thumbnail: write its absolute path to the broker (which
+// persists + fans out, so the home + lock screen rebuild live). `data` points at
+// the state-owned wp_paths entry, stable across rebuilds.
+static void pick_wallpaper(ZApp *app, void *state, void *data) {
+    (void)state;
+    z_setting_set_str(ZELTO_WALLPAPER_KEY, (const char *)data);
+    z_invalidate(app);
 }
 
 // Toggle handlers: flip the bool locally and write it through the broker (which
@@ -219,6 +244,45 @@ static ZView stepper_row(const char *label, int64_t val, const char *unit,
         .spacing = 10, .align = Z_ALIGN_CENTER);
 }
 
+// One wallpaper thumbnail: a cover-fit rounded preview of the PNG; the currently
+// selected one gets an accent ring (a padded primary plate behind it). The whole
+// tile is the tap target. NB: every thumbnail decodes the full-resolution
+// wallpaper — the P24 image cache is keyed by path only, so a thumbnail and the
+// full-screen wallpaper SHARE one cache entry. That is deliberate: a size-keyed
+// downscaled decode would *duplicate* the decode (a small thumb bitmap AND the
+// big one), whereas sharing means picking a wallpaper is instant (its bitmap is
+// already warm) at the cost of holding the handful of demo wallpapers at full res
+// — well within the 64-entry cache. See docs + the P25 memory note.
+#define WP_THUMB_W 150.0f
+#define WP_THUMB_H 96.0f
+#define WP_COLS 3
+
+static ZView wp_thumb(SettingsState *s, int i) {
+    bool cur = strcmp(s->wp_paths[i], s->wp_current) == 0;
+    ZView preview = Frame(WP_THUMB_W, WP_THUMB_H,
+        CornerRadius(14.0f, Cover(Image(s->wp_paths[i]))));
+    ZView tile = cur
+        ? Background(Z_COLOR_PRIMARY, CornerRadius(18.0f, Padding(4.0f, preview)))
+        : preview;
+    return OnTapData(pick_wallpaper, s->wp_paths[i], tile);
+}
+
+// A grid (WP_COLS per row) of wallpaper thumbnails, padding a partial last row
+// with Spacers so real tiles keep their column width.
+static ZView wp_grid(SettingsState *s) {
+    ZStackOpts grid = {.spacing = 12, .align = Z_ALIGN_LEADING};
+    int k = 0;
+    for (int i = 0; i < s->wp_count && k < Z_MAX_CHILDREN; i += WP_COLS) {
+        ZStackOpts row = {.spacing = 12, .align = Z_ALIGN_CENTER};
+        for (int c = 0; c < WP_COLS; c++) {
+            int j = i + c;
+            row.children[c] = j < s->wp_count ? wp_thumb(s, j) : Spacer();
+        }
+        grid.children[k++] = z_stack(Z_AXIS_HORIZONTAL, &row);
+    }
+    return z_stack(Z_AXIS_VERTICAL, &grid);
+}
+
 static ZView settings_body(ZApp *app, SettingsState *state) {
     ensure_init(app, state);
 
@@ -240,6 +304,16 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
             Font(Z_FONT_TITLE, Text("%lld", (long long)state->brightness))),
         OnTap(bright_inc, chip(dark, "+")),
         .spacing = 14, .align = Z_ALIGN_CENTER);
+
+    // --- P25 wallpaper section ---
+    col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
+        Font(Z_FONT_CAPTION, Text("WALLPAPER")));
+    if (state->wp_count > 0) {
+        col.children[k++] = wp_grid(state);
+    } else {
+        col.children[k++] = Foreground(Z_COLOR_TEXT_FAINT,
+            Text("No wallpapers found"));
+    }
 
     // --- P20 lock screen section ---
     col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,

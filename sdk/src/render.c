@@ -170,8 +170,10 @@ static uint32_t sample_bilinear(const uint32_t *px, int w, int h, float u,
     return r;
 }
 
-// Blit a cached image into a node's frame: aspect-fit (letterboxed, centered),
-// clipped to the active clip, masked to the node's rounded corners, composited
+// Blit a cached image into a node's frame. Default: aspect-fit (letterboxed,
+// centered). With img_cover (Cover()): aspect-fill — scale to cover the frame,
+// center-cropping the overflow. Either way the paint is clipped to the active
+// clip AND the node frame, masked to the node's rounded corners, composited
 // source-over. Both source and destination are premultiplied ARGB, so the blend
 // is out = src + dst*(1 - src_a).
 static void blit_image(ZCanvas *c, ZView n) {
@@ -179,11 +181,12 @@ static void blit_image(ZCanvas *c, ZView n) {
     if (!img || !img->ok || img->w <= 0 || img->h <= 0) {
         return;   // failed decode: draw nothing (caller supplies any fallback)
     }
-    // Aspect-fit the intrinsic bitmap inside the node frame.
+    // Fit uses the SMALLER axis scale (whole image visible, bars); cover uses the
+    // LARGER (frame fully covered, overflow cropped by the node-frame clamp below).
     float fw = n->w, fh = n->h;
-    float scale = fw / (float)img->w;
-    float sy = fh / (float)img->h;
-    if (sy < scale) { scale = sy; }
+    float sx = fw / (float)img->w, sy = fh / (float)img->h;
+    float scale = n->img_cover ? (sx > sy ? sx : sy)
+                               : (sx < sy ? sx : sy);
     float dw = (float)img->w * scale, dh = (float)img->h * scale;
     float ox = n->x + (fw - dw) / 2.0f, oy = n->y + (fh - dh) / 2.0f;
 
@@ -195,9 +198,14 @@ static void blit_image(ZCanvas *c, ZView n) {
     if (rr > rw / 2.0f) { rr = rw / 2.0f; }
     if (rr > rh / 2.0f) { rr = rh / 2.0f; }
 
-    // Iterate the fitted rect intersected with the active clip.
+    // Iterate the scaled rect, clamped to the node frame (cover crops the overflow
+    // here; fit's letterboxed rect already sits inside it) and the active clip.
     int x0 = (int)ox, y0 = (int)oy;
     int x1 = (int)(ox + dw + 0.5f), y1 = (int)(oy + dh + 0.5f);
+    if (x0 < rx0) { x0 = rx0; }
+    if (y0 < ry0) { y0 = ry0; }
+    if (x1 > rx1) { x1 = rx1; }
+    if (y1 > ry1) { y1 = ry1; }
     if (x0 < c->clip_x0) { x0 = c->clip_x0; }
     if (y0 < c->clip_y0) { y0 = c->clip_y0; }
     if (x1 > c->clip_x1) { x1 = c->clip_x1; }

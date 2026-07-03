@@ -156,6 +156,14 @@ ZView z_image(const char *path);
 // wants a fallback image (an app icon → a placeholder) probes with this first.
 bool z_image_loads(const char *path);
 
+// Make an Image aspect-FILL its frame — scale up so the frame is fully covered,
+// center-cropping whatever overflows — instead of the default aspect-fit
+// (letterboxed). Use for a full-bleed backdrop (a wallpaper) that must leave no
+// bars. Respects the node's clip + rounded-corner mask. No-op on a non-Image.
+//   Cover(Image(path))                              // fills, may crop
+//   Frame(w, h, CornerRadius(r, Cover(Image(path))))
+ZView Cover(ZView view);
+
 // A tappable control: a rounded, padded label that runs `on_tap` when tapped or
 // activated from the keyboard (Enter/Space while focused). printf-style label.
 //   Button(on_tap, "Count: %d", s->count);   // on_tap is a static ZAction

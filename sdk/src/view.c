@@ -367,6 +367,14 @@ ZView CornerRadius(float radius, ZView view) {
     return view;
 }
 
+ZView Cover(ZView view) {
+    // Aspect-fill an Image: scale so the frame is fully covered, center-cropping
+    // the overflow (vs the default aspect-fit, which letterboxes). Only meaningful
+    // on an Image node; elsewhere it is an inert flag.
+    view->img_cover = true;
+    return view;
+}
+
 ZView Font(ZFont size, ZView view) {
     view->font_size = (float)size;
     return view;

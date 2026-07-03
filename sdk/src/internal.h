@@ -16,7 +16,7 @@ typedef enum ZKind {
     Z_K_TEXT,
     Z_K_SPACER,
     Z_K_SCROLL,      // clips + translates a single content child by a ZScroll offset
-    Z_K_IMAGE,       // a decoded raster/SVG bitmap, aspect-fit into the node frame
+    Z_K_IMAGE,       // a decoded raster/SVG bitmap, aspect-fit (or Cover: fill) the frame
 } ZKind;
 
 // One UI node. Arena-allocated per build; the computed frame (x,y,w,h) is filled
@@ -44,6 +44,7 @@ struct ZNode {
     float font_size;
     ZColor fg;
     char *img_path;       // Z_K_IMAGE: source path (arena-owned; PNG or SVG by ext)
+    bool img_cover;       // Z_K_IMAGE: cover (aspect-fill, center-crop) vs default fit
 
     // Interactivity. on_tap fires on pointer tap / keyboard activation; on_key
     // receives raw key presses when this node holds focus; focusable marks a

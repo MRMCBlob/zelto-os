@@ -47,6 +47,7 @@
 #include <zelto/ui.h>
 
 #include "common/app_icons.h"
+#include "common/wallpaper.h"
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
 #define MAX_APPS 32
@@ -294,6 +295,15 @@ typedef struct LauncherState {
     ZAnimated *drawer_anim;   // 0 hidden below the fold .. 1 covering home
     float surface_h;
 
+    // Wallpaper (P25). The active wallpaper's absolute path, resolved from the
+    // brokered sys.wallpaper key; wp_ok records whether it decodes (else the home
+    // surface falls back to the drawn gradient). wp_subscribed gates the one-time
+    // observe + default-seed. Cached in state (not re-read every build) and
+    // refreshed only when the broker fans out a sys.wallpaper change.
+    bool wp_subscribed;
+    bool wp_ok;
+    char wp_path[ZELTO_WALLPAPER_PATH_MAX];
+
     // Long-press context menu. menu_idx is a g_apps index; menu_open gates the
     // overlay. A short-lived toast (cap-reached feedback) shows until toast_until.
     bool menu_open;
@@ -404,13 +414,34 @@ static ZView app_grid(const int *idx, int n) {
 }
 
 // --- wallpaper ------------------------------------------------------------
-// The software renderer can't decode PNGs yet (real assets/wallpaper.png is
-// Planned), so the wallpaper is *drawn*: a vertical gradient of stacked equal
-// Rect bands from a deep indigo at the top to near-black at the bottom. Nicer
-// than the old flat #0b0e13 fill, and gives the favourites something to sit over.
+// The home surface's full-screen backdrop: a real photo (the active sys.wallpaper
+// PNG), cover-fit so it fills the screen with no letterbox bars, with a subtle
+// dark legibility scrim over it so the white favourites captions stay readable. If
+// the wallpaper file is missing or won't decode, we fall back to a *drawn*
+// vertical gradient (the pre-P25 look) — a self-contained background that never
+// depends on an asset being present.
 #define WALL_BANDS 10
+#define SCRIM_BANDS 8
 
-static ZView wallpaper(void) {
+// A top+bottom darkening gradient (clear through the middle) painted over the
+// photo. The renderer alpha-blends source-over, and both the photo and this scrim
+// are static, so a partial repaint re-paints them together for each damage rect —
+// no cumulative darkening, no forced full repaint. eased (squared) so the falloff
+// is smooth rather than a hard band.
+static ZView wallpaper_scrim(void) {
+    ZStackOpts col = {0};
+    for (int i = 0; i < SCRIM_BANDS; i++) {
+        float t = (float)i / (float)(SCRIM_BANDS - 1);   // 0 top .. 1 bottom
+        float edge = t < 0.5f ? (1.0f - t * 2.0f) : ((t - 0.5f) * 2.0f);
+        uint8_t a = (uint8_t)(edge * edge * 130.0f);
+        col.children[i] = Rect(.color = z_rgba(0, 0, 0, a), .grow = 1.0f);
+    }
+    return Fill(z_stack(Z_AXIS_VERTICAL, &col));
+}
+
+// The drawn-gradient fallback (deep indigo -> near-black), used when no wallpaper
+// photo is available. Nicer than a flat fill and gives the favourites contrast.
+static ZView wallpaper_gradient(void) {
     ZStackOpts col = {0};
     const int top[3] = {0x16, 0x1d, 0x38};
     const int bot[3] = {0x05, 0x07, 0x0e};
@@ -422,6 +453,28 @@ static ZView wallpaper(void) {
         col.children[i] = Rect(.color = z_rgba(r, g, b, 0xff), .grow = 1.0f);
     }
     return Fill(z_stack(Z_AXIS_VERTICAL, &col));
+}
+
+static ZView wallpaper(LauncherState *s) {
+    if (s->wp_ok) {
+        return Fill(ZStack(
+            Fill(Cover(Image(s->wp_path))),
+            wallpaper_scrim(),
+            .align = Z_ALIGN_CENTER));
+    }
+    return wallpaper_gradient();
+}
+
+// A brokered setting changed: re-resolve the wallpaper when it is sys.wallpaper
+// (idempotent — re-reading the value we just set is a harmless no-op) and repaint.
+static void on_wp_setting(ZApp *app, const char *key, const char *value,
+                          void *ud) {
+    (void)value;
+    LauncherState *s = ud;
+    if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
+        s->wp_ok = zelto_wallpaper_active(s->wp_path, sizeof(s->wp_path));
+        z_invalidate(app);
+    }
 }
 
 // --- drawer open/close ----------------------------------------------------
@@ -535,11 +588,29 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     state->surface_h = (float)z_app_height(app);
     ensure_home();
 
+    // Wallpaper: on the first build observe the brokered sys.wallpaper key (so a
+    // pick in Settings updates the home surface live) and, as its single owner,
+    // seed a default if none is stored yet. Then resolve the active path once;
+    // on_wp_setting refreshes it on any later change.
+    if (!state->wp_subscribed) {
+        state->wp_subscribed = true;
+        z_settings_observe(app, on_wp_setting, state);
+        const char *cur = z_setting_get_str(ZELTO_WALLPAPER_KEY, "");
+        if (!cur || !cur[0]) {
+            char def[ZELTO_WALLPAPER_PATH_MAX];
+            if (zelto_wallpaper_default(def, sizeof(def))) {
+                z_setting_set_str(ZELTO_WALLPAPER_KEY, def);
+            }
+        }
+        state->wp_ok = zelto_wallpaper_active(state->wp_path,
+                                              sizeof(state->wp_path));
+    }
+
     // (1) HOME surface: wallpaper + favourites grid + a drawer handle, the whole
     // thing an OnPan target so an up-swipe anywhere opens the drawer.
     ZView home = OnPan(on_home_pan, Fill(
         ZStack(
-            wallpaper(),
+            wallpaper(state),
             Fill(VStack(
                 app_grid(g_favs, g_n_favs),
                 Spacer(),

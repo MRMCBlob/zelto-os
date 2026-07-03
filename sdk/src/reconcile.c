@@ -82,6 +82,9 @@ static bool node_changed(ZView a, ZView b) {
     if (strcmp(ia, ib) != 0) {
         return true;
     }
+    if (a->img_cover != b->img_cover) {
+        return true;
+    }
     return false;
 }
 

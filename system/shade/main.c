@@ -55,6 +55,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/app_icons.h"
+
 #define MAX_BANNERS 8
 #define MAX_HISTORY 6   // recently-dismissed notifications kept for the panel list
 
@@ -239,8 +241,19 @@ static ZView notif_card(Banner *b, bool interactive) {
     ZColor bg = interactive ? Z_COLOR_SURFACE_2
                             : Z_COLOR_SURFACE;
 
+    // The posting app's icon (resolved from app_id via its manifest, like
+    // Recents), falling back to the shared Placeholder if it has none or it won't
+    // load. App icons are square, so a plain aspect-fit Image is right here.
+    char ipath[256];
+    const char *icon =
+        (zelto_icon_for_app_id(b->app_id, ipath, sizeof(ipath)) &&
+         z_image_loads(ipath))
+            ? ipath
+            : zelto_placeholder_icon();
+
     ZStackOpts row = {.padding = 16, .spacing = 16, .align = Z_ALIGN_CENTER};
     int k = 0;
+    row.children[k++] = Frame(40.0f, 40.0f, CornerRadius(10.0f, Image(icon)));
     row.children[k++] =
         VStack(
             Foreground(cap, Font(Z_FONT_CAPTION, Text("%s", b->app_id))),

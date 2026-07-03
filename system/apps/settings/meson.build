@@ -4,6 +4,7 @@
 executable(
   'zelto-settings',
   files('main.c'),
+  include_directories : include_directories('../..'),  # system/ for common/wallpaper.h
   dependencies : zelto_dep,
   install : true,
 )

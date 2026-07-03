@@ -46,6 +46,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/wallpaper.h"
+
 // Dim scrim alpha (DIMMED). Translucent black over the app — clearly darker but
 // the app stays visible, like a phone's pre-lock dim. Premultiplied source-over.
 #define DIM_ALPHA 120
@@ -84,6 +86,12 @@ typedef struct LockState {
     char entry[8];
     int entry_len;
     bool wrong;              // last attempt mismatched
+
+    // P25 wallpaper: same sys.wallpaper the home screen uses, shown behind the
+    // lock UI under a heavier darkening scrim (legibility for the clock/keypad).
+    // wp_ok records whether it decodes (else an opaque BG fallback).
+    bool wp_ok;
+    char wp_path[ZELTO_WALLPAPER_PATH_MAX];
 } LockState;
 
 // --- idle notification (dis)arming -----------------------------------------
@@ -217,6 +225,7 @@ static void load_config(LockState *s) {
     s->lock_now_seen = z_setting_get_int("sys.lock_now", 0);
     snprintf(s->passcode, sizeof(s->passcode), "%s",
              z_setting_get_str("sys.passcode", ""));
+    s->wp_ok = zelto_wallpaper_active(s->wp_path, sizeof(s->wp_path));
     fprintf(stderr,
             "zelto-lock: config enabled=%d dim=%llds lock=%llds off=%llds "
             "passcode=%s\n",
@@ -269,6 +278,11 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
                 enter_locked(app, s);   // manual "lock now"
             }
         }
+    } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
+        // A pick in Settings: re-resolve so a locked screen shows it live.
+        s->wp_ok = zelto_wallpaper_active(s->wp_path, sizeof(s->wp_path));
+        z_full_repaint(app);
+        z_invalidate(app);
     }
 }
 
@@ -378,14 +392,22 @@ static ZView lock_screen(ZApp *app, LockState *s) {
             .spacing = 16, .align = Z_ALIGN_CENTER);
     }
 
-    // The whole surface takes the swipe (OnPan) over an opaque backdrop; a tap on
-    // the backdrop is absorbed so nothing falls through. The keypad's digit
-    // buttons are OnTap targets nested inside — tap vs. swipe is decided by slop.
-    return OnPan(on_lock_pan,
-        OnTap(absorb,
-            Background(Z_COLOR_BG,
-                Fill(ZStack(content, .align = Z_ALIGN_CENTER,
-                            .padding = 40)))));
+    // Backdrop: the shared wallpaper (cover-fit) under a heavy darkening scrim for
+    // legibility, else an opaque BG fallback. z_full_repaint (set by body for the
+    // LOCKED phase) makes the scrim's alpha blend correctly over the photo.
+    ZView inner = Fill(ZStack(content, .align = Z_ALIGN_CENTER, .padding = 40));
+    ZView backdrop = s->wp_ok
+        ? Fill(ZStack(
+              Fill(Cover(Image(s->wp_path))),
+              Fill(Background(z_scrim(170), Fill(Spacer()))),
+              inner,
+              .align = Z_ALIGN_CENTER))
+        : Background(Z_COLOR_BG, inner);
+
+    // The whole surface takes the swipe (OnPan); a tap on the backdrop is absorbed
+    // so nothing falls through. The keypad's digit buttons are OnTap targets nested
+    // inside — tap vs. swipe is decided by slop.
+    return OnPan(on_lock_pan, OnTap(absorb, backdrop));
 }
 
 // --- body -------------------------------------------------------------------
