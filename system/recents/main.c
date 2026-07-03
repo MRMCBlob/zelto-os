@@ -80,8 +80,14 @@ static ZView task_icon(const ZTask *t) {
 // card switches). The data pointer is the ZTask in the stable z_running_apps
 // snapshot.
 static ZView task_card(const ZTask *t) {
-    const char *title = t->title ? t->title
-                                 : (t->app_id ? t->app_id : "App");
+    // Prefer the manifest display name ("Fetch") over the window title, which for
+    // a libzelto app is its body-function symbol ("fetch_body"); fall back to the
+    // title, then the app_id.
+    char name[128];
+    const char *title =
+        (t->app_id && zelto_name_for_app_id(t->app_id, name, sizeof(name)))
+            ? name
+            : (t->title ? t->title : (t->app_id ? t->app_id : "App"));
     ZColor bg = t->active ? Z_COLOR_SUCCESS_DIM
                           : Z_COLOR_SURFACE_2;
     return OnTapData(on_pick, (void *)t,

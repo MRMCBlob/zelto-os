@@ -107,4 +107,65 @@ static inline bool zelto_icon_for_app_id(const char *app_id, char *out,
     return false;
 }
 
+// Scan one manifest dir for the .app whose `id=` equals `app_id`, copying its
+// `name=` (the human display name) into `out`. Mirrors zelto_icon_scan_dir.
+static inline bool zelto_name_scan_dir(const char *dir, const char *app_id,
+                                       char *out, size_t cap) {
+    DIR *d = opendir(dir);
+    if (!d) {
+        return false;
+    }
+    struct dirent *de;
+    bool found = false;
+    while (!found && (de = readdir(d))) {
+        size_t nl = strlen(de->d_name);
+        if (nl < 5 || strcmp(de->d_name + nl - 4, ".app") != 0) {
+            continue;
+        }
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        char line[512], id[128] = "", name[128] = "";
+        while (fgets(line, sizeof(line), f)) {
+            line[strcspn(line, "\r\n")] = '\0';
+            if (strncmp(line, "id=", 3) == 0) {
+                zelto_icon_copy(id, sizeof(id), line + 3);
+            } else if (strncmp(line, "name=", 5) == 0) {
+                zelto_icon_copy(name, sizeof(name), line + 5);
+            }
+        }
+        fclose(f);
+        if (name[0] && strcmp(id, app_id) == 0) {
+            zelto_icon_copy(out, cap, name);
+            found = true;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+// Resolve a running window's `app_id` to its manifest `name=` (the human display
+// name, e.g. "Fetch") into `out`. A foreign-toplevel window otherwise reports its
+// xdg title, which for a libzelto app is the body-function symbol (e.g.
+// "fetch_body") — useless in a task switcher. Returns true on a match.
+static inline bool zelto_name_for_app_id(const char *app_id, char *out,
+                                         size_t cap) {
+    if (!app_id || !app_id[0]) {
+        return false;
+    }
+    if (zelto_name_scan_dir(ZELTO_MANIFEST_DIR, app_id, out, cap)) {
+        return true;
+    }
+    const char *data = getenv("ZELTO_DATA_DIR");
+    if (data && data[0]) {
+        char rt[384];
+        snprintf(rt, sizeof(rt), "%s/apps/manifests", data);
+        return zelto_name_scan_dir(rt, app_id, out, cap);
+    }
+    return false;
+}
+
 #endif  // ZELTO_APP_ICONS_H
