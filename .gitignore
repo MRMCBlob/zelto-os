@@ -57,3 +57,5 @@ Thumbs.db
 !resources/icons/Duocolor/**
 !resources/wallpaper/
 !resources/wallpaper/**
+!resources/app-icons/
+!resources/app-icons/**

@@ -7,3 +7,4 @@ subtitle=Tap to count · camera demo
 exec=/usr/bin/zelto-cards
 color=2e9bff
 permissions=camera
+icon=/usr/share/zelto/icons/cards.svg

@@ -3,6 +3,7 @@
 // path through a glyph atlas is the documented target; shm software rendering is
 // the MVP — it needs no client GPU context, which is robust under QEMU's virtio
 // software path. See docs/contributing/sdk-internals.md.
+#include <math.h>
 #include <string.h>
 
 #include "internal.h"
@@ -110,6 +111,129 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
     }
 }
 
+// True if pixel center (x+0.5, y+0.5) lies inside the rounded rectangle
+// [rx0,rx1) x [ry0,ry1) with corner radius r. Shared by the image blit's
+// rounded-corner mask (fill_round_rect inlines the same test for speed).
+static bool rrect_inside(int x, int y, int rx0, int ry0, int rx1, int ry1,
+                         float r) {
+    if (r <= 0.5f) {
+        return true;
+    }
+    float cx = -1.0f, cy = -1.0f;
+    if (x - rx0 < r && y - ry0 < r) {
+        cx = (float)rx0 + r; cy = (float)ry0 + r;
+    } else if (x - rx0 < r && ry1 - 1 - y < r) {
+        cx = (float)rx0 + r; cy = (float)ry1 - r;
+    } else if (rx1 - 1 - x < r && y - ry0 < r) {
+        cx = (float)rx1 - r; cy = (float)ry0 + r;
+    } else if (rx1 - 1 - x < r && ry1 - 1 - y < r) {
+        cx = (float)rx1 - r; cy = (float)ry1 - r;
+    }
+    if (cx < 0.0f) {
+        return true;
+    }
+    float dx = (float)x + 0.5f - cx, dy = (float)y + 0.5f - cy;
+    return dx * dx + dy * dy <= r * r;
+}
+
+// Bilinearly sample a premultiplied-ARGB bitmap at (u,v) in pixel coordinates.
+// Premultiplied is the correct space to interpolate in (no dark/edge halo).
+static uint32_t sample_bilinear(const uint32_t *px, int w, int h, float u,
+                                float v) {
+    u -= 0.5f;
+    v -= 0.5f;
+    int x0 = (int)floorf(u), y0 = (int)floorf(v);
+    float fx = u - (float)x0, fy = v - (float)y0;
+    int x1 = x0 + 1, y1 = y0 + 1;
+    if (x0 < 0) { x0 = 0; }
+    if (y0 < 0) { y0 = 0; }
+    if (x1 > w - 1) { x1 = w - 1; }
+    if (y1 > h - 1) { y1 = h - 1; }
+    if (x0 > w - 1) { x0 = w - 1; }
+    if (y0 > h - 1) { y0 = h - 1; }
+    uint32_t p00 = px[y0 * w + x0], p10 = px[y0 * w + x1];
+    uint32_t p01 = px[y1 * w + x0], p11 = px[y1 * w + x1];
+    float w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy);
+    float w01 = (1 - fx) * fy, w11 = fx * fy;
+    float out[4];
+    for (int c = 0; c < 4; c++) {
+        int sh = c * 8;
+        out[c] = ((p00 >> sh) & 0xff) * w00 + ((p10 >> sh) & 0xff) * w10 +
+                 ((p01 >> sh) & 0xff) * w01 + ((p11 >> sh) & 0xff) * w11;
+    }
+    uint32_t r = 0;
+    for (int c = 0; c < 4; c++) {
+        int v8 = (int)(out[c] + 0.5f);
+        if (v8 > 255) { v8 = 255; }
+        r |= (uint32_t)v8 << (c * 8);
+    }
+    return r;
+}
+
+// Blit a cached image into a node's frame: aspect-fit (letterboxed, centered),
+// clipped to the active clip, masked to the node's rounded corners, composited
+// source-over. Both source and destination are premultiplied ARGB, so the blend
+// is out = src + dst*(1 - src_a).
+static void blit_image(ZCanvas *c, ZView n) {
+    const ZImage *img = z_image_get(n->img_path);
+    if (!img || !img->ok || img->w <= 0 || img->h <= 0) {
+        return;   // failed decode: draw nothing (caller supplies any fallback)
+    }
+    // Aspect-fit the intrinsic bitmap inside the node frame.
+    float fw = n->w, fh = n->h;
+    float scale = fw / (float)img->w;
+    float sy = fh / (float)img->h;
+    if (sy < scale) { scale = sy; }
+    float dw = (float)img->w * scale, dh = (float)img->h * scale;
+    float ox = n->x + (fw - dw) / 2.0f, oy = n->y + (fh - dh) / 2.0f;
+
+    // Rounded-corner mask geometry = the node frame (matches fill_round_rect).
+    int rx0 = (int)(n->x + 0.5f), ry0 = (int)(n->y + 0.5f);
+    int rx1 = (int)(n->x + fw + 0.5f), ry1 = (int)(n->y + fh + 0.5f);
+    float rr = n->radius;
+    float rw = (float)(rx1 - rx0), rh = (float)(ry1 - ry0);
+    if (rr > rw / 2.0f) { rr = rw / 2.0f; }
+    if (rr > rh / 2.0f) { rr = rh / 2.0f; }
+
+    // Iterate the fitted rect intersected with the active clip.
+    int x0 = (int)ox, y0 = (int)oy;
+    int x1 = (int)(ox + dw + 0.5f), y1 = (int)(oy + dh + 0.5f);
+    if (x0 < c->clip_x0) { x0 = c->clip_x0; }
+    if (y0 < c->clip_y0) { y0 = c->clip_y0; }
+    if (x1 > c->clip_x1) { x1 = c->clip_x1; }
+    if (y1 > c->clip_y1) { y1 = c->clip_y1; }
+
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            if (!rrect_inside(x, y, rx0, ry0, rx1, ry1, rr)) {
+                continue;
+            }
+            float u = ((float)x + 0.5f - ox) / scale;
+            float v = ((float)y + 0.5f - oy) / scale;
+            uint32_t s = sample_bilinear(img->px, img->w, img->h, u, v);
+            uint32_t sa = (s >> 24) & 0xff;
+            if (sa == 0) {
+                continue;
+            }
+            uint32_t *dst = &c->pixels[y * c->stride_px + x];
+            if (sa == 0xff) {
+                *dst = s;
+                continue;
+            }
+            uint32_t sr = (s >> 16) & 0xff, sg = (s >> 8) & 0xff, sb = s & 0xff;
+            uint32_t d = *dst;
+            uint32_t da = (d >> 24) & 0xff, dr = (d >> 16) & 0xff,
+                     dg = (d >> 8) & 0xff, db = d & 0xff;
+            uint32_t inv = 255u - sa;
+            uint32_t oa = sa + da * inv / 255u;
+            uint32_t rres = sr + dr * inv / 255u;
+            uint32_t gres = sg + dg * inv / 255u;
+            uint32_t bres = sb + db * inv / 255u;
+            *dst = (oa << 24) | (rres << 16) | (gres << 8) | bres;
+        }
+    }
+}
+
 // Draw a rounded plate just outside a node's frame; the node's own fill paints
 // over the interior immediately after, leaving a thin border = the focus ring.
 static void stroke_focus_ring(ZCanvas *c, ZView n) {
@@ -161,6 +285,9 @@ static void paint(ZCanvas *canvas, ZView n) {
     case Z_K_TEXT:
         z_text_draw(canvas, n->text, n->font_size, n->fg, n->x + n->padding,
                     n->y + n->padding);
+        break;
+    case Z_K_IMAGE:
+        blit_image(canvas, n);
         break;
     case Z_K_STACK:
     case Z_K_SPACER:

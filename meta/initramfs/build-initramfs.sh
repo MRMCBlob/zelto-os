@@ -192,6 +192,30 @@ done
 # NOTE: system/apps/widget/zelto-widget.app is intentionally absent here — it is
 # packaged inside widget.zap and registered at runtime by zelto-install.
 
+# --- app icons (P24) --------------------------------------------------------
+# Each manifest's icon= points at an on-device path; install the matching asset
+# there. SVG line icons -> /usr/share/zelto/icons; the authored PNG icons ->
+# /usr/share/zelto/apps/icons; the shared fallback -> /usr/share/zelto/app-icons
+# (ZELTO_PLACEHOLDER_DEFAULT in system/common/app_icons.h — keep these in step).
+# The launcher renders icon= (SVG via the SDK's in-house rasterizer, PNG via
+# libpng) and falls back to Placeholder.png for any app with no/unloadable icon.
+ICON_SVG_SRC="$REPO_ROOT/resources/icons"
+ICON_PNG_SRC="$REPO_ROOT/resources/app-icons"
+mkdir -p "$ROOT/usr/share/zelto/icons" "$ROOT/usr/share/zelto/apps/icons" \
+         "$ROOT/usr/share/zelto/app-icons"
+for svg in "$ICON_SVG_SRC"/*.svg; do
+    [ -f "$svg" ] && cp "$svg" "$ROOT/usr/share/zelto/icons/"
+done
+for png in "$ICON_PNG_SRC"/os.zelto.*.png; do
+    [ -f "$png" ] && cp "$png" "$ROOT/usr/share/zelto/apps/icons/"
+done
+if [ -f "$ICON_PNG_SRC/Placeholder.png" ]; then
+    echo "    icons: $(ls "$ROOT/usr/share/zelto/icons"/*.svg 2>/dev/null | wc -l) svg + placeholder"
+    cp "$ICON_PNG_SRC/Placeholder.png" "$ROOT/usr/share/zelto/app-icons/Placeholder.png"
+else
+    echo "WARN: Placeholder.png missing at $ICON_PNG_SRC (icon fallback will be blank)"
+fi
+
 # --- P13 trusted root key + staged .zap packages ----------------------------
 # The single trusted public key the installer verifies every package against
 # (the dev key's raw 32-byte Ed25519 pubkey; real publisher keys are Planned).

@@ -14,6 +14,7 @@
 //               same effect as the compositor's Home chord, but driven from here.
 //   - Recents : fork/exec the zelto-recents overlay (the window/task overview).
 // See docs/contributing/compositor-internals.md + docs/platform/app-lifecycle.md.
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -52,10 +53,14 @@ static void on_home(ZApp *app, void *state) {
 }
 
 // Recents: open the task-overview overlay (it reuses z_running_apps wholesale).
+// The binary is /usr/bin/zelto-recents on the device; the desktop simulator runs
+// uninstalled build-host binaries, so it points ZELTO_RECENTS_BIN at the actual
+// build path (same env-override idiom as ZELTO_DATA_DIR/ZELTO_FONT).
 static void on_recents(ZApp *app, void *state) {
     (void)app;
     (void)state;
-    spawn(RECENTS_BIN);
+    const char *bin = getenv("ZELTO_RECENTS_BIN");
+    spawn(bin && *bin ? bin : RECENTS_BIN);
 }
 
 // Back (MVP "back to last app"): activate the first running window that is not

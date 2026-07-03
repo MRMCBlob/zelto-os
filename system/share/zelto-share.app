@@ -5,3 +5,4 @@ name=Share
 subtitle=Share text + open a deep link
 exec=/usr/bin/zelto-share
 color=6a3db5
+icon=/usr/share/zelto/icons/share.svg

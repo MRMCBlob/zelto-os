@@ -146,6 +146,12 @@ ZView z_text(const char *fmt, ...) {
     return n;
 }
 
+ZView z_image(const char *path) {
+    ZView n = node_new(Z_K_IMAGE);
+    n->img_path = path ? z_arena_strdup(z_build_arena, path) : NULL;
+    return n;
+}
+
 ZView z_button(ZAction on_tap, const char *fmt, ...) {
     char buf[1024];
     va_list ap;

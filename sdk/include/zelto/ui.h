@@ -141,6 +141,21 @@ ZView z_rect(const ZRectOpts *opts);
 ZView z_text(const char *fmt, ...);
 #define Text(...) z_text(__VA_ARGS__)
 
+// An image: a PNG or SVG loaded from `path` and drawn aspect-fit inside the
+// node's frame (letterboxed, never stretched). The decode is cached by path, so
+// listing an Image in a body() that rebuilds every frame is cheap. Give it a
+// size the usual way (Frame(w, h, Image(path))) — without one it sizes to the
+// image's intrinsic pixels. SVGs are rasterized by a minimal in-house stroker
+// (line icons, single ink); PNGs go through libpng (translucency honoured).
+// A path that fails to load draws nothing (the caller supplies any fallback).
+ZView z_image(const char *path);
+#define Image(path) z_image(path)
+
+// True if `path` can be decoded (result cached like Image, so this is cheap to
+// call in body()). Image() itself draws nothing on failure, so a caller that
+// wants a fallback image (an app icon → a placeholder) probes with this first.
+bool z_image_loads(const char *path);
+
 // A tappable control: a rounded, padded label that runs `on_tap` when tapped or
 // activated from the keyboard (Enter/Space while focused). printf-style label.
 //   Button(on_tap, "Count: %d", s->count);   // on_tap is a static ZAction

@@ -32,6 +32,16 @@ static void measure(ZView n, ZText *text) {
         dh = ascent + descent;
         break;
     }
+    case Z_K_IMAGE: {
+        // Intrinsic pixel size when no fixed frame is given; a Frame() around
+        // the Image (the usual case for an app icon) overrides both below.
+        int iw = 0, ih = 0;
+        if (n->img_path && z_image_intrinsic(n->img_path, &iw, &ih)) {
+            dw = (float)iw;
+            dh = (float)ih;
+        }
+        break;
+    }
     case Z_K_STACK: {
         if (n->abs_children) {
             // Virtualised list content: full virtual height, fills width.

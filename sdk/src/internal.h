@@ -16,6 +16,7 @@ typedef enum ZKind {
     Z_K_TEXT,
     Z_K_SPACER,
     Z_K_SCROLL,      // clips + translates a single content child by a ZScroll offset
+    Z_K_IMAGE,       // a decoded raster/SVG bitmap, aspect-fit into the node frame
 } ZKind;
 
 // One UI node. Arena-allocated per build; the computed frame (x,y,w,h) is filled
@@ -42,6 +43,7 @@ struct ZNode {
     char *text;           // Text content (arena-owned)
     float font_size;
     ZColor fg;
+    char *img_path;       // Z_K_IMAGE: source path (arena-owned; PNG or SVG by ext)
 
     // Interactivity. on_tap fires on pointer tap / keyboard activation; on_key
     // receives raw key presses when this node holds focus; focusable marks a
@@ -255,6 +257,30 @@ void z_damage_merge(ZDamage *dst, const ZDamage *src);   // dst |= src
 // are no list keys yet) and accumulate the changed regions into `out`. Unchanged
 // subtrees contribute nothing, so their cached layout/paint is reused.
 void z_reconcile(ZView old_root, ZView new_root, ZDamage *out);
+
+// --- Images (image.c) -----------------------------------------------------
+// A decoded bitmap: premultiplied ARGB8888, packed one uint32 per pixel as
+// (A<<24)|(R<<16)|(G<<8)|B — the exact layout the renderer writes, so the blit
+// is a straight source-over. `ok` records whether the decode succeeded; failed
+// decodes are cached too (px == NULL) so a missing/broken file is not retried
+// every frame. Owned by the module's global cache; never freed by the caller.
+typedef struct ZImage {
+    struct ZImage *next;
+    char *path;           // cache key (heap-owned)
+    int w, h;             // bitmap dimensions (0 when !ok)
+    uint32_t *px;         // premultiplied ARGB, w*h (NULL when !ok)
+    bool ok;
+} ZImage;
+
+// Decode (on a cache miss) and return the bitmap for `path`, or NULL only when
+// path is NULL. Dispatches on the file extension: ".svg" -> the in-house stroked
+// rasterizer, else libpng. The tree is rebuilt every frame, so this MUST NOT
+// decode more than once per path: the result (success or failure) is cached.
+const ZImage *z_image_get(const char *path);
+
+// Intrinsic (unscaled) pixel size of `path`'s bitmap; false if it can't load.
+// Used by the layout pass to aspect-fit an Image that was given no fixed size.
+bool z_image_intrinsic(const char *path, int *w, int *h);
 
 // --- Render ---------------------------------------------------------------
 // A 32-bit ARGB (little-endian: B,G,R,A bytes) software target. clip_* is the

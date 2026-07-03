@@ -46,6 +46,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/app_icons.h"
+
 #define MANIFEST_DIR "/usr/share/zelto/apps"
 #define MAX_APPS 32
 #define DEFAULT_FAVS 4   // home shows this many apps until the user curates them
@@ -58,6 +60,7 @@ typedef struct AppEntry {
     char name[64];
     char subtitle[96];
     char exec_path[160];
+    char icon_path[192];   // manifest icon= (PNG/SVG); empty -> placeholder
     ZColor color;
 } AppEntry;
 
@@ -113,6 +116,8 @@ static bool parse_manifest(const char *path, AppEntry *e) {
             snprintf(e->subtitle, sizeof(e->subtitle), "%s", val);
         } else if (strcmp(key, "exec") == 0) {
             snprintf(e->exec_path, sizeof(e->exec_path), "%s", val);
+        } else if (strcmp(key, "icon") == 0) {
+            snprintf(e->icon_path, sizeof(e->icon_path), "%s", val);
         } else if (strcmp(key, "color") == 0) {
             e->color = parse_color(val);
         }
@@ -343,29 +348,38 @@ static void on_icon_longpress(ZApp *app, void *state, void *data, float x,
 #define GRID_COLS 4
 #define ICON_SIZE 104.0f
 #define ICON_RADIUS 24.0f
+#define ICON_INSET 20.0f   // padding of an emblem within its coloured tile
 
-// One phone-style cell: a square coloured icon (the app's initial centred in it)
-// with the app name as a caption below. No PNG assets yet — real assets/icon.png
-// rendering is Planned; the coloured rounded square + glyph stands in. The whole
-// cell is the tap target. Grow(1) so a row of GRID_COLS cells splits the width
-// evenly (empty trailing slots are Spacers, which grow the same).
+// One phone-style cell: the app's icon over a rounded tile, with the app name as
+// a caption below. The icon is the manifest `icon=` PNG/SVG; when the app has no
+// icon (or it fails to load) the shared Placeholder image stands in — no more
+// letter-square. An app's own emblem (a transparent line/PNG icon) is inset over
+// the app's colour tile; the placeholder is a self-contained image that fills
+// the rounded tile. The whole cell is the tap target. Grow(1) so a row of
+// GRID_COLS cells splits the width evenly (empty trailing slots are Spacers).
+static ZView app_icon_tile(const AppEntry *e) {
+    bool own = e->icon_path[0] && z_image_loads(e->icon_path);
+    const char *icon = own ? e->icon_path : zelto_placeholder_icon();
+
+    // Own emblem: inset over the app colour tile. Placeholder: fills the tile,
+    // rounded to match (it carries its own art, so it needs no colour behind).
+    ZView art = own
+        ? Frame(ICON_SIZE - 2.0f * ICON_INSET, ICON_SIZE - 2.0f * ICON_INSET,
+                Image(icon))
+        : Frame(ICON_SIZE, ICON_SIZE, CornerRadius(ICON_RADIUS, Image(icon)));
+
+    return Frame(ICON_SIZE, ICON_SIZE,
+        Background(e->color,
+            CornerRadius(ICON_RADIUS,
+                ZStack(art, .align = Z_ALIGN_CENTER))));
+}
+
 static ZView grid_cell(const AppEntry *e) {
-    char glyph = e->name[0] ? e->name[0] : '?';
-    if (glyph >= 'a' && glyph <= 'z') {
-        glyph = (char)(glyph - 'a' + 'A');
-    }
     return Grow(1.0f,
         OnLongPress(on_icon_longpress, (void *)e,
         OnTapData(launch_app, (void *)e,
             VStack(
-                Frame(ICON_SIZE, ICON_SIZE,
-                    Background(e->color,
-                        CornerRadius(ICON_RADIUS,
-                            ZStack(
-                                Foreground(Z_COLOR_TEXT_INV,
-                                    Font(Z_FONT_LARGE_TITLE,
-                                        Text("%c", glyph))),
-                                .align = Z_ALIGN_CENTER)))),
+                app_icon_tile(e),
                 Foreground(Z_COLOR_TEXT_INV,
                     Font(Z_FONT_CAPTION, Text("%s", e->name))),
                 .spacing = 8, .align = Z_ALIGN_CENTER))));

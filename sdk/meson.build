@@ -14,10 +14,13 @@ xkbcommon      = dependency('xkbcommon', required : false)
 # Persistent storage (P11): the prefs/files store needs nothing extra, but the
 # z_db_* SQLite wrapper links the system sqlite3.
 sqlite3        = dependency('sqlite3', required : false)
+# Image decode (P24): PNG app icons go through libpng; SVG icons use the in-house
+# stroked rasterizer in image.c (no extra dep). libpng is the only new closure.
+libpng         = dependency('libpng', required : false)
 
 if not (wayland_client.found() and harfbuzz.found() and freetype.found()
-        and xkbcommon.found() and sqlite3.found())
-  warning('libzelto: wayland-client / harfbuzz / freetype2 / xkbcommon / sqlite3 missing; skipping SDK')
+        and xkbcommon.found() and sqlite3.found() and libpng.found())
+  warning('libzelto: wayland-client / harfbuzz / freetype2 / xkbcommon / sqlite3 / libpng missing; skipping SDK')
   libzelto = disabler()
   zelto_dep = disabler()
   subdir_done()
@@ -38,6 +41,7 @@ libzelto = static_library(
     'src/layout.c',
     'src/text.c',
     'src/render.c',
+    'src/image.c',
     'src/reconcile.c',
     'src/animation.c',
     'src/scroll.c',
@@ -49,7 +53,7 @@ libzelto = static_library(
   sdk_protocol_src,
   include_directories : [zelto_inc, include_directories('src', 'protocols')],
   dependencies : [
-    wayland_client, harfbuzz, freetype, xkbcommon, sqlite3,
+    wayland_client, harfbuzz, freetype, xkbcommon, sqlite3, libpng,
     cc.find_library('m', required : false),
   ],
   install : true,
@@ -59,7 +63,7 @@ libzelto = static_library(
 zelto_dep = declare_dependency(
   link_with : libzelto,
   include_directories : zelto_inc,
-  dependencies : [wayland_client, harfbuzz, freetype, xkbcommon, sqlite3],
+  dependencies : [wayland_client, harfbuzz, freetype, xkbcommon, sqlite3, libpng],
 )
 
 # Bundle the default UI font into the image at the path libzelto looks for

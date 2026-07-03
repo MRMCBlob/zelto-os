@@ -9,3 +9,4 @@ exec=/usr/bin/zelto-notes
 color=1d6e44
 share_targets=text/plain
 links=zelto
+icon=/usr/share/zelto/icons/notes.svg

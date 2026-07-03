@@ -21,6 +21,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/app_icons.h"
+
 #define LAUNCHER_APP_ID "os.zelto.launcher"
 #define XKB_KEY_Escape 0xff1b
 
@@ -57,9 +59,26 @@ static void on_key(ZApp *app, void *state, uint32_t keysym) {
     }
 }
 
-// One task card: title + Active/Paused, with a red X close button nested deeper
-// (deepest hit-test handler wins, so the X closes and the rest of the card
-// switches). The data pointer is the ZTask in the stable z_running_apps snapshot.
+// The app's icon for a running window (resolved from its manifest by app_id),
+// or the shared placeholder — a small rounded tile at the leading edge of the
+// card. Emblems sit on a neutral tile (Recents has no per-app colour).
+static ZView task_icon(const ZTask *t) {
+    char buf[192];
+    const char *icon = (zelto_icon_for_app_id(t->app_id, buf, sizeof(buf)) &&
+                        z_image_loads(buf))
+                           ? buf
+                           : zelto_placeholder_icon();
+    return Frame(52.0f, 52.0f,
+        Background(Z_COLOR_SURFACE_3,
+            CornerRadius(12,
+                ZStack(Frame(40.0f, 40.0f, Image(icon)),
+                       .align = Z_ALIGN_CENTER))));
+}
+
+// One task card: icon + title + Active/Paused, with a red X close button nested
+// deeper (deepest hit-test handler wins, so the X closes and the rest of the
+// card switches). The data pointer is the ZTask in the stable z_running_apps
+// snapshot.
 static ZView task_card(const ZTask *t) {
     const char *title = t->title ? t->title
                                  : (t->app_id ? t->app_id : "App");
@@ -69,6 +88,7 @@ static ZView task_card(const ZTask *t) {
         Background(bg,
             CornerRadius(16,
                 HStack(
+                    task_icon(t),
                     VStack(
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_CALLOUT, Text("%s", title))),

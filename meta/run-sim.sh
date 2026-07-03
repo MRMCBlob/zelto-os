@@ -77,6 +77,12 @@ export ZELTO_FONT="${ZELTO_FONT:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 export ZELTO_DATA_DIR="${ZELTO_DATA_DIR:-/tmp/zelto-sim/data}"
 mkdir -p "$ZELTO_DATA_DIR/apps"
 
+# App icons (P24). On the device build-initramfs.sh installs each app's icon to a
+# system path and the manifests carry that absolute icon=; here the apps run from
+# the repo, so point the shared Placeholder fallback + the rewritten per-app
+# icon= at the in-repo resources/ tree instead (the ZELTO_RECENTS_BIN idiom).
+export ZELTO_PLACEHOLDER_ICON="${ZELTO_PLACEHOLDER_ICON:-$REPO_ROOT/resources/app-icons/Placeholder.png}"
+
 # P23 power source: the host has no phone battery, so drive a fake drain by
 # default (the status-bar battery glyph then shows a real level and slowly
 # discharges). Off with ZELTO_FAKE_BATTERY=0; tune the cadence with
@@ -158,8 +164,15 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
         echo "!! host binary missing for $(basename "$m") ($bin_name); skipping tile"
         continue
     fi
-    # Copy the manifest verbatim but repoint exec= at the host binary.
-    sed "s#^exec=.*#exec=$bin_host#" "$m" > "$MANIFEST_OUT/$(basename "$m")"
+    # Copy the manifest verbatim but repoint exec= at the host binary, and
+    # rewrite any icon= from its device path to the matching in-repo asset:
+    # <...>/<name>.svg -> resources/icons/<name>.svg, and a .png -> the authored
+    # resources/app-icons/<name>.png. Apps with no icon= fall back to the
+    # Placeholder resolved via $ZELTO_PLACEHOLDER_ICON above.
+    sed -e "s#^exec=.*#exec=$bin_host#" \
+        -e "s#^icon=.*/\([^/]*\.svg\)\$#icon=$REPO_ROOT/resources/icons/\1#" \
+        -e "s#^icon=.*/\([^/]*\.png\)\$#icon=$REPO_ROOT/resources/app-icons/\1#" \
+        "$m" > "$MANIFEST_OUT/$(basename "$m")"
     echo "    tile: $(basename "$m" .app) -> $bin_host"
 done
 
@@ -168,6 +181,10 @@ done
 spawn() { [ -x "$1" ] && { "$@" & PIDS+=($!); }; }
 spawn "$SYS/zsysd/zsysd"
 spawn "$SYS/bar/zelto-bar"
+# The nav bar's Recents button fork/execs the recents overlay by absolute path,
+# which on the device is /usr/bin/zelto-recents. Uninstalled here, so point it at
+# the build-host binary (nav reads ZELTO_RECENTS_BIN).
+export ZELTO_RECENTS_BIN="$SYS/recents/zelto-recents"
 spawn "$SYS/nav/zelto-nav"
 spawn "$SYS/keyboard/zelto-keyboard"
 spawn "$SYS/shade/zelto-shade"

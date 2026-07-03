@@ -9,3 +9,4 @@ subtitle=HTTP GET over the network permission
 exec=/usr/bin/zelto-fetch
 color=2e9bff
 permissions=network
+icon=/usr/share/zelto/apps/icons/os.zelto.fetch.png

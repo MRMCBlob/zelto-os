@@ -3,6 +3,7 @@
 executable(
   'zelto-launcher',
   files('main.c'),
+  include_directories : include_directories('..'),
   dependencies : zelto_dep,
   install : true,
 )

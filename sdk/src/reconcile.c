@@ -77,6 +77,11 @@ static bool node_changed(ZView a, ZView b) {
     if (strcmp(ta, tb) != 0) {
         return true;
     }
+    const char *ia = a->img_path ? a->img_path : "";
+    const char *ib = b->img_path ? b->img_path : "";
+    if (strcmp(ia, ib) != 0) {
+        return true;
+    }
     return false;
 }
 
