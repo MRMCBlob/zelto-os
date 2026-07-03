@@ -51,6 +51,67 @@ ZAnimated *z_animated_value(ZApp *app, float initial) {
     return v;
 }
 
+// --- keyed animated value (identity-keyed retained cell) ------------------
+// Looked up by an explicit key in the current screen's keyed table, so a value's
+// identity survives rebuilds even when its call-order position changes. Marks the
+// cell requested for this build's GC sweep; allocates (reusing a swept slot) on a
+// key miss. This is the ONLY correct way to give each reflowing item its own
+// spring across reorders (the call-order trap, writ large).
+ZAnimated *z_animated_keyed(ZApp *app, uint64_t key, float initial) {
+    ZUI *ui = z_app_ui(app);
+    ZScreen *s = ui->cur;
+    for (int i = 0; i < s->keyed_count; i++) {
+        if (s->keyed[i].used && s->keyed[i].key == key) {
+            s->keyed[i].requested = true;
+            s->keyed[i].v.app = app;
+            return &s->keyed[i].v;
+        }
+    }
+    int slot = -1;
+    for (int i = 0; i < s->keyed_count; i++) {
+        if (!s->keyed[i].used) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (s->keyed_count < Z_MAX_KEYED) {
+            slot = s->keyed_count++;
+        } else {
+            slot = Z_MAX_KEYED - 1;  // clamp: shared cell, but never out of bounds
+        }
+    }
+    ZKeyed *kc = &s->keyed[slot];
+    kc->key = key;
+    kc->used = true;
+    kc->requested = true;
+    ZAnimated *v = &kc->v;
+    v->value = v->target = initial;
+    v->velocity = 0.0f;
+    v->animating = false;
+    spring_params(Z_SPRING_STANDARD, &v->stiffness, &v->damping, &v->mass);
+    v->app = app;
+    return v;
+}
+
+void z_keyed_frame_begin(ZScreen *s) {
+    for (int i = 0; i < s->keyed_count; i++) {
+        s->keyed[i].requested = false;
+    }
+}
+
+void z_keyed_frame_end(ZScreen *s) {
+    for (int i = 0; i < s->keyed_count; i++) {
+        if (s->keyed[i].used && !s->keyed[i].requested) {
+            s->keyed[i].used = false;
+        }
+    }
+}
+
+bool z_animated_active(const ZAnimated *v) { return v->animating; }
+
+float z_animated_target(const ZAnimated *v) { return v->target; }
+
 void z_animated_set(ZAnimated *v, float to) {
     v->value = v->target = to;
     v->velocity = 0.0f;
@@ -58,6 +119,16 @@ void z_animated_set(ZAnimated *v, float to) {
     if (v->app) {
         z_invalidate(v->app);
     }
+}
+
+// Like z_animated_set, but does NOT wake the loop. For a value written fresh on
+// every build (e.g. a ghost pinned to the live finger position, or a test freeze):
+// the caller already invalidated for its own reason, so self-invalidating here
+// would spin a full-speed repaint loop.
+void z_animated_pin(ZAnimated *v, float to) {
+    v->value = v->target = to;
+    v->velocity = 0.0f;
+    v->animating = false;
 }
 
 void z_animated_spring(ZAnimated *v, float to) {
@@ -153,6 +224,11 @@ static bool tick_screen(ZScreen *s, float dt) {
     }
     for (int i = 0; i < s->scroll_count; i++) {
         if (advance_fling(&s->scrolls[i], dt)) {
+            active = true;
+        }
+    }
+    for (int i = 0; i < s->keyed_count; i++) {
+        if (s->keyed[i].used && advance_spring(&s->keyed[i].v, dt)) {
             active = true;
         }
     }

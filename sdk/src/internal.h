@@ -111,7 +111,20 @@ struct ZScroll {
     bool used;
 };
 
+// A keyed retained animation cell: a ZAnimated looked up by an explicit uint64_t
+// key (an item's stable IDENTITY), NOT by call order. This is what lets each
+// reflowing bento item keep its own spring across reorders even as its call-order
+// position changes every rebuild. `requested` is the per-build mark bit: cells
+// not requested in a build are swept (used=false) so removed items don't leak.
+typedef struct ZKeyed {
+    uint64_t key;
+    struct ZAnimated v;
+    bool used;
+    bool requested;
+} ZKeyed;
+
 #define Z_MAX_CELLS 8
+#define Z_MAX_KEYED 96
 #define Z_MAX_SCREENS 8
 
 // One screen instance: its builder + props, plus the retained cells its body
@@ -123,6 +136,8 @@ typedef struct ZScreen {
     int anim_count, anim_cursor;
     struct ZScroll scrolls[Z_MAX_CELLS];
     int scroll_count, scroll_cursor;
+    ZKeyed keyed[Z_MAX_KEYED];   // identity-keyed anim cells (z_animated_keyed)
+    int keyed_count;
     struct ZAnimated trans;   // 0 = off-screen (right), 1 = fully on screen
     int op;                   // pending op: 0 none, 1 entering, 2 exiting
 } ZScreen;
@@ -179,6 +194,11 @@ const char *z_active_app_id(void);
 // anything is still in motion (so the caller keeps the frame loop running).
 bool z_anim_tick(ZApp *app, float dt);
 double z_now_seconds(void);
+
+// Keyed-cell GC bracket (call around each screen's body): begin clears the
+// per-build requested marks; end sweeps any keyed cell not requested this build.
+void z_keyed_frame_begin(ZScreen *s);
+void z_keyed_frame_end(ZScreen *s);
 
 // --- Networking event-loop integration (net.c) ----------------------------
 // The async HTTP/WebSocket clients live in net.c with their own in-flight

@@ -497,6 +497,14 @@ static ZRect cell_rect(float sw, int col, int row, int cw, int ch) {
     return r;
 }
 
+// Centre-relative offset that places a cell of rect `r` inside a full-surface
+// depth ZStack (mirrors placed()). This is the value an item's keyed x/y anim
+// cells spring toward, so a slot change eases instead of teleporting.
+static void cell_offset(float sw, float sh, ZRect r, float *ox, float *oy) {
+    *ox = r.x - (sw - r.w) / 2.0f;
+    *oy = r.y - (sh - r.h) / 2.0f;
+}
+
 // The single grid slot (row*COLS+col) the ghost centre currently hovers.
 static int ghost_slot(float sw, float gx, float gy) {
     float s = cell_side(sw);
@@ -538,10 +546,16 @@ typedef struct LauncherState {
     // Rearrange mode.
     bool rearrange;
     bool held;                // an item is lifted under the finger
+    bool landing;             // released: ghost springing into its committed slot
     HomeKind held_kind;
     int held_ref;
     float ghost_x, ghost_y;   // ghost centre (surface-local)
     int target_index;         // last-computed insertion index (in the reduced seq)
+
+    // Headless animation test hooks (see the test block in launcher_body).
+    int test_anim_frames;     // spring steps to advance before the shot (0 = off)
+    bool test_landing;        // stage a ghost snap-back rather than a reflow
+    bool test_seeded;         // one-shot: springs seeded + stepped
 
     // Transient toast.
     double toast_until;
@@ -586,6 +600,24 @@ static void unpack_id(void *p, HomeKind *k, int *ref) {
     *ref = (int)(v & 0xffff);
 }
 
+// Stable identity key for a home entry — the key for its retained keyed anim
+// cells (kind in bit 32, ref in the low 32). Because the cell is keyed by item
+// IDENTITY, not by call order, its spring survives every reorder even as the
+// item's position in the build changes. The x and y axes derive two sub-keys.
+static uint64_t entry_key(HomeKind k, int ref) {
+    return ((uint64_t)(k == HE_WIDGET ? 1u : 0u) << 32) | (uint32_t)ref;
+}
+#define KEY_X(base) (base)
+#define KEY_Y(base) ((base) | (1ull << 40))
+
+// Only (re)arm a spring when its target actually moved, so a settled cell whose
+// packed slot is unchanged does not wake the frame loop on every rebuild.
+static void spring_to(ZAnimated *v, float to) {
+    if (fabsf(z_animated_target(v) - to) > 0.5f) {
+        z_animated_spring(v, to);
+    }
+}
+
 // --- rearrange handlers ---------------------------------------------------
 static void enter_rearrange(ZApp *app, void *state, void *data, float x,
                             float y) {
@@ -595,6 +627,7 @@ static void enter_rearrange(ZApp *app, void *state, void *data, float x,
     unpack_id(data, &k, &ref);
     s->rearrange = true;
     s->held = true;
+    s->landing = false;
     s->held_kind = k;
     s->held_ref = ref;
     s->ghost_x = x;
@@ -610,6 +643,7 @@ static void exit_rearrange(ZApp *app, void *state) {
     LauncherState *s = state;
     s->rearrange = false;
     s->held = false;
+    s->landing = false;
     write_home_csv();
     z_full_repaint(app);
     z_invalidate(app);
@@ -705,6 +739,34 @@ static void commit_reorder(LauncherState *s) {
     write_home_csv();
 }
 
+// Release: the reorder is already committed into g_home; spring the ghost from
+// the finger into the item's committed slot (snap-back) and enter landing mode.
+// The ghost and the landed item share the SAME keyed cell (entry_key), so once
+// the spring settles the ghost is dropped and the item's own cell carries it on
+// with no visible jump. Uses the item's base keyed x/y cells, springing them to
+// the slot centre; the cells were being tracked to the finger during the drag.
+static void ghost_land(ZApp *app, LauncherState *s) {
+    int idx = home_find(s->held_kind, s->held_ref);
+    if (idx < 0 || s->surface_w < 1.0f) {
+        s->held = false;
+        s->landing = false;
+        return;
+    }
+    static Placed pl[MAX_HOME];
+    pack_home(g_home, g_n_home, pl);
+    ZRect r = cell_rect(s->surface_w, pl[idx].col, pl[idx].row, pl[idx].cw,
+                        pl[idx].ch);
+    float ox, oy;
+    cell_offset(s->surface_w, s->surface_h, r, &ox, &oy);
+    uint64_t base = entry_key(s->held_kind, s->held_ref);
+    ZAnimated *cx = z_animated_keyed(app, KEY_X(base), ox);
+    ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), oy);
+    z_animated_spring(cx, ox);
+    z_animated_spring(cy, oy);
+    s->held = false;
+    s->landing = true;
+}
+
 static float clamp01(float a) {
     return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
 }
@@ -745,7 +807,7 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
         } else if (e->phase == Z_PAN_END) {
             if (s->held) {
                 commit_reorder(s);
-                s->held = false;
+                ghost_land(app, s);  // spring the ghost into its committed slot
             }
             z_full_repaint(app);
             z_invalidate(app);
@@ -988,6 +1050,10 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     //   ZELTO_HOME_REARRANGE=1   arm rearrange mode
     //   ZELTO_HOME_HELD=<i>      lift g_home entry i (default 0)
     //   ZELTO_HOME_GHOST_X/Y=<px> ghost centre (default: held cell centre)
+    //   ZELTO_HOME_ANIM_FRAMES=N step the springs N frames before the shot, so a
+    //                            still PNG catches motion (mid-reflow / mid-snap).
+    //   ZELTO_HOME_LANDING=1     stage a released ghost mid snap-back (with FRAMES)
+    //                            instead of a held mid-reflow.
     if (!state->test_applied) {
         state->test_applied = true;
         const char *rr = getenv("ZELTO_HOME_REARRANGE");
@@ -1010,6 +1076,17 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             state->ghost_x = gx ? (float)atof(gx) : hr.x + hr.w / 2.0f;
             state->ghost_y = gy ? (float)atof(gy) : hr.y + hr.h / 2.0f;
             z_animated_set(state->ghost_anim, state->ghost_x);
+            const char *af = getenv("ZELTO_HOME_ANIM_FRAMES");
+            state->test_anim_frames = af ? atoi(af) : 0;
+            const char *lt = getenv("ZELTO_HOME_LANDING");
+            state->test_landing = lt && lt[0] == '1';
+            if (state->test_landing) {
+                // Commit the drag now so the item sits in its landed slot; the
+                // seeding pass below springs the ghost from the finger into it.
+                commit_reorder(state);
+                state->held = false;
+                state->landing = true;
+            }
         }
     }
 
@@ -1017,8 +1094,10 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // and re-insert at the ghost's target index so the others reflow live.
     HomeEntry disp[MAX_HOME] = {0};
     int nd = 0;
-    int held_disp = -1;
     HomeEntry held = {state->held_kind, state->held_ref};
+    // The held OR landing item is "special": drawn as a ghost on top, its home
+    // slot a faint placeholder, its own keyed cell driven separately.
+    bool special = state->held || state->landing;
     if (state->rearrange && state->held) {
         HomeEntry reduced[MAX_HOME] = {0};
         int nr = 0;
@@ -1037,13 +1116,11 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         state->target_index = ti;
         for (int i = 0; i < nr; i++) {
             if (i == ti) {
-                held_disp = nd;
                 disp[nd++] = held;
             }
             disp[nd++] = reduced[i];
         }
         if (ti >= nr) {
-            held_disp = nd;
             disp[nd++] = held;
         }
     } else {
@@ -1055,24 +1132,140 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     static Placed pl[MAX_HOME];
     int rows = pack_home(disp, nd, pl);
 
-    // The bento cells layer (absolute placement in one depth ZStack). The held
-    // item's slot renders as a faint placeholder; the ghost is drawn on top.
+    // In a headless anim-frame test the springs are stepped then FROZEN (pinned)
+    // so a still frame holds the motion; in that mode the live springs are not
+    // driven and the landing state is held open.
+    bool frozen = state->test_anim_frames > 0;
+
+    // Landing settle: once the ghost's snap-back spring reaches the slot, drop the
+    // landing state — the item's own keyed cell (same key) already sits at the
+    // slot, so its normal cell (built below) takes over with no visible jump.
+    if (state->landing && !frozen) {
+        uint64_t base = entry_key(state->held_kind, state->held_ref);
+        ZAnimated *lx = z_animated_keyed(app, KEY_X(base), 0.0f);
+        ZAnimated *ly = z_animated_keyed(app, KEY_Y(base), 0.0f);
+        if (!z_animated_active(lx) && !z_animated_active(ly)) {
+            state->landing = false;
+            special = false;
+        }
+    }
+
+    // Headless anim seeding (ZELTO_HOME_ANIM_FRAMES): fabricate an in-flight state
+    // then step the springs, so a single still frame catches motion. For a reflow
+    // shot each non-held item is seeded at its PRE-reflow (g_home order) slot and
+    // sprung toward its display slot; for a landing shot the ghost's shared cell
+    // is seeded at the finger and sprung into the committed slot.
+    if (!state->test_seeded && state->test_anim_frames > 0 &&
+        state->surface_w > 1.0f) {
+        state->test_seeded = true;
+        static Placed hpl[MAX_HOME];
+        pack_home(g_home, g_n_home, hpl);  // pre-reflow home layout
+        if (state->landing) {
+            uint64_t base = entry_key(state->held_kind, state->held_ref);
+            int cw, ch;
+            entry_span(&held, &cw, &ch);
+            float s = cell_side(state->surface_w);
+            ZRect gr = {0};
+            gr.w = cw * s + (cw - 1) * GRID_GAP;
+            gr.h = ch * s + (ch - 1) * GRID_GAP;
+            gr.x = state->ghost_x - gr.w / 2.0f;
+            gr.y = state->ghost_y - gr.h / 2.0f;
+            float fx, fy;
+            cell_offset(state->surface_w, state->surface_h, gr, &fx, &fy);
+            ZAnimated *cx = z_animated_keyed(app, KEY_X(base), fx);
+            ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), fy);
+            z_animated_set(cx, fx);
+            z_animated_set(cy, fy);
+            int idx = home_find(state->held_kind, state->held_ref);
+            if (idx >= 0) {
+                ZRect r = cell_rect(state->surface_w, hpl[idx].col, hpl[idx].row,
+                                    hpl[idx].cw, hpl[idx].ch);
+                float ox, oy;
+                cell_offset(state->surface_w, state->surface_h, r, &ox, &oy);
+                z_animated_spring(cx, ox);
+                z_animated_spring(cy, oy);
+            }
+        } else {
+            for (int i = 0; i < nd; i++) {
+                if (special &&
+                    entry_eq(&disp[i], state->held_kind, state->held_ref)) {
+                    continue;
+                }
+                uint64_t base = entry_key(disp[i].kind, disp[i].ref);
+                ZRect dr = cell_rect(state->surface_w, pl[i].col, pl[i].row,
+                                     pl[i].cw, pl[i].ch);
+                float ox, oy;
+                cell_offset(state->surface_w, state->surface_h, dr, &ox, &oy);
+                float hx = ox, hy = oy;
+                int hi = home_find(disp[i].kind, disp[i].ref);
+                if (hi >= 0) {
+                    ZRect hr = cell_rect(state->surface_w, hpl[hi].col,
+                                         hpl[hi].row, hpl[hi].cw, hpl[hi].ch);
+                    cell_offset(state->surface_w, state->surface_h, hr, &hx, &hy);
+                }
+                ZAnimated *cx = z_animated_keyed(app, KEY_X(base), hx);
+                ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), hy);
+                z_animated_set(cx, hx);
+                z_animated_set(cy, hy);
+                z_animated_spring(cx, ox);
+                z_animated_spring(cy, oy);
+            }
+        }
+        for (int f = 0; f < state->test_anim_frames; f++) {
+            z_anim_tick(app, 1.0f / 60.0f);
+        }
+        // Freeze the stepped springs so the still frame holds mid-flight (the
+        // real-time frame loop would otherwise settle them before the shot).
+        if (state->landing) {
+            uint64_t base = entry_key(state->held_kind, state->held_ref);
+            ZAnimated *cx = z_animated_keyed(app, KEY_X(base), 0.0f);
+            ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), 0.0f);
+            z_animated_pin(cx, z_animated_get(cx));
+            z_animated_pin(cy, z_animated_get(cy));
+        } else {
+            for (int i = 0; i < nd; i++) {
+                if (special &&
+                    entry_eq(&disp[i], state->held_kind, state->held_ref)) {
+                    continue;
+                }
+                uint64_t base = entry_key(disp[i].kind, disp[i].ref);
+                ZAnimated *cx = z_animated_keyed(app, KEY_X(base), 0.0f);
+                ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), 0.0f);
+                z_animated_pin(cx, z_animated_get(cx));
+                z_animated_pin(cy, z_animated_get(cy));
+            }
+        }
+    }
+
+    // The bento cells layer (absolute placement in one depth ZStack). Each cell
+    // renders at its keyed animated offset (springing toward its packed slot) so a
+    // reflow eases rather than jumps. The special (held/landing) item's slot is a
+    // faint placeholder; its content is drawn as the ghost on top.
     ZStackOpts cells = {.align = Z_ALIGN_LEADING};
     int ck = 0;
     for (int i = 0; i < nd && ck < Z_MAX_CHILDREN; i++) {
         ZRect r = cell_rect(state->surface_w, pl[i].col, pl[i].row, pl[i].cw,
                             pl[i].ch);
-        ZView cell;
-        if (i == held_disp) {
-            cell = Frame(r.w, r.h,
+        if (special && entry_eq(&disp[i], state->held_kind, state->held_ref)) {
+            ZView ph = Frame(r.w, r.h,
                 CornerRadius(ICON_RADIUS,
                     Rect(.color = z_rgba(0xf4, 0xf7, 0xfb, 0x22),
                          .radius = ICON_RADIUS)));
+            cells.children[ck++] = placed(state->surface_w, state->surface_h, r,
+                                          ph);
         } else {
-            cell = entry_view(app, state, &disp[i], r);
+            uint64_t base = entry_key(disp[i].kind, disp[i].ref);
+            float ox, oy;
+            cell_offset(state->surface_w, state->surface_h, r, &ox, &oy);
+            ZAnimated *cx = z_animated_keyed(app, KEY_X(base), ox);
+            ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), oy);
+            if (!frozen) {
+                spring_to(cx, ox);  // ease toward the packed slot (live reflow)
+                spring_to(cy, oy);
+            }
+            ZView cell = entry_view(app, state, &disp[i], r);
+            cells.children[ck++] = OffsetXYAnimated(cx, cy, cell);
         }
-        cells.children[ck++] = placed(state->surface_w, state->surface_h, r,
-                                      cell);
     }
     ZView cells_layer = Fill(z_stack(Z_AXIS_DEPTH, &cells));
 
@@ -1102,18 +1295,31 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             .spacing = 0, .padding = 20, .align = Z_ALIGN_CENTER));
     }
 
-    // The lifted ghost: the held item's content, drawn on top, centred on the
-    // finger. Non-interactive; placement is static from the ghost centre.
+    // The lifted ghost: the held item's content, drawn on top via its shared
+    // keyed x/y cell. While HELD the cell is locked to the finger; on release it
+    // springs into the committed slot (landing) and, once settled, hands off to
+    // the item's normal cell (same key) with no jump. Non-interactive.
     ZView ghost = NULL;
-    if (state->rearrange && state->held) {
+    if (state->rearrange && special) {
         int cw, ch;
         entry_span(&held, &cw, &ch);
         float s = cell_side(state->surface_w);
-        ZRect gr;
+        ZRect gr = {0};
         gr.w = cw * s + (cw - 1) * GRID_GAP;
         gr.h = ch * s + (ch - 1) * GRID_GAP;
-        gr.x = state->ghost_x - gr.w / 2.0f;
-        gr.y = state->ghost_y - gr.h / 2.0f;
+        uint64_t base = entry_key(state->held_kind, state->held_ref);
+        ZAnimated *cx = z_animated_keyed(app, KEY_X(base), 0.0f);
+        ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), 0.0f);
+        if (state->held) {
+            // Track the finger: lock the shared cell to the finger-centred offset.
+            gr.x = state->ghost_x - gr.w / 2.0f;
+            gr.y = state->ghost_y - gr.h / 2.0f;
+            float fx, fy;
+            cell_offset(state->surface_w, state->surface_h, gr, &fx, &fy);
+            z_animated_pin(cx, fx);  // pin to the finger (pan already invalidated)
+            z_animated_pin(cy, fy);
+        }
+        // (landing: cx/cy are springing toward the slot; just read them.)
         ZView gc = (held.kind == HE_WIDGET)
             ? widget_cell_content(app, held.ref)
             : app_cell_content(&g_apps[held.ref]);
@@ -1125,7 +1331,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                 Fill(gc),
                 .align = Z_ALIGN_CENTER));
         ghost = Fill(ZStack(
-            placed(state->surface_w, state->surface_h, gr, lifted),
+            OffsetXYAnimated(cx, cy, lifted),
             .align = Z_ALIGN_LEADING));
     }
 

@@ -514,11 +514,13 @@ static void render(ZApp *app) {
     app->ui.cur = &app->ui.implicit;
     app->ui.implicit.anim_cursor = 0;
     app->ui.implicit.scroll_cursor = 0;
+    z_keyed_frame_begin(&app->ui.implicit);
     app->ui.transitioning = false;   // the Navigator re-asserts this if mid-slide
 
     ZView old_root = app->root;
     app->tick_want = 0.0;   // widgets re-declare their cadence each build
     ZView new_root = app->body(app, app->state);
+    z_keyed_frame_end(&app->ui.implicit);  // GC keyed cells no view requested
 
     // Widget heartbeat: (re)arm the repeating tick from what this build asked for
     // (the shortest z_tick_every cadence). Only re-seed the deadline when the beat

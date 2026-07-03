@@ -401,11 +401,30 @@ typedef enum ZSpring {
 } ZSpring;
 
 ZAnimated *z_animated_value(ZApp *app, float initial);
+
+// A retained animated value keyed by an explicit IDENTITY (uint64_t), not by call
+// order. Unlike z_animated_value (which maps the Nth call in a body to the Nth
+// cell), this looks the cell up by `key`, so a value keeps its identity across
+// rebuilds even when its position in the body changes every frame — the correct
+// primitive for a reorderable list where each item must carry its own spring. A
+// cell not requested during a build is garbage-collected, so removed items free
+// their cell. `initial` is used only on the first request for a given key.
+ZAnimated *z_animated_keyed(ZApp *app, uint64_t key, float initial);
+
 void z_animated_set(ZAnimated *v, float to);        // jump (no animation)
+void z_animated_pin(ZAnimated *v, float to);        // jump, without waking the loop
 void z_animated_spring(ZAnimated *v, float to);      // spring toward `to`
 float z_animated_get(const ZAnimated *v);            // current value
+float z_animated_target(const ZAnimated *v);         // where it's springing to
+bool z_animated_active(const ZAnimated *v);          // still springing?
 
 void z_with_animation(ZApp *app, ZSpring spring, ZAction change);
+
+// Advance every retained spring/fling by dt seconds; returns true while anything
+// is still in motion. The frame loop calls this each frame, so apps rarely need
+// it — but a headless test can call it to step motion deterministically (e.g. to
+// catch a mid-flight reorder in a still screenshot).
+bool z_anim_tick(ZApp *app, float dt);
 
 // Bind an animated value to a horizontal translation: the subtree is shifted by
 // (z_animated_get(x), y). Use for gesture-driven drags and screen transitions.
@@ -418,6 +437,13 @@ ZView Offset(ZAnimated *x, float y, ZView view);
 // centres its children. Composes with Offset (both add into the node's
 // translation), so an animated ghost can sit on top of a statically-placed cell.
 ZView OffsetXY(float x, float y, ZView view);
+
+// Bind an animated value to EACH axis of a subtree's translation — the 2-D
+// counterpart to Offset (which animates x only). Either pointer may be NULL to
+// leave that axis unshifted. The bento reorder uses this so a cell whose packed
+// slot changes slides diagonally (both axes spring) rather than teleporting;
+// pair it with z_animated_keyed cells so each item's spring survives reorders.
+ZView OffsetXYAnimated(ZAnimated *x, ZAnimated *y, ZView view);
 
 // ---------------------------------------------------------------------------
 // Navigation.

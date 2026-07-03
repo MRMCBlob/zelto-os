@@ -88,6 +88,12 @@ ZView OffsetXY(float x, float y, ZView view) {
     return view;
 }
 
+ZView OffsetXYAnimated(ZAnimated *x, ZAnimated *y, ZView view) {
+    view->off_x += x ? z_animated_get(x) : 0.0f;
+    view->off_y += y ? z_animated_get(y) : 0.0f;
+    return view;
+}
+
 // --- Scroll container -----------------------------------------------------
 static ZView new_node(ZKind kind) {
     struct ZNode *n = z_arena_alloc(z_build_arena, sizeof(*n));

@@ -89,7 +89,9 @@ ZView z_navigator(ZApp *app, const ZNavOpts *opts) {
         ui->cur = s;
         s->anim_cursor = 0;
         s->scroll_cursor = 0;
+        z_keyed_frame_begin(s);
         ZView v = s->fn(app, s->props);
+        z_keyed_frame_end(s);
         ui->cur = prev;
 
         v->fill = true;
