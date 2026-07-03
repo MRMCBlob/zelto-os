@@ -396,6 +396,18 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     s->pull = z_animated_value(app, 0.0f);
     ensure_qs(s);
 
+    // Headless test hook: ZELTO_SHADE_OPEN=1 seeds the panel fully pulled down on
+    // the first build, so the expanded quick-settings + notifications shade is
+    // screenshot-verifiable without driving a (flaky) down-swipe. Read once.
+    static bool shade_open_applied = false;
+    if (!shade_open_applied) {
+        shade_open_applied = true;
+        const char *so = getenv("ZELTO_SHADE_OPEN");
+        if (so && so[0] == '1') {
+            z_animated_set(s->pull, 1.0f);
+        }
+    }
+
     float pull_v = z_animated_get(s->pull);
     // The surface is ALWAYS the full area below the bar (anchored top+bottom), so
     // its size never changes mid-gesture — idle pass-through is done by shrinking

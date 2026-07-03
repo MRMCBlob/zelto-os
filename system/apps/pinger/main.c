@@ -12,6 +12,7 @@
 // z_on_notification_action, and the UI shows the last tapped action — proof the
 // round-trip closed. Maps a plain xdg_toplevel below the bar.
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <zelto/ui.h>
 
@@ -19,6 +20,7 @@ typedef struct PingerState {
     int posts;              // how many notifications we've posted
     bool got_action;        // has an action come back?
     char last_action[64];   // the last action id tapped in the shade
+    bool autopost_armed;    // headless: auto-post scheduled once
 } PingerState;
 
 // Post a heads-up notification: body + tap_route deep link + one action button.
@@ -42,10 +44,25 @@ static void on_action(ZApp *app, const ZNotifyActionEvent *e, void *ud) {
     z_invalidate(app);
 }
 
+// Headless test hook: fire one post shortly after launch (ZELTO_PINGER_POST=1) so
+// the shade banner is screenshot-verifiable without a real "Post" tap. Paired with
+// consent auto-allow (ZELTO_CONSENT_AUTO), the whole post->grant->banner path runs.
+static void autopost_timer(ZApp *app, void *ud) {
+    post_ping(app, ud);
+}
+
 static ZView pinger_body(ZApp *app, PingerState *state) {
     // Register the action receiver on the first build (libzelto buffers any
     // action delivered before this runs, as for intents).
     z_on_notification_action(app, on_action, state);
+
+    if (!state->autopost_armed) {
+        state->autopost_armed = true;
+        const char *ap = getenv("ZELTO_PINGER_POST");
+        if (ap && ap[0] == '1') {
+            z_after(app, 900, autopost_timer, state);
+        }
+    }
 
     ZColor panel_bg = state->got_action ? Z_COLOR_SUCCESS_DIM
                                          : Z_COLOR_SURFACE_2;

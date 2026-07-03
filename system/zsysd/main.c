@@ -348,7 +348,14 @@ static bool show_consent(const char *app_id, const char *perm) {
         return false;
     }
     if (pid == 0) {
-        execl(CONSENT_BIN, "zelto-consent", app_id, perm, (char *)NULL);
+        // The desktop sim runs apps from the host build tree, not the image, so
+        // the consent helper isn't at CONSENT_BIN there; ZELTO_CONSENT_BIN points
+        // at the build-host binary (the ZELTO_RECENTS_BIN idiom the nav bar uses).
+        const char *bin = getenv("ZELTO_CONSENT_BIN");
+        if (!bin || !bin[0]) {
+            bin = CONSENT_BIN;
+        }
+        execl(bin, "zelto-consent", app_id, perm, (char *)NULL);
         _exit(2);
     }
     int status = 0;

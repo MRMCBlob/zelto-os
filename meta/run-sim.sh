@@ -185,6 +185,10 @@ done
 # Launch the shell in the same order /init does (minus the kernel/udev/net/binder
 # bring-up, which the desktop already provides). Each piece is a client of zcomp.
 spawn() { [ -x "$1" ] && { "$@" & PIDS+=($!); }; }
+# zsysd forks the consent dialog on a permission prompt by absolute path; on the
+# device that's /usr/bin/zelto-consent, uninstalled here — point it at the build
+# binary (the ZELTO_RECENTS_BIN idiom) so prompts resolve instead of auto-denying.
+export ZELTO_CONSENT_BIN="$SYS/consent/zelto-consent"
 spawn "$SYS/zsysd/zsysd"
 spawn "$SYS/bar/zelto-bar"
 # The nav bar's Recents button fork/execs the recents overlay by absolute path,
@@ -200,13 +204,40 @@ spawn "$SYS/volume/zelto-volume"
 sleep 1
 spawn "$SYS/launcher/zelto-launcher"
 
+# Resolve a binary by name (or accept an absolute path) under the host build.
+resolve_bin() {
+    if [ -x "$1" ]; then echo "$1"; return; fi
+    find "$BUILD/system" "$BUILD/samples" -type f -name "$1" -perm -u+x 2>/dev/null | head -1
+}
+
 # Optional: auto-launch an app (name like "zelto-notepad", or a full path), handy
 # for a headless screenshot of a specific app without scripting a tile tap.
 if [ -n "${SIM_APP:-}" ]; then
-    APP="$SIM_APP"
-    [ -x "$APP" ] || APP="$(find "$BUILD/system" "$BUILD/samples" -type f -name "$SIM_APP" -perm -u+x 2>/dev/null | head -1)"
     sleep 2
-    spawn "$APP"
+    spawn "$(resolve_bin "$SIM_APP")"
+fi
+
+# Optional (shots harness): extra apps to leave running — a space-separated list of
+# binary names — so a populated Recents / task switcher can be captured. Each is an
+# ordinary xdg toplevel; they stack behind whatever overlay is spawned below.
+if [ -n "${SIM_EXTRA:-}" ]; then
+    sleep 1
+    for name in $SIM_EXTRA; do spawn "$(resolve_bin "$name")"; done
+fi
+
+# Optional (shots harness): spawn the Recents overlay last so it composites over the
+# running apps (SIM_EXTRA populates the list it shows).
+if [ "${SIM_RECENTS:-0}" = "1" ]; then
+    sleep 1
+    spawn "$SYS/recents/zelto-recents"
+fi
+
+# Optional (shots harness): spawn the permission-consent overlay standalone with
+# "<app_id> <perm>" — the modal card the broker normally forks, captured directly.
+if [ -n "${SIM_CONSENT:-}" ]; then
+    sleep 1
+    # shellcheck disable=SC2086
+    spawn "$SYS/consent/zelto-consent" $SIM_CONSENT
 fi
 
 # Headless + SHOT: give it a moment to render, grab a PNG with grim, then exit —

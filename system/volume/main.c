@@ -112,6 +112,17 @@ static ZView vol_body(ZApp *app, VolState *s) {
         s->subscribed = true;
         z_settings_observe(app, on_changed, s);
     }
+    // Headless test hook: ZELTO_VOLUME_SHOW=1 pops the HUD on the first build (at
+    // the seeded sys.volume/mute level) without needing a media-key/settings change
+    // to fire the observer, so the rocker is screenshot-verifiable deterministically.
+    static bool vol_show_applied = false;
+    if (!vol_show_applied) {
+        vol_show_applied = true;
+        const char *vs = getenv("ZELTO_VOLUME_SHOW");
+        if (vs && vs[0] == '1') {
+            s->visible = true;
+        }
+    }
     // Never catch input — the HUD is display-only; taps fall through.
     z_layer_set_input_none(app);
 

@@ -17,6 +17,7 @@
 typedef struct ConsentState {
     const char *app_id;
     const char *perm;
+    bool armed;   // headless auto-resolve scheduled once
 } ConsentState;
 
 // Buttons resolve the dialog by the process exit code zsysd reads.
@@ -25,6 +26,15 @@ static void on_allow(ZApp *app, void *state) {
     (void)state;
     exit(0);
 }
+
+// Headless test hook: ZELTO_CONSENT_AUTO=allow|deny resolves the dialog on its own
+// a beat after it renders, so the post->grant->banner path completes without a real
+// Allow tap. Unset (the default) leaves the dialog up — that IS the consent shot.
+static void auto_resolve(ZApp *app, void *ud) {
+    (void)app;
+    const char *mode = ud;
+    exit(mode && mode[0] == 'd' ? 1 : 0);
+}
 static void on_deny(ZApp *app, void *state) {
     (void)app;
     (void)state;
@@ -32,7 +42,13 @@ static void on_deny(ZApp *app, void *state) {
 }
 
 static ZView consent_body(ZApp *app, ConsentState *s) {
-    (void)app;
+    if (!s->armed) {
+        s->armed = true;
+        char *mode = getenv("ZELTO_CONSENT_AUTO");
+        if (mode && mode[0]) {
+            z_after(app, 400, auto_resolve, mode);
+        }
+    }
     // The modal card: title, the "<app> wants to use the <perm>" line, and the
     // Deny / Allow actions (tinted via Background over the default button fill).
     ZView card = Background(Z_COLOR_SURFACE,

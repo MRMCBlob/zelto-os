@@ -1279,6 +1279,12 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             state->page = p;
             z_animated_set(state->page_anim, (float)p);
         }
+        // ZELTO_HOME_DRAWER=1 seeds the app drawer fully open on the first build,
+        // so the slid-up all-apps panel is screenshot-verifiable without a swipe.
+        const char *dr = getenv("ZELTO_HOME_DRAWER");
+        if (dr && dr[0] == '1') {
+            z_animated_set(state->drawer_anim, 1.0f);
+        }
         const char *rr = getenv("ZELTO_HOME_REARRANGE");
         if (rr && rr[0] == '1' && g_n_home > 0) {
             state->rearrange = true;

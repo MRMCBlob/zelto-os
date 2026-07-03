@@ -23,6 +23,7 @@
 // screen shows its own passcode keypad, never the app's keyboard (and text-input
 // focus is dropped under the lock anyway). See docs/platform/soft-keyboard.md.
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zelto/ui.h>
@@ -200,6 +201,17 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         s->inited = true;
         s->anim = z_animated_value(app, 0.0f);
         z_im_bind(app, on_show, on_hide, s);
+        // Headless test hook: ZELTO_KBD_SHOW=1 raises the keyboard on the first
+        // build (without a real text-input focus handshake) so the QWERTY layout is
+        // screenshot-verifiable. Keys go nowhere with no focused field — this is a
+        // layout capture only. ZELTO_KBD_SYMBOLS=1 shows the symbols layer instead.
+        const char *ks = getenv("ZELTO_KBD_SHOW");
+        if (ks && ks[0] == '1') {
+            s->visible = true;
+            s->symbols = getenv("ZELTO_KBD_SYMBOLS") &&
+                         getenv("ZELTO_KBD_SYMBOLS")[0] == '1';
+            z_animated_set(s->anim, 1.0f);
+        }
     }
 
     // Reserve our height only while shown (app shrinks to keep the field above
