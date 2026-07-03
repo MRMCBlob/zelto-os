@@ -311,7 +311,7 @@ ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
 // pinned above the field) while a selection is live.
 static void sel_copy(ZApp *app, void *s) { (void)s; z_field_copy(app); }
 static void sel_cut(ZApp *app, void *s) { (void)s; z_field_cut(app); }
-static void sel_paste(ZApp *app, void *s) { (void)s; z_field_dbg_insert(app); }
+static void sel_paste(ZApp *app, void *s) { (void)s; z_field_paste(app); }
 static void sel_all(ZApp *app, void *s) { (void)s; z_field_select_all(app); }
 
 ZView z_selection_bar(ZApp *app) {
