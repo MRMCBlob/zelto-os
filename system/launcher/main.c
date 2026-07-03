@@ -19,6 +19,19 @@
 // is 2-D packing. Cells are placed absolutely inside one depth ZStack via the
 // SDK's OffsetXY (a plain ZStack only centres its children).
 //
+// HORIZONTAL PAGING (P29). The bento grid is a carousel of PAGES: each page is a
+// GRID_COLS x rows_per_page() grid, and the pack spills overflow onto the next
+// page (pack_home_paged). Pages are a PURE FUNCTION of the pack — never stored;
+// the one home.layout CSV still owns the whole arrangement. The cells layer is a
+// depth ZStack of per-page subtrees, each translated by (page - page_anim) *
+// width so the carousel slides RIGIDLY on a flip (the page translation is kept
+// OUT of the per-cell springs, which only ease the within-page reflow). A page-
+// dots indicator sits above the bottom bar. Off rearrange, a horizontal swipe
+// flips pages (paged snap on release); in rearrange, holding a lifted item in an
+// edge gutter flips the page mid-drag (edge-dwell timer) so an item can be
+// carried across a page boundary — the ghost stays finger-tracked in viewport
+// coords the whole time, and the target index folds in the current page.
+//
 // DIRECT MANIPULATION. Press-and-hold any item to enter *rearrange mode*: a
 // faint alignment raster appears over the grid, the pressed item lifts under the
 // finger (a ghost drawn on top), tap-to-launch is suppressed, and each item
@@ -32,8 +45,8 @@
 // RETAINED-CELL IDENTITY. z_animated_value cells are keyed by CALL ORDER, and
 // the sequence's call order changes every reorder — so only the single lifted
 // ghost is animated (one z_animated_value at a FIXED position alongside
-// drawer_anim, both unconditional and first); the other items express their
-// reflow purely through their packed grid position each rebuild. The whole home
+// drawer_anim + page_anim, all unconditional and first); the other items express
+// their reflow purely through their packed grid position each rebuild. The home
 // surface's pan is routed through ONE stable handler (on_home_pan) that resolves
 // "which item is held" + "target index" from launcher state, never by
 // dereferencing an arena node (the P17 shade bug).
@@ -407,11 +420,17 @@ static void ensure_home_layout(void) {
 }
 
 // --- bento grid geometry --------------------------------------------------
+// The home is a horizontal carousel of PAGES. Each page is a GRID_COLS-wide,
+// rows_per_page()-tall bento grid; the ordered sequence flow-packs across pages
+// (overflow spills to the next page). Pages are a PURE FUNCTION of the pack —
+// never persisted — so the one home.layout CSV still owns the whole arrangement.
 #define GRID_COLS 4
 #define GRID_GAP 16.0f
 #define GRID_PAD 20.0f
 #define GRID_TOP 20.0f
-#define MAX_ROWS 20
+#define MAX_ROWS 20              // per-page occupancy height cap
+#define MAX_PAGES 8              // carousel cap
+#define BOTTOM_RESERVE 132.0f    // px kept for the page dots + drawer handle / Done
 #define ICON_SIZE 104.0f
 #define ICON_RADIUS 24.0f
 #define ICON_INSET 20.0f
@@ -420,6 +439,28 @@ static float cell_side(float surface_w) {
     float w = surface_w > 1.0f ? surface_w : 720.0f;
     float inner = w - 2.0f * GRID_PAD;
     return (inner - (GRID_COLS - 1) * GRID_GAP) / (float)GRID_COLS;
+}
+
+// Rows a single page holds: as many whole cells as fit above BOTTOM_RESERVE.
+// ZELTO_HOME_ROWS_PER_PAGE forces it (small pages make overflow easy to test).
+static int rows_per_page(float sw, float sh) {
+    static int override_rows = -2;   // -2 = env unread
+    if (override_rows == -2) {
+        const char *e = getenv("ZELTO_HOME_ROWS_PER_PAGE");
+        override_rows = (e && e[0]) ? atoi(e) : -1;
+    }
+    int r;
+    if (override_rows > 0) {
+        r = override_rows;
+    } else {
+        float s = cell_side(sw);
+        float avail = (sh > 1.0f ? sh : 1440.0f) - GRID_TOP - BOTTOM_RESERVE +
+                      GRID_GAP;
+        r = (int)floorf(avail / (s + GRID_GAP));
+    }
+    if (r < 2) r = 2;             // must fit the tallest widget (clock is 2 rows)
+    if (r > MAX_ROWS) r = MAX_ROWS;
+    return r;
 }
 
 static void entry_span(const HomeEntry *e, int *cw, int *ch) {
@@ -435,58 +476,73 @@ static void entry_span(const HomeEntry *e, int *cw, int *ch) {
     if (*ch < 1) *ch = 1;
 }
 
-// A packed cell: which sequence entry, and where (in cells).
+// A packed cell: which sequence entry, and where — page + (col,row) WITHIN that
+// page (row is page-local, 0..rows_per_page-1).
 typedef struct Placed {
-    int col, row, cw, ch;
+    int page, col, row, cw, ch;
 } Placed;
 
-// First-fit occupancy pack of `seq` into the column grid. Fills `out[i]` per
-// entry; returns the number of rows used.
-static int pack_home(const HomeEntry *seq, int n, Placed *out) {
-    static bool occ[MAX_ROWS][GRID_COLS];
+// First-fit occupancy pack of `seq` across the paged grid: each page is a fresh
+// GRID_COLS x rpp occupancy; an entry that doesn't fit the current page spills
+// to the next (a widget never straddles a page boundary). Fills `out[i]` per
+// entry; returns the PAGE COUNT (>=1).
+static int pack_home_paged(const HomeEntry *seq, int n, int rpp, Placed *out) {
+    static bool occ[MAX_PAGES][MAX_ROWS][GRID_COLS];
     memset(occ, 0, sizeof(occ));
-    int used = 0;
+    if (rpp > MAX_ROWS) rpp = MAX_ROWS;
+    int max_page = 0;
     for (int i = 0; i < n; i++) {
         int cw, ch;
         entry_span(&seq[i], &cw, &ch);
-        int pr = -1, pc = -1;
-        for (int r = 0; r + ch <= MAX_ROWS && pr < 0; r++) {
-            for (int c = 0; c + cw <= GRID_COLS; c++) {
-                bool ok = true;
-                for (int dr = 0; dr < ch && ok; dr++) {
-                    for (int dc = 0; dc < cw && ok; dc++) {
-                        if (occ[r + dr][c + dc]) {
-                            ok = false;
+        if (ch > rpp) ch = rpp;   // clamp a too-tall widget to one page
+        int pg = -1, pr = -1, pc = -1;
+        for (int p = 0; p < MAX_PAGES && pg < 0; p++) {
+            for (int r = 0; r + ch <= rpp && pg < 0; r++) {
+                for (int c = 0; c + cw <= GRID_COLS; c++) {
+                    bool ok = true;
+                    for (int dr = 0; dr < ch && ok; dr++) {
+                        for (int dc = 0; dc < cw && ok; dc++) {
+                            if (occ[p][r + dr][c + dc]) {
+                                ok = false;
+                            }
                         }
                     }
-                }
-                if (ok) {
-                    pr = r;
-                    pc = c;
-                    break;
+                    if (ok) {
+                        pg = p;
+                        pr = r;
+                        pc = c;
+                        break;
+                    }
                 }
             }
         }
-        if (pr < 0) {
+        if (pg < 0) {
+            pg = 0;
             pr = 0;
             pc = 0;
         }
         for (int dr = 0; dr < ch; dr++) {
             for (int dc = 0; dc < cw; dc++) {
                 if (pr + dr < MAX_ROWS && pc + dc < GRID_COLS) {
-                    occ[pr + dr][pc + dc] = true;
+                    occ[pg][pr + dr][pc + dc] = true;
                 }
             }
         }
-        out[i] = (Placed){pc, pr, cw, ch};
-        if (pr + ch > used) {
-            used = pr + ch;
+        out[i] = (Placed){pg, pc, pr, cw, ch};
+        if (pg > max_page) {
+            max_page = pg;
         }
     }
-    return used;
+    return max_page + 1;
 }
 
-// Pixel rect of a packed cell within the surface (top-left origin).
+// The global (across-page) slot of a packed cell — its ordering key.
+static int placed_slot(const Placed *p, int rpp) {
+    return (p->page * rpp + p->row) * GRID_COLS + p->col;
+}
+
+// Pixel rect of a packed cell within ITS page (top-left page origin). The page's
+// horizontal translation is applied at the page-subtree level, not here.
 static ZRect cell_rect(float sw, int col, int row, int cw, int ch) {
     float s = cell_side(sw);
     ZRect r;
@@ -505,24 +561,27 @@ static void cell_offset(float sw, float sh, ZRect r, float *ox, float *oy) {
     *oy = r.y - (sh - r.h) / 2.0f;
 }
 
-// The single grid slot (row*COLS+col) the ghost centre currently hovers.
-static int ghost_slot(float sw, float gx, float gy) {
+// The GLOBAL grid slot the ghost centre hovers, folding in the page it is over:
+// the ghost is drawn in viewport (current-page) coordinates, so map its local
+// (col,row) then offset by `page` worth of rows. This is what lets the target
+// index cross a page boundary once the carousel has flipped mid-drag.
+static int ghost_slot(float sw, float gx, float gy, int rpp, int page) {
     float s = cell_side(sw);
     int col = (int)floorf((gx - GRID_PAD) / (s + GRID_GAP));
     int row = (int)floorf((gy - GRID_TOP) / (s + GRID_GAP));
     if (col < 0) col = 0;
     if (col > GRID_COLS - 1) col = GRID_COLS - 1;
     if (row < 0) row = 0;
-    if (row > MAX_ROWS - 1) row = MAX_ROWS - 1;
-    return row * GRID_COLS + col;
+    if (row > rpp - 1) row = rpp - 1;
+    return (page * rpp + row) * GRID_COLS + col;
 }
 
 // Insertion index for the held item in a reduced (held-removed) sequence whose
-// packed cells are `pl`: count the items whose start slot precedes the ghost's.
-static int target_index(const Placed *pl, int n, int gslot) {
+// packed cells are `pl`: count the items whose global slot precedes the ghost's.
+static int target_index(const Placed *pl, int n, int gslot, int rpp) {
     int idx = 0;
     for (int i = 0; i < n; i++) {
-        int s = pl[i].row * GRID_COLS + pl[i].col;
+        int s = placed_slot(&pl[i], rpp);
         if (s < gslot) {
             idx = i + 1;
         } else {
@@ -536,7 +595,15 @@ static int target_index(const Placed *pl, int n, int gslot) {
 typedef struct LauncherState {
     ZAnimated *drawer_anim;   // 0 hidden below the fold .. 1 covering home (cell 0)
     ZAnimated *ghost_anim;    // lifted ghost's x (cell 1) — the ONLY reorder anim
+    ZAnimated *page_anim;     // carousel scroll position, in page units (cell 2)
     float surface_w, surface_h;
+
+    // Horizontal pager.
+    int page;                 // current settled page (integer)
+    int npages;               // page count from the last build
+    int pan_axis;             // gesture axis lock: 0 undecided, 1 horiz, 2 vert
+    float page_base;          // page_anim value at pan begin (for horiz drags)
+    int dwell_edge;           // cross-page edge-gutter dwell: -1 none, 0 L, 1 R
 
     // Wallpaper (P25).
     bool wp_subscribed;
@@ -556,6 +623,7 @@ typedef struct LauncherState {
     int test_anim_frames;     // spring steps to advance before the shot (0 = off)
     bool test_landing;        // stage a ghost snap-back rather than a reflow
     bool test_seeded;         // one-shot: springs seeded + stepped
+    bool test_page_seeded;    // one-shot: page-flip spring seeded + stepped
 
     // Transient toast.
     double toast_until;
@@ -644,6 +712,8 @@ static void exit_rearrange(ZApp *app, void *state) {
     s->rearrange = false;
     s->held = false;
     s->landing = false;
+    s->dwell_edge = -1;
+    z_after_cancel(app);
     write_home_csv();
     z_full_repaint(app);
     z_invalidate(app);
@@ -691,10 +761,16 @@ static void on_drawer_add(ZApp *app, void *state, void *data, float x,
 }
 
 // Hit-test a surface point to a g_home index (for drag-any in rearrange mode).
+// The point is in viewport (current-page) coordinates, so only entries packed
+// onto the page currently in view are candidates.
 static int hit_test_home(LauncherState *s, float x, float y) {
     static Placed pl[MAX_HOME];
-    pack_home(g_home, g_n_home, pl);
+    int rpp = rows_per_page(s->surface_w, s->surface_h);
+    pack_home_paged(g_home, g_n_home, rpp, pl);
     for (int i = 0; i < g_n_home; i++) {
+        if (pl[i].page != s->page) {
+            continue;
+        }
         ZRect r = cell_rect(s->surface_w, pl[i].col, pl[i].row, pl[i].cw,
                             pl[i].ch);
         if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
@@ -719,9 +795,10 @@ static void commit_reorder(LauncherState *s) {
         }
     }
     static Placed pl[MAX_HOME];
-    pack_home(reduced, nr, pl);
-    int gs = ghost_slot(s->surface_w, s->ghost_x, s->ghost_y);
-    int ti = target_index(pl, nr, gs);
+    int rpp = rows_per_page(s->surface_w, s->surface_h);
+    pack_home_paged(reduced, nr, rpp, pl);
+    int gs = ghost_slot(s->surface_w, s->ghost_x, s->ghost_y, rpp, s->page);
+    int ti = target_index(pl, nr, gs, rpp);
     if (ti > nr) {
         ti = nr;
     }
@@ -753,7 +830,14 @@ static void ghost_land(ZApp *app, LauncherState *s) {
         return;
     }
     static Placed pl[MAX_HOME];
-    pack_home(g_home, g_n_home, pl);
+    int rpp = rows_per_page(s->surface_w, s->surface_h);
+    pack_home_paged(g_home, g_n_home, rpp, pl);
+    // The ghost snaps back in viewport coords, so make sure the page it landed on
+    // is the one in view (a cross-page drop may have parked it elsewhere).
+    if (pl[idx].page != s->page && s->page_anim) {
+        s->page = pl[idx].page;
+        z_animated_spring(s->page_anim, (float)pl[idx].page);
+    }
     ZRect r = cell_rect(s->surface_w, pl[idx].col, pl[idx].row, pl[idx].cw,
                         pl[idx].ch);
     float ox, oy;
@@ -771,11 +855,54 @@ static float clamp01(float a) {
     return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
 }
 
+// Spring the carousel to page `p` (clamped) and record it as the settled page.
+static void snap_to_page(ZApp *app, LauncherState *s, int p) {
+    int maxp = s->npages > 0 ? s->npages - 1 : 0;
+    if (p < 0) p = 0;
+    if (p > maxp) p = maxp;
+    s->page = p;
+    if (s->page_anim) {
+        z_animated_spring(s->page_anim, (float)p);
+    }
+    z_full_repaint(app);
+    z_invalidate(app);
+}
+
+#define EDGE_GUTTER 52.0f    // px band at each screen edge that arms a page flip
+#define EDGE_DWELL_MS 420    // hold there this long to flip to the neighbour page
+
+// Cross-page drag: while an item is held in an edge gutter, this one-shot fires
+// after the dwell, flips to the neighbouring page and — if the finger is still
+// in the gutter — re-arms itself so a sustained hold keeps paging. Driven by the
+// z_after timer (not an arena node) so it can never leak across a rebuild; the
+// pan handler cancels it the moment the finger leaves the gutter.
+static void on_edge_dwell(ZApp *app, void *ud) {
+    LauncherState *s = ud;
+    if (!s->rearrange || !s->held || s->dwell_edge < 0) {
+        return;
+    }
+    int target = s->page + (s->dwell_edge == 1 ? 1 : -1);
+    // Allow paging one past the last used page (drop onto a fresh page).
+    int maxp = s->npages < MAX_PAGES ? s->npages : MAX_PAGES - 1;
+    if (target < 0 || target > maxp) {
+        return;
+    }
+    s->page = target;
+    if (s->page_anim) {
+        z_animated_spring(s->page_anim, (float)target);
+    }
+    z_after(app, EDGE_DWELL_MS, on_edge_dwell, s);   // keep paging if still held
+    z_full_repaint(app);
+    z_invalidate(app);
+}
+
 // --- pan: the single home-surface handler ---------------------------------
-// Not in rearrange mode: an up-swipe pulls the app drawer up (as before). In
-// rearrange mode: a drag lifts/moves the item under the finger (ghost follows),
-// recomputing the target slot; release commits. Which item is held + the target
-// are resolved from state, never from an arena node (the P17 shade bug).
+// Everything the home surface does is routed through THIS one handler; which
+// behaviour runs is resolved from launcher state, never from an arena node (the
+// P17 shade bug). In rearrange mode a drag lifts/moves the held item (ghost
+// follows) and an edge-gutter dwell flips pages mid-drag. Otherwise the gesture
+// axis is locked on first motion: a horizontal drag flips carousel pages (paged
+// snap on release), a vertical up-swipe pulls the app drawer up.
 static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
     LauncherState *s = state;
 
@@ -789,6 +916,7 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
                     s->held_ref = g_home[hi].ref;
                 }
             }
+            s->dwell_edge = -1;
             s->ghost_x = e->x;
             s->ghost_y = e->y;
             if (s->ghost_anim) {
@@ -802,9 +930,28 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
             if (s->ghost_anim) {
                 z_animated_set(s->ghost_anim, e->x);
             }
+            // Edge-gutter dwell → arm/cancel the cross-page flip timer.
+            float w = s->surface_w > 1.0f ? s->surface_w : 1.0f;
+            int edge = -1;
+            if (s->held) {
+                if (e->x < EDGE_GUTTER) {
+                    edge = 0;
+                } else if (e->x > w - EDGE_GUTTER) {
+                    edge = 1;
+                }
+            }
+            if (edge != s->dwell_edge) {
+                s->dwell_edge = edge;
+                z_after_cancel(app);
+                if (edge >= 0) {
+                    z_after(app, EDGE_DWELL_MS, on_edge_dwell, s);
+                }
+            }
             z_full_repaint(app);
             z_invalidate(app);
         } else if (e->phase == Z_PAN_END) {
+            s->dwell_edge = -1;
+            z_after_cancel(app);
             if (s->held) {
                 commit_reorder(s);
                 ghost_land(app, s);  // spring the ghost into its committed slot
@@ -815,16 +962,49 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
         return;
     }
 
-    if (!s->drawer_anim) {
+    if (!s->drawer_anim || !s->page_anim) {
         return;
     }
     float h = s->surface_h > 1.0f ? s->surface_h : 1.0f;
-    if (e->phase == Z_PAN_CHANGED) {
-        z_animated_set(s->drawer_anim, clamp01(-e->translation_y / h));
+    float w = s->surface_w > 1.0f ? s->surface_w : 1.0f;
+    if (e->phase == Z_PAN_BEGIN) {
+        s->pan_axis = 0;
+        s->page_base = z_animated_get(s->page_anim);
+    } else if (e->phase == Z_PAN_CHANGED) {
+        if (s->pan_axis == 0) {   // lock the axis on the first real motion
+            float ax = fabsf(e->translation_x), ay = fabsf(e->translation_y);
+            if (ax > 8.0f && ax >= ay) {
+                s->pan_axis = 1;
+            } else if (ay > 8.0f) {
+                s->pan_axis = 2;
+            }
+        }
+        if (s->pan_axis == 1) {
+            float p = s->page_base - e->translation_x / w;
+            float maxp = s->npages > 0 ? (float)(s->npages - 1) : 0.0f;
+            if (p < 0.0f) p = 0.0f;
+            if (p > maxp) p = maxp;
+            z_animated_set(s->page_anim, p);
+            z_full_repaint(app);
+            z_invalidate(app);
+        } else if (s->pan_axis == 2) {
+            z_animated_set(s->drawer_anim, clamp01(-e->translation_y / h));
+        }
     } else if (e->phase == Z_PAN_END) {
-        float a = z_animated_get(s->drawer_anim);
-        bool open = a > 0.35f || e->velocity_y < -500.0f;
-        z_animated_spring(s->drawer_anim, open ? 1.0f : 0.0f);
+        if (s->pan_axis == 1) {
+            float p = z_animated_get(s->page_anim);
+            int target = (int)floorf(p + 0.5f);
+            if (e->velocity_x < -600.0f) {
+                target = (int)ceilf(p);     // fling left → next page
+            } else if (e->velocity_x > 600.0f) {
+                target = (int)floorf(p);    // fling right → previous page
+            }
+            snap_to_page(app, s, target);
+        } else if (s->pan_axis == 2) {
+            float a = z_animated_get(s->drawer_anim);
+            bool open = a > 0.35f || e->velocity_y < -500.0f;
+            z_animated_spring(s->drawer_anim, open ? 1.0f : 0.0f);
+        }
     }
 }
 
@@ -999,12 +1179,13 @@ static ZView placed(float sw, float sh, ZRect r, ZView cell) {
     return OffsetXY(r.x - (sw - r.w) / 2.0f, r.y - (sh - r.h) / 2.0f, cell);
 }
 
-// The faint alignment raster: a low-alpha rounded tile at every 1x1 slot across
-// the used rows (plus one spare row to drop into).
+// The faint alignment raster for the CURRENT page: a low-alpha rounded tile at
+// every 1x1 slot across the page's rows. Drawn in viewport coords (no page
+// translation) so it underlays whichever page is centred.
 static ZView raster_layer(LauncherState *s, int rows) {
     ZStackOpts st = {.align = Z_ALIGN_LEADING};
     int k = 0;
-    int rr = rows + 1;
+    int rr = rows;
     if (rr > MAX_ROWS) {
         rr = MAX_ROWS;
     }
@@ -1021,12 +1202,39 @@ static ZView raster_layer(LauncherState *s, int rows) {
     return Fill(z_stack(Z_AXIS_DEPTH, &st));
 }
 
+// The carousel page indicator: one dot per page, the current one bright + larger.
+// `page_v` is the live (fractional) scroll position; the nearest page reads as
+// active mid-flip.
+static ZView page_dots(int npages, float page_v) {
+    int active = (int)floorf(page_v + 0.5f);
+    // Flanking Spacers centre the dots: a bare HStack expands to the full width
+    // and would otherwise pack the dots at the leading edge.
+    ZStackOpts row = {.spacing = 9, .align = Z_ALIGN_CENTER};
+    int k = 0;
+    row.children[k++] = Spacer();
+    for (int i = 0; i < npages && k < Z_MAX_CHILDREN - 1; i++) {
+        bool on = i == active;
+        float d = on ? 9.0f : 7.0f;
+        row.children[k++] = Frame(d, d,
+            CornerRadius(d / 2.0f,
+                Rect(.color = on ? Z_COLOR_TEXT_INV : Z_COLOR_TEXT_MUTED,
+                     .radius = d / 2.0f)));
+    }
+    row.children[k++] = Spacer();
+    return z_stack(Z_AXIS_HORIZONTAL, &row);
+}
+
 // --- body -----------------------------------------------------------------
 static ZView launcher_body(ZApp *app, LauncherState *state) {
-    // Retained hooks FIRST + unconditionally so their identity is stable:
-    // drawer_anim (cell 0) then ghost_anim (cell 1, the only reorder anim).
+    // Retained hooks FIRST + unconditionally so their call-order identity is
+    // stable: drawer_anim (cell 0), ghost_anim (cell 1, the only reorder anim),
+    // page_anim (cell 2, the carousel scroll position in page units). These
+    // three call-order cells sit in a separate namespace from the per-item
+    // z_animated_keyed cells (keyed by identity), so adding page_anim here does
+    // not disturb any item's spring.
     state->drawer_anim = z_animated_value(app, 0.0f);
     state->ghost_anim = z_animated_value(app, 0.0f);
+    state->page_anim = z_animated_value(app, 0.0f);
     state->surface_w = (float)z_app_width(app);
     state->surface_h = (float)z_app_height(app);
     ensure_home_layout();
@@ -1054,8 +1262,23 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     //                            still PNG catches motion (mid-reflow / mid-snap).
     //   ZELTO_HOME_LANDING=1     stage a released ghost mid snap-back (with FRAMES)
     //                            instead of a held mid-reflow.
+    //   ZELTO_HOME_PAGE=<n>      settle the carousel on page n (a still shot of a
+    //                            non-first page, dots included). Also the page the
+    //                            ghost is over for a cross-page-drag shot.
+    //   ZELTO_HOME_ROWS_PER_PAGE=<n> force page height (small = easy overflow).
+    //   ZELTO_HOME_PAGE_FROM=<f> with ANIM_FRAMES>0 (and NOT rearrange): seed the
+    //                            carousel at page f and spring toward ZELTO_HOME_PAGE,
+    //                            then freeze — catches a page-flip mid-slide.
     if (!state->test_applied) {
         state->test_applied = true;
+        const char *pg = getenv("ZELTO_HOME_PAGE");
+        if (pg && pg[0]) {
+            int p = atoi(pg);
+            if (p < 0) p = 0;
+            if (p >= MAX_PAGES) p = MAX_PAGES - 1;
+            state->page = p;
+            z_animated_set(state->page_anim, (float)p);
+        }
         const char *rr = getenv("ZELTO_HOME_REARRANGE");
         if (rr && rr[0] == '1' && g_n_home > 0) {
             state->rearrange = true;
@@ -1068,7 +1291,8 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             state->held_kind = g_home[h].kind;
             state->held_ref = g_home[h].ref;
             static Placed tpl[MAX_HOME];
-            pack_home(g_home, g_n_home, tpl);
+            int rpp = rows_per_page(state->surface_w, state->surface_h);
+            pack_home_paged(g_home, g_n_home, rpp, tpl);
             ZRect hr = cell_rect(state->surface_w, tpl[h].col, tpl[h].row,
                                  tpl[h].cw, tpl[h].ch);
             const char *gx = getenv("ZELTO_HOME_GHOST_X");
@@ -1090,6 +1314,24 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         }
     }
 
+    // Page-flip test seeding (independent of rearrange): seed page_anim at
+    // ZELTO_HOME_PAGE_FROM, spring toward the settled page, step + freeze so a
+    // still PNG catches the carousel mid-slide.
+    if (!state->test_page_seeded) {
+        state->test_page_seeded = true;
+        const char *pf = getenv("ZELTO_HOME_PAGE_FROM");
+        const char *af = getenv("ZELTO_HOME_ANIM_FRAMES");
+        int frames = af ? atoi(af) : 0;
+        if (pf && pf[0] && frames > 0 && !state->rearrange) {
+            z_animated_set(state->page_anim, (float)atof(pf));
+            z_animated_spring(state->page_anim, (float)state->page);
+            for (int f = 0; f < frames; f++) {
+                z_anim_tick(app, 1.0f / 60.0f);
+            }
+            z_animated_pin(state->page_anim, z_animated_get(state->page_anim));
+        }
+    }
+
     // Build the DISPLAY sequence: in rearrange with a held item, splice it out
     // and re-insert at the ghost's target index so the others reflow live.
     HomeEntry disp[MAX_HOME] = {0};
@@ -1107,9 +1349,11 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             }
         }
         static Placed rpl[MAX_HOME];
-        pack_home(reduced, nr, rpl);
-        int gs = ghost_slot(state->surface_w, state->ghost_x, state->ghost_y);
-        int ti = target_index(rpl, nr, gs);
+        int rpp0 = rows_per_page(state->surface_w, state->surface_h);
+        pack_home_paged(reduced, nr, rpp0, rpl);
+        int gs = ghost_slot(state->surface_w, state->ghost_x, state->ghost_y,
+                            rpp0, state->page);
+        int ti = target_index(rpl, nr, gs, rpp0);
         if (ti > nr) {
             ti = nr;
         }
@@ -1129,8 +1373,17 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         }
     }
 
+    int rpp = rows_per_page(state->surface_w, state->surface_h);
     static Placed pl[MAX_HOME];
-    int rows = pack_home(disp, nd, pl);
+    int npages = pack_home_paged(disp, nd, rpp, pl);
+    state->npages = npages;
+    // Clamp the settled page in case the sequence shrank (removal / commit).
+    if (state->page > npages - 1) {
+        state->page = npages - 1;
+    }
+    if (state->page < 0) {
+        state->page = 0;
+    }
 
     // In a headless anim-frame test the springs are stepped then FROZEN (pinned)
     // so a still frame holds the motion; in that mode the live springs are not
@@ -1159,7 +1412,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         state->surface_w > 1.0f) {
         state->test_seeded = true;
         static Placed hpl[MAX_HOME];
-        pack_home(g_home, g_n_home, hpl);  // pre-reflow home layout
+        pack_home_paged(g_home, g_n_home, rpp, hpl);  // pre-reflow home layout
         if (state->landing) {
             uint64_t base = entry_key(state->held_kind, state->held_ref);
             int cw, ch;
@@ -1237,63 +1490,83 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         }
     }
 
-    // The bento cells layer (absolute placement in one depth ZStack). Each cell
-    // renders at its keyed animated offset (springing toward its packed slot) so a
-    // reflow eases rather than jumps. The special (held/landing) item's slot is a
-    // faint placeholder; its content is drawn as the ghost on top.
-    ZStackOpts cells = {.align = Z_ALIGN_LEADING};
-    int ck = 0;
-    for (int i = 0; i < nd && ck < Z_MAX_CHILDREN; i++) {
-        ZRect r = cell_rect(state->surface_w, pl[i].col, pl[i].row, pl[i].cw,
-                            pl[i].ch);
-        if (special && entry_eq(&disp[i], state->held_kind, state->held_ref)) {
-            ZView ph = Frame(r.w, r.h,
-                CornerRadius(ICON_RADIUS,
-                    Rect(.color = z_rgba(0xf4, 0xf7, 0xfb, 0x22),
-                         .radius = ICON_RADIUS)));
-            cells.children[ck++] = placed(state->surface_w, state->surface_h, r,
-                                          ph);
-        } else {
-            uint64_t base = entry_key(disp[i].kind, disp[i].ref);
-            float ox, oy;
-            cell_offset(state->surface_w, state->surface_h, r, &ox, &oy);
-            ZAnimated *cx = z_animated_keyed(app, KEY_X(base), ox);
-            ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), oy);
-            if (!frozen) {
-                spring_to(cx, ox);  // ease toward the packed slot (live reflow)
-                spring_to(cy, oy);
+    // The bento cells layer: ONE depth ZStack of PAGE subtrees laid side by side.
+    // Each page subtree is a full-surface depth stack of its own cells (each at
+    // its keyed animated LOCAL offset, springing toward its packed slot so a
+    // reflow eases), and the page is translated horizontally by (p - page_v) *
+    // surface_w so the whole carousel slides RIGIDLY on a flip — the page
+    // translation is deliberately kept OUT of the per-cell springs so a page flip
+    // never makes the icons lag behind their page. The special (held/landing)
+    // item's slot is a faint placeholder; its content is drawn as the ghost on
+    // top (in viewport coords, outside every page, so it stays finger-tracked
+    // across a flip). Every item's keyed cell is requested each build regardless
+    // of which page it is on, so an off-screen page keeps its springs' identity.
+    float page_v = z_animated_get(state->page_anim);
+    ZStackOpts pages_root = {.align = Z_ALIGN_LEADING};
+    int prk = 0;
+    for (int p = 0; p < npages && prk < Z_MAX_CHILDREN; p++) {
+        ZStackOpts pcells = {.align = Z_ALIGN_LEADING};
+        int ck = 0;
+        for (int i = 0; i < nd && ck < Z_MAX_CHILDREN; i++) {
+            if (pl[i].page != p) {
+                continue;
             }
-            ZView cell = entry_view(app, state, &disp[i], r);
-            cells.children[ck++] = OffsetXYAnimated(cx, cy, cell);
+            ZRect r = cell_rect(state->surface_w, pl[i].col, pl[i].row, pl[i].cw,
+                                pl[i].ch);
+            if (special &&
+                entry_eq(&disp[i], state->held_kind, state->held_ref)) {
+                ZView ph = Frame(r.w, r.h,
+                    CornerRadius(ICON_RADIUS,
+                        Rect(.color = z_rgba(0xf4, 0xf7, 0xfb, 0x22),
+                             .radius = ICON_RADIUS)));
+                pcells.children[ck++] = placed(state->surface_w,
+                                               state->surface_h, r, ph);
+            } else {
+                uint64_t base = entry_key(disp[i].kind, disp[i].ref);
+                float ox, oy;
+                cell_offset(state->surface_w, state->surface_h, r, &ox, &oy);
+                ZAnimated *cx = z_animated_keyed(app, KEY_X(base), ox);
+                ZAnimated *cy = z_animated_keyed(app, KEY_Y(base), oy);
+                if (!frozen) {
+                    spring_to(cx, ox);  // ease toward the packed slot (reflow)
+                    spring_to(cy, oy);
+                }
+                ZView cell = entry_view(app, state, &disp[i], r);
+                pcells.children[ck++] = OffsetXYAnimated(cx, cy, cell);
+            }
         }
+        float px = ((float)p - page_v) * state->surface_w;
+        pages_root.children[prk++] =
+            OffsetXY(px, 0.0f, Fill(z_stack(Z_AXIS_DEPTH, &pcells)));
     }
-    ZView cells_layer = Fill(z_stack(Z_AXIS_DEPTH, &cells));
+    ZView cells_layer = Fill(z_stack(Z_AXIS_DEPTH, &pages_root));
 
-    // The bottom bar: a drawer handle normally, a Done bar in rearrange mode.
-    ZView bottom;
-    if (state->rearrange) {
-        bottom = Fill(VStack(
-            Spacer(),
-            OnTap(exit_rearrange,
-                Background(Z_COLOR_PRIMARY,
-                    CornerRadius(22.0f,
-                        Padding(14.0f,
-                            Foreground(Z_COLOR_TEXT_INV,
-                                Font(Z_FONT_CALLOUT, Text("Done"))))))),
-            .spacing = 0, .padding = 28, .align = Z_ALIGN_CENTER));
-    } else {
-        bottom = Fill(VStack(
-            Spacer(),
-            OnTap(open_drawer,
-                VStack(
-                    Rect(.color = Z_COLOR_TEXT_MUTED,
-                         .width = 56, .height = 5, .radius = 3),
-                    Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("^"))),
-                    Foreground(Z_COLOR_TEXT_MUTED,
-                        Font(Z_FONT_CAPTION, Text("All apps"))),
-                    .spacing = 4, .align = Z_ALIGN_CENTER)),
-            .spacing = 0, .padding = 20, .align = Z_ALIGN_CENTER));
+    // The bottom bar: the page dots (when there is more than one page) over a
+    // drawer handle normally, or a Done bar in rearrange mode.
+    ZView handle_or_done = state->rearrange
+        ? OnTap(exit_rearrange,
+            Background(Z_COLOR_PRIMARY,
+                CornerRadius(22.0f,
+                    Padding(14.0f,
+                        Foreground(Z_COLOR_TEXT_INV,
+                            Font(Z_FONT_CALLOUT, Text("Done")))))))
+        : OnTap(open_drawer,
+            VStack(
+                Rect(.color = Z_COLOR_TEXT_MUTED,
+                     .width = 56, .height = 5, .radius = 3),
+                Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("^"))),
+                Foreground(Z_COLOR_TEXT_MUTED,
+                    Font(Z_FONT_CAPTION, Text("All apps"))),
+                .spacing = 4, .align = Z_ALIGN_CENTER));
+    ZStackOpts bstack = {.spacing = 12, .align = Z_ALIGN_CENTER,
+                         .padding = state->rearrange ? 28.0f : 20.0f};
+    int bk = 0;
+    bstack.children[bk++] = Spacer();
+    if (npages > 1) {
+        bstack.children[bk++] = page_dots(npages, page_v);
     }
+    bstack.children[bk++] = handle_or_done;
+    ZView bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
 
     // The lifted ghost: the held item's content, drawn on top via its shared
     // keyed x/y cell. While HELD the cell is locked to the finger; on release it
@@ -1340,7 +1613,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     int hk = 0;
     hs.children[hk++] = wallpaper(state);
     if (state->rearrange) {
-        hs.children[hk++] = raster_layer(state, rows);
+        hs.children[hk++] = raster_layer(state, rpp);
     }
     hs.children[hk++] = cells_layer;
     hs.children[hk++] = bottom;
@@ -1406,8 +1679,12 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     }
 
     // A moving/overlay layer forces a full repaint (partial path under-damages a
-    // translated subtree). Rearrange + drag already force it in the handlers.
-    if (drawer_v > 0.001f || state->rearrange || toast) {
+    // translated subtree). Rearrange + drag already force it in the handlers; a
+    // carousel flip in flight (page_anim active, or a fractional page mid-drag)
+    // translates every page subtree, so it needs the full repaint too.
+    bool paging = z_animated_active(state->page_anim) ||
+                  fabsf(page_v - floorf(page_v + 0.5f)) > 0.001f;
+    if (drawer_v > 0.001f || state->rearrange || toast || paging) {
         z_full_repaint(app);
     }
 
