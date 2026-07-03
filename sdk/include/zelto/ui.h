@@ -625,6 +625,21 @@ ZIdle *z_idle_notify(ZApp *app, int timeout_ms, ZIdleCb on_idled,
 void z_idle_cancel(ZIdle *idle);
 
 // ---------------------------------------------------------------------------
+// One-shot timer.
+//
+// Fire `cb` once, `ms` milliseconds from now, from the app loop (never a signal
+// context — safe to touch app state + call z_invalidate). Unlike an idle
+// notification this is NOT tied to seat activity: it counts down regardless of
+// input, so it drives self-dismissing transient UI (e.g. the volume HUD that
+// shows on a sys.volume change and hides ~1.5s later). One pending timer per app
+// (a second z_after replaces the first); z_after_cancel disarms it. The app loop
+// bounds its poll() on the deadline, so no busy-wait.
+// ---------------------------------------------------------------------------
+typedef void (*ZTimerCb)(ZApp *app, void *ud);
+void z_after(ZApp *app, int ms, ZTimerCb cb, void *ud);
+void z_after_cancel(ZApp *app);
+
+// ---------------------------------------------------------------------------
 // Permissions.
 //
 // Sensitive capabilities (camera, location, ...) are declared in the app's

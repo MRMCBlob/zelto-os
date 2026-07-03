@@ -1169,6 +1169,112 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         exit 0
     fi
 
+    # P23 volume + battery (VOLUME=1): prove the two hardware indicators every
+    # phone shows are SYSTEM SERVICES (zsysd power/audio duty), reflected by a
+    # status-bar battery glyph + a transient volume-rocker overlay, driven by a
+    # fake battery source + the compositor's media keys, and PERSISTED. A two-boot
+    # test against the same data.img. (Selector named VOLUME; there is no $VOLUME
+    # build var — the app path var is VOLAPP — so it can't clobber anything.)
+    #   Boot #1 — the fake battery starts at 24% (zelto.batterystart) and drains
+    #     fast (zelto.batterytick=700). Home: the bar shows a battery glyph. Wait
+    #     for it to cross 20% -> zsysd posts a one-shot "Battery low" notification
+    #     (the shade banner) + the glyph turns red + brightness is nudged down.
+    #     Then press Volume Up x3 (QMP send-key volumeup -> the compositor's
+    #     XF86AudioRaiseVolume keybind -> settings_set sys.volume) -> the centred
+    #     volume HUD pops with a fuller bar; Volume Down once -> the HUD updates.
+    #     Sync + kill (sys.volume + the drained sys.battery_pct persisted).
+    #   Boot #2 — FRESH QEMU, SAME disk: zsysd loads sys.volume + sys.battery_pct
+    #     from /var/zelto, so the bar's battery glyph is at the persisted (low)
+    #     level at boot; press Volume Up -> the HUD shows the persisted volume+1
+    #     (the setting survived). Coordinates overridable; TCG boot is slow so keep
+    #     SHOT_DELAY high.
+    if [ "${VOLUME:-0}" = "1" ]; then
+        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # Fake battery: start just above the 20% low threshold and drain fast so
+        # the low-battery warning fires within the first SHOT_DELAY window.
+        # Widen the HUD dwell (zelto.volumems -> ZELTO_VOLUME_MS) so the screendump
+        # reliably catches the rocker after a media-key press.
+        VOL_MS="${VOL_MS:-8000}"
+        KCMD="$KCMD zelto.fakebattery=1 zelto.batterytick=700 zelto.batterystart=24 zelto.volumems=$VOL_MS"
+
+        have_socat=0
+        command -v socat >/dev/null 2>&1 && have_socat=1
+        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
+        qmp() {
+            [ "$have_socat" = "1" ] || return 0
+            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
+                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
+        }
+        to_png() {
+            [ -f "$1" ] || return 0
+            echo "==> wrote $1"
+            if command -v pnmtopng >/dev/null 2>&1; then
+                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
+            elif command -v convert >/dev/null 2>&1; then
+                convert "$1" "$2" && echo "==> wrote $2"
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
+            fi
+        }
+        # A volume media key: QMP send-key with the qcode QEMU maps to the evdev
+        # KEY_VOLUME{UP,DOWN} the guest xkb resolves to XF86AudioRaise/LowerVolume,
+        # which the compositor's handle_chord turns into a settings_set.
+        volkey() {
+            qmp "{\"execute\":\"send-key\",\"arguments\":{\"keys\":[{\"type\":\"qcode\",\"data\":\"$1\"}]}}"
+        }
+        shot() {
+            rm -f "$OUT/$1.ppm"
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
+            sleep 1
+            to_png "$OUT/$1.ppm" "$OUT/$1.png"
+        }
+        volume_boot() {
+            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
+            rm -f "$QMP_SOCK"
+            qemu-system-aarch64 "${common[@]}" \
+                -append "$KCMD" \
+                -display none \
+                -serial mon:stdio \
+                -qmp "unix:$QMP_SOCK,server,nowait" &
+            QPID=$!
+        }
+        volume_kill() {
+            sync
+            kill "$QPID" 2>/dev/null || true
+            wait "$QPID" 2>/dev/null || true
+        }
+
+        echo "==> [volume boot 1/2] home; bar battery glyph (~24%, draining)"
+        volume_boot
+        sleep "$SHOT_DELAY"
+        shot frame-volume-home
+        echo "==> [volume 1] wait for the drain below 20% -> low-battery banner + red glyph"
+        sleep 8
+        shot frame-volume-low
+        echo "==> [volume 1] Volume Up x3 (media key -> compositor -> sys.volume)"
+        volkey volumeup; sleep 0.4
+        volkey volumeup; sleep 0.4
+        volkey volumeup; sleep 0.6
+        shot frame-volume-up                     # centred rocker HUD, fuller bar
+        echo "==> [volume 1] Volume Down x1 -> HUD updates"
+        volkey volumedown; sleep 0.6
+        shot frame-volume-down
+        echo "==> [volume 1] sync + shutdown (sys.volume + battery_pct persisted)"
+        sleep 3
+        volume_kill
+
+        echo "==> [volume boot 2/2] REBOOT same disk; battery + volume persisted"
+        volume_boot
+        sleep "$SHOT_DELAY"
+        shot frame-volume-reboot                 # battery glyph at the persisted low level
+        echo "==> [volume 2] Volume Up -> HUD shows the persisted volume+1"
+        volkey volumeup; sleep 0.6
+        shot frame-volume-reboot-up
+        volume_kill
+        echo "==> volume test done; frames in $OUT/frame-volume-*.png"
+        exit 0
+    fi
+
     # P20 idle/lock lifecycle (LOCK=1): prove the phone's idle -> dim -> lock ->
     # off -> wake -> unlock state machine, driven by ext-idle-notify + the
     # sys.lock_* broker settings, with the lock screen truly blocking the app

@@ -149,6 +149,34 @@ fi
 # The socket is wayland-0 under XDG_RUNTIME_DIR.
 export WAYLAND_DISPLAY=wayland-0
 export ZELTO_FONT=/usr/share/zelto/fonts/ZeltoSans.ttf
+# P23 power source: qemu-virt has no real battery, so the BATTERY/VOLUME harness
+# passes zelto.fakebattery=1 on the kernel cmdline to make zsysd drive a fake
+# drain (sys.battery_pct / _charging), driveable without hardware. A fast tick is
+# opt-in too so the two-boot test doesn't wait minutes for a low-battery warning.
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" zelto.fakebattery=1 "*) export ZELTO_FAKE_BATTERY=1 ;;
+esac
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" zelto.batterytick="*)
+        bt=$(cat /proc/cmdline)
+        bt=${bt##*zelto.batterytick=}
+        bt=${bt%% *}
+        [ -n "$bt" ] && export ZELTO_BATTERY_TICK_MS="$bt" ;;
+esac
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" zelto.batterystart="*)
+        bs=$(cat /proc/cmdline)
+        bs=${bs##*zelto.batterystart=}
+        bs=${bs%% *}
+        [ -n "$bs" ] && export ZELTO_BATTERY_START="$bs" ;;
+esac
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" zelto.volumems="*)
+        vm=$(cat /proc/cmdline)
+        vm=${vm##*zelto.volumems=}
+        vm=${vm%% *}
+        [ -n "$vm" ] && export ZELTO_VOLUME_MS="$vm" ;;
+esac
 launch_shell() {
     [ -x /usr/bin/zelto-launcher ] || return 0
     i=0
@@ -187,6 +215,10 @@ launch_shell() {
         # Started LAST so it is the topmost overlay (above the shade + dim). Inert
         # until sys.lock_enabled is turned on.
         [ -x /usr/bin/zelto-lock ] && /usr/bin/zelto-lock &
+        # The volume-rocker HUD (P23): an OVERLAY layer-shell app that observes
+        # sys.volume / sys.mute and pops a transient slider on change. Input-
+        # transparent; always-running like the dim/lock overlays.
+        [ -x /usr/bin/zelto-volume ] && /usr/bin/zelto-volume &
         # Small stagger so the bar's exclusive zone is applied before the
         # launcher's initial size is computed (cosmetic; arrange re-runs anyway).
         sleep 1

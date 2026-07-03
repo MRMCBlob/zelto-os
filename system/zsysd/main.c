@@ -36,6 +36,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
@@ -48,6 +49,17 @@
 #define MAX_NOTIFS 32
 #define MAX_SETTINGS 64
 #define REQ_MAX 512
+
+// --- power source (zsysd's 5th duty, P23) ----------------------------------
+// The battery + charging state surface through the SAME settings keys (sys.
+// battery_pct 0..100, sys.battery_charging 0/1) so the status bar reads them via
+// the existing settings_subscribe fan-out — no new protocol. A slow drain timer
+// (fake source) makes the level driveable without hardware; a real sysfs read
+// backs the same keys where a battery exists (QEMU/host swap later). At/below the
+// threshold a one-shot low-battery notification is posted (reuse of the notify
+// store) and brightness is nudged down.
+#define BATT_TICK_MS 5000        // default drain/refresh cadence
+#define LOW_BATT_THRESHOLD 20    // % at/below which we warn once
 
 // --- manifest table (per-app declarations) --------------------------------
 // Beyond permissions, manifests now declare the intent handlers an app
@@ -150,6 +162,13 @@ static Setting g_settings[MAX_SETTINGS];
 // fd on its disconnect in the read loop (mirroring g_shade_fd).
 static int g_settings_subs[MAX_CLIENTS];
 static int g_n_settings_subs;
+
+// --- power source state ----------------------------------------------------
+static bool g_batt_active;      // is a battery source driven at all?
+static bool g_fake_battery;     // fake drain (sim/harness) vs real sysfs read
+static int g_batt_tick_ms = BATT_TICK_MS;
+static int64_t g_next_batt_ms;  // monotonic ms of the next tick
+static bool g_low_warned;       // one-shot latch for the low-battery notification
 
 // Strip a trailing CR/LF in place.
 static void chomp(char *s) {
@@ -912,6 +931,206 @@ static void settings_broadcast(const char *key, const char *value) {
     }
 }
 
+// Set a key, persist + broadcast — but only when the value actually changed
+// (idempotent: an unchanged write is a no-op, no disk churn, no fan-out). Both
+// the settings_set op and the battery tick funnel through here. Returns whether
+// anything changed.
+static bool settings_apply(const char *key, const char *value) {
+    Setting *cur = setting_find(key);
+    if (cur && strcmp(cur->value, value) == 0) {
+        return false;
+    }
+    if (!setting_put(key, value)) {
+        return false;
+    }
+    settings_persist();
+    settings_broadcast(key, value);
+    return true;
+}
+
+// --- power source (battery) ------------------------------------------------
+
+static int64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Best-effort real battery read: first /sys/class/power_supply/* entry exposing
+// a `capacity` file. Returns false when no battery exists (the common case on
+// qemu-virt / a headless host), so the caller leaves the keys untouched.
+static bool read_sysfs_battery(int *pct_out, bool *charging_out) {
+    const char *base = "/sys/class/power_supply";
+    DIR *d = opendir(base);
+    if (!d) {
+        return false;
+    }
+    bool found = false;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') {
+            continue;
+        }
+        char path[320];
+        snprintf(path, sizeof(path), "%s/%s/capacity", base, de->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        int pct = -1;
+        if (fscanf(f, "%d", &pct) == 1 && pct >= 0) {
+            *pct_out = pct > 100 ? 100 : pct;
+            *charging_out = false;
+            snprintf(path, sizeof(path), "%s/%s/status", base, de->d_name);
+            FILE *sf = fopen(path, "r");
+            if (sf) {
+                char st[32] = {0};
+                if (fgets(st, sizeof(st), sf)) {
+                    *charging_out = strncmp(st, "Charging", 8) == 0 ||
+                                    strncmp(st, "Full", 4) == 0;
+                }
+                fclose(sf);
+            }
+            found = true;
+        }
+        fclose(f);
+        if (found) {
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+// Store + push a notification straight from the OS (no app, no perm gate — the
+// system is the poster). Reuses the notify store + shade sink. Used for the
+// low-battery warning.
+static void post_system_notification(const char *title, const char *body) {
+    Notification *n = NULL;
+    for (int i = 0; i < MAX_NOTIFS; i++) {
+        if (!g_notifs[i].used) {
+            n = &g_notifs[i];
+            break;
+        }
+    }
+    if (!n) {
+        return;
+    }
+    n->used = true;
+    n->id = g_next_notif_id++;
+    snprintf(n->app_id, sizeof(n->app_id), "os.zelto.system");
+    snprintf(n->title, sizeof(n->title), "%s", title);
+    snprintf(n->body, sizeof(n->body), "%s", body);
+    n->channel[0] = n->tap_route[0] = '\0';
+    n->action_id[0] = n->action_title[0] = '\0';
+    fprintf(stderr, "[zsysd] system notification id=%lld: %s\n",
+            (long long)n->id, title);
+    if (g_shade_fd >= 0) {
+        send_notify_show(g_shade_fd, n);
+    }
+}
+
+// Post the low-battery warning once when the level crosses at/below the
+// threshold on battery power, and nudge brightness down to conserve. The latch
+// resets once charging or back above the threshold, so a later dip warns again.
+static void check_low_battery(int pct, bool charging) {
+    if (!charging && pct > 0 && pct <= LOW_BATT_THRESHOLD) {
+        if (!g_low_warned) {
+            g_low_warned = true;
+            char body[96];
+            snprintf(body, sizeof(body),
+                     "Battery at %d%%. Plug in soon.", pct);
+            post_system_notification("Battery low", body);
+            // Only dim if brightness is set and comfortably high (don't surprise
+            // a user who left it low, and skip when unset — client default 3).
+            if (atoi(setting_value("sys.brightness")) >= 3) {
+                settings_apply("sys.brightness", "2");
+            }
+        }
+    } else {
+        g_low_warned = false;
+    }
+}
+
+// One battery tick: advance the fake drain (or read the real source), publish
+// the two keys through settings_apply (fan-out to the bar), and check the low
+// threshold. Fake: drain 1%/tick on battery, charge 2%/tick when charging.
+static void battery_tick(void) {
+    int pct = atoi(setting_value("sys.battery_pct"));
+    bool charging = atoi(setting_value("sys.battery_charging")) != 0;
+    if (g_fake_battery) {
+        if (charging) {
+            pct += 2;
+            if (pct > 100) {
+                pct = 100;
+            }
+        } else {
+            pct -= 1;
+            if (pct < 0) {
+                pct = 0;
+            }
+        }
+    } else {
+        int rp;
+        bool rc;
+        if (!read_sysfs_battery(&rp, &rc)) {
+            return;   // no real source this tick; leave keys as-is
+        }
+        pct = rp;
+        charging = rc;
+    }
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", pct);
+    settings_apply("sys.battery_pct", buf);
+    settings_apply("sys.battery_charging", charging ? "1" : "0");
+    check_low_battery(pct, charging);
+}
+
+// Compute the poll() timeout (ms) so the loop wakes for the next battery tick;
+// -1 (block forever) when no battery source is driven.
+static int battery_poll_timeout(void) {
+    if (!g_batt_active) {
+        return -1;
+    }
+    int64_t rem = g_next_batt_ms - now_ms();
+    return rem < 0 ? 0 : (int)rem;
+}
+
+// Decide whether a battery source is driven and seed the keys. Fake source is
+// gated by $ZELTO_FAKE_BATTERY (set in the sim/harness); otherwise a real sysfs
+// battery, if present, backs the same keys. Seeds only unset keys so a two-boot
+// resumes the persisted level rather than jumping back to full.
+static void battery_init(void) {
+    const char *fake = getenv("ZELTO_FAKE_BATTERY");
+    g_fake_battery = fake && fake[0] && strcmp(fake, "0") != 0;
+    const char *tk = getenv("ZELTO_BATTERY_TICK_MS");
+    if (tk && atoi(tk) > 0) {
+        g_batt_tick_ms = atoi(tk);
+    }
+    int rp;
+    bool rc;
+    bool real = read_sysfs_battery(&rp, &rc);
+    g_batt_active = g_fake_battery || real;
+    if (g_fake_battery) {
+        if (!setting_find("sys.battery_pct")) {
+            const char *start = getenv("ZELTO_BATTERY_START");
+            settings_apply("sys.battery_pct", start && start[0] ? start : "100");
+        }
+        if (!setting_find("sys.battery_charging")) {
+            settings_apply("sys.battery_charging", "0");
+        }
+    } else if (real) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", rp);
+        settings_apply("sys.battery_pct", buf);
+        settings_apply("sys.battery_charging", rc ? "1" : "0");
+    }
+    g_next_batt_ms = now_ms() + g_batt_tick_ms;
+    fprintf(stderr, "[zsysd] battery source: %s (tick %dms, active=%d)\n",
+            g_fake_battery ? "fake-drain" : (real ? "sysfs" : "none"),
+            g_batt_tick_ms, g_batt_active);
+}
+
 // Process one request line. Perm ops reply on the same connection; register and
 // intent_resolve come over a persistent control connection (no reply). `slot`
 // is the client's table index, so a register can record its mailbox app_id.
@@ -1006,9 +1225,7 @@ static void handle_line(int slot, int fd, char *line) {
         char key[64] = {0}, value[160] = {0};
         json_get(line, "key", key, sizeof(key));
         json_get(line, "value", value, sizeof(value));
-        if (key[0] && setting_put(key, value)) {
-            settings_persist();
-            settings_broadcast(key, value);
+        if (key[0] && settings_apply(key, value)) {
             fprintf(stderr, "[zsysd] settings_set %s=%s -> %d subscriber(s)\n",
                     key, value, g_n_settings_subs);
         }
@@ -1055,6 +1272,7 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
     load_manifests();
     settings_load();
+    battery_init();
 
     const char *runtime = getenv("XDG_RUNTIME_DIR");
     if (!runtime) {
@@ -1108,12 +1326,20 @@ int main(void) {
             }
         }
 
-        if (poll(pfds, (nfds_t)nf, -1) < 0) {
+        if (poll(pfds, (nfds_t)nf, battery_poll_timeout()) < 0) {
             if (errno == EINTR) {
                 continue;
             }
             perror("zsysd: poll");
             break;
+        }
+
+        // Battery: advance the source whenever a tick is due (poll woke us at the
+        // deadline even with no socket traffic). Cheap in-memory + one settings
+        // fan-out on an actual change.
+        if (g_batt_active && now_ms() >= g_next_batt_ms) {
+            g_next_batt_ms = now_ms() + g_batt_tick_ms;
+            battery_tick();
         }
 
         // New connection.

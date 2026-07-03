@@ -76,6 +76,13 @@ export ZELTO_FONT="${ZELTO_FONT:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
 # of the phone's /var/zelto (libzelto reads $ZELTO_DATA_DIR, storage.c).
 export ZELTO_DATA_DIR="${ZELTO_DATA_DIR:-/tmp/zelto-sim/data}"
 mkdir -p "$ZELTO_DATA_DIR/apps"
+
+# P23 power source: the host has no phone battery, so drive a fake drain by
+# default (the status-bar battery glyph then shows a real level and slowly
+# discharges). Off with ZELTO_FAKE_BATTERY=0; tune the cadence with
+# ZELTO_BATTERY_TICK_MS (default 5000). ZELTO_VOLUME_MS widens the HUD dwell for
+# a reliable screenshot.
+export ZELTO_FAKE_BATTERY="${ZELTO_FAKE_BATTERY:-1}"
 rm -f "$XDG_RUNTIME_DIR/zsysd.sock"     # drop a stale broker socket from a prior run
 pkill -f "$BUILD/compositor/zcomp" 2>/dev/null || true   # reap a stale sim compositor
 
@@ -166,6 +173,7 @@ spawn "$SYS/keyboard/zelto-keyboard"
 spawn "$SYS/shade/zelto-shade"
 spawn "$SYS/dim/zelto-dim"
 spawn "$SYS/lock/zelto-lock"
+spawn "$SYS/volume/zelto-volume"
 sleep 1
 spawn "$SYS/launcher/zelto-launcher"
 

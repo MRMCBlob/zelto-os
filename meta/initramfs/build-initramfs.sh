@@ -54,6 +54,11 @@ DIM="${DIM:-$REPO_ROOT/build-arm64/system/dim/zelto-dim}"
 # NB: named LOCKAPP, not LOCK — the LOCK=1 harness selector would clobber a bare
 # $LOCK (same trap the ACTUATE var dodged in P19), leaving zelto-lock uninstalled.
 LOCKAPP="${LOCKAPP:-$REPO_ROOT/build-arm64/system/lock/zelto-lock}"
+# P23 volume rocker: the transient volume HUD overlay (observes sys.volume/mute,
+# pops a slider on change, self-dismisses). Always-running like the dim/lock
+# overlays. NB: named VOLAPP, not VOLUME — the VOLUME=1 harness selector would
+# clobber a bare $VOLUME (the LOCK/LOCKAPP trap from P20).
+VOLAPP="${VOLAPP:-$REPO_ROOT/build-arm64/system/volume/zelto-volume}"
 # P21 on-screen keyboard: the QWERTY soft keyboard (layer-shell + input-method-v2
 # client). Always-running like the bars; shown only while a text field is focused.
 # NB: named KBDAPP, not KBD — the KBD=1 harness selector would clobber a bare $KBD
@@ -148,6 +153,7 @@ install_bin "$NOTES"    zelto-notes      # intent-target demo app ("Notes")
 install_bin "$SHADE"    zelto-shade      # notification shade (overlay sink)
 install_bin "$DIM"      zelto-dim        # brightness dim overlay (sys.brightness)
 install_bin "$LOCKAPP"  zelto-lock       # idle/lock lifecycle overlay (P20)
+install_bin "$VOLAPP"   zelto-volume     # volume-rocker HUD overlay (P23)
 install_bin "$KBDAPP"   zelto-keyboard   # on-screen keyboard (P21, layer-shell + input-method)
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
 install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
@@ -348,8 +354,8 @@ if is_dynamic "$ZCOMP"; then
     #     a closure, but bundle each so a future divergence can't break boot.
     for binp in "$SAMPLE" "$CARDS" "$BAR" "$NAV" "$RECENTS" "$LAUNCHER" \
                 "$ZSYSD" "$CONSENT" "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" \
-                "$DIM" "$LOCKAPP" "$KBDAPP" "$PINGER" "$NOTEPAD" "$SETTINGS_APP" \
-                "$FETCH" "$INSTALLER" "$STORE"; do
+                "$DIM" "$LOCKAPP" "$VOLAPP" "$KBDAPP" "$PINGER" "$NOTEPAD" \
+                "$SETTINGS_APP" "$FETCH" "$INSTALLER" "$STORE"; do
         [ -x "$binp" ] && bundle_with_closure "$binp"
     done
     # ($WIDGET is not bundled here — it is not installed in the image; its runtime

@@ -3,7 +3,12 @@
 // the surface under the cursor; keyboard events to the focused surface.
 #include "zcomp/seat.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 #include <wlr/backend.h>
 #include <wlr/types/wlr_compositor.h>
@@ -204,8 +209,99 @@ static void handle_kb_modifiers(struct wl_listener *listener, void *data) {
     wlr_seat_keyboard_notify_modifiers(seat, &keyboard->wlr_keyboard->modifiers);
 }
 
+// --- volume keys -> settings broker ---------------------------------------
+// The volume rocker is a system setting (sys.volume 0..10 / sys.mute), so the
+// compositor actuates the media keys by writing the zsysd settings store — the
+// same brokered source the status bar and the zelto-volume HUD read. A short
+// synchronous connect to $XDG_RUNTIME_DIR/zsysd.sock: read the current value,
+// adjust, write it back. No new protocol; the broker fans the change out. (The
+// brightness actuation in P19 lived in the Settings app; the media keys are the
+// compositor's because only it sees the raw keysyms.)
+static int zsysd_open(void) {
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    if (!runtime) {
+        runtime = "/run";
+    }
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/zsysd.sock", runtime);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+// Read an integer setting through the broker (settings_get); `fallback` on any
+// error or an unset key. Parses the {"value":"N"} reply's quoted value.
+static int zsysd_get_int(const char *key, int fallback) {
+    int fd = zsysd_open();
+    if (fd < 0) {
+        return fallback;
+    }
+    char req[128];
+    int n = snprintf(req, sizeof(req),
+                     "{\"op\":\"settings_get\",\"key\":\"%s\"}\n", key);
+    int out = fallback;
+    if (n > 0 && write(fd, req, (size_t)n) == n) {
+        char buf[128] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        if (r > 0) {
+            buf[r] = '\0';
+            const char *v = strstr(buf, "\"value\"");
+            if (v && (v = strchr(v, ':')) && (v = strchr(v, '"'))) {
+                if (v[1] != '"') {   // non-empty value
+                    out = atoi(v + 1);
+                }
+            }
+        }
+    }
+    close(fd);
+    return out;
+}
+
+static void zsysd_set_int(const char *key, int value) {
+    int fd = zsysd_open();
+    if (fd < 0) {
+        return;
+    }
+    char req[128];
+    int n = snprintf(req, sizeof(req),
+                     "{\"op\":\"settings_set\",\"key\":\"%s\",\"value\":\"%d\"}\n",
+                     key, value);
+    if (n > 0) {
+        ssize_t w = write(fd, req, (size_t)n);
+        (void)w;
+    }
+    close(fd);
+}
+
+// Nudge the volume by delta (clamped 0..10). Unmutes on volume-up so a press
+// after muting is audible again — the phone behaviour.
+static void volume_bump(int delta) {
+    int v = zsysd_get_int("sys.volume", 5) + delta;
+    if (v < 0) {
+        v = 0;
+    } else if (v > 10) {
+        v = 10;
+    }
+    zsysd_set_int("sys.volume", v);
+    if (delta > 0) {
+        zsysd_set_int("sys.mute", 0);
+    }
+}
+
+static void volume_toggle_mute(void) {
+    zsysd_set_int("sys.mute", zsysd_get_int("sys.mute", 0) ? 0 : 1);
+}
+
 // Compositor-level chords, recognized before app delivery (System UI gestures):
-//   Home -> reveal the launcher;  Tab ("Switch") -> cycle foreground app.
+//   Home -> reveal the launcher;  Tab ("Switch") -> cycle foreground app;
+//   the media keys drive the volume setting (rocker HUD + bar glyph).
 // Returns true if the key was consumed and must not reach the client.
 static bool handle_chord(ZcompServer *server, xkb_keysym_t sym) {
     switch (sym) {
@@ -214,6 +310,15 @@ static bool handle_chord(ZcompServer *server, xkb_keysym_t sym) {
         return true;
     case XKB_KEY_Tab:
         zcomp_switch(server);
+        return true;
+    case XKB_KEY_XF86AudioRaiseVolume:
+        volume_bump(+1);
+        return true;
+    case XKB_KEY_XF86AudioLowerVolume:
+        volume_bump(-1);
+        return true;
+    case XKB_KEY_XF86AudioMute:
+        volume_toggle_mute();
         return true;
     default:
         return false;

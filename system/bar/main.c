@@ -29,6 +29,8 @@ typedef struct BarState {
     int64_t brightness;   // 1..5
     bool lock_enabled;    // P20: show a padlock glyph when the lock screen is on
     int64_t lock_now;     // sys.lock_now counter (a long-press on the bar bumps it)
+    int64_t battery_pct;  // P23: 0..100 (from the zsysd power source)
+    bool charging;        // P23: sys.battery_charging
 } BarState;
 
 // A small filled status dot (signal / mode indicator).
@@ -44,6 +46,35 @@ static ZView lock_glyph(ZColor c) {
             Frame(8.0f, 6.0f, Rect(.color = c, .radius = 3)),   // shackle
             Frame(12.0f, 9.0f, Rect(.color = c, .radius = 2)),  // body
             .spacing = 0, .align = Z_ALIGN_CENTER));
+}
+
+// Battery glyph (P23): a small horizontal cell whose interior fill tracks the
+// charge level, plus a terminal nub. Green while charging, red at/below 20%,
+// otherwise the normal text colour. A depth stack overlays the fill on the
+// bordered shell (left-aligned so it grows rightward with the level).
+static ZView battery_glyph(int64_t pct, bool charging) {
+    if (pct < 0) {
+        pct = 0;
+    } else if (pct > 100) {
+        pct = 100;
+    }
+    ZColor col = charging ? Z_COLOR_SUCCESS
+               : (pct <= 20 ? Z_COLOR_DANGER : Z_COLOR_TEXT);
+    float inner = 20.0f;                       // usable fill width inside the cell
+    float fill = inner * (float)pct / 100.0f;
+    if (fill < 2.0f) {
+        fill = 2.0f;                           // always a sliver so 1% is visible
+    }
+    return HStack(
+        ZStack(
+            Frame(24.0f, 12.0f, Rect(.color = Z_COLOR_BORDER, .radius = 3)),
+            Frame(24.0f, 12.0f,
+                Padding(2.0f,
+                    HStack(Frame(fill, 8.0f, Rect(.color = col, .radius = 1)),
+                           Spacer(), .spacing = 0))),
+            .align = Z_ALIGN_CENTER),
+        Frame(3.0f, 6.0f, Rect(.color = Z_COLOR_BORDER, .radius = 1)),  // nub
+        .spacing = 1, .align = Z_ALIGN_CENTER);
 }
 
 // Long-press anywhere on the bar: manually lock now (bump sys.lock_now, which
@@ -72,6 +103,10 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->brightness = v;
     } else if (strcmp(key, "sys.lock_enabled") == 0) {
         s->lock_enabled = v != 0;
+    } else if (strcmp(key, "sys.battery_pct") == 0) {
+        s->battery_pct = v;
+    } else if (strcmp(key, "sys.battery_charging") == 0) {
+        s->charging = v != 0;
     }
     z_invalidate(app);
 }
@@ -86,6 +121,8 @@ static ZView bar_body(ZApp *app, BarState *state) {
         state->brightness = z_setting_get_int("sys.brightness", 3);
         state->lock_enabled = z_setting_get_int("sys.lock_enabled", 0) != 0;
         state->lock_now = z_setting_get_int("sys.lock_now", 0);
+        state->battery_pct = z_setting_get_int("sys.battery_pct", 100);
+        state->charging = z_setting_get_int("sys.battery_charging", 0) != 0;
         z_settings_observe(app, on_changed, state);
     }
 
@@ -121,6 +158,7 @@ static ZView bar_body(ZApp *app, BarState *state) {
     }
     cluster.children[k++] = Frame(pip_w, 10.0f,
         Rect(.color = Z_COLOR_TEXT, .radius = 3));  // brightness
+    cluster.children[k++] = battery_glyph(state->battery_pct, state->charging);
     cluster.children[k++] = Foreground(Z_COLOR_TEXT_INV, Text("%s", clock));
 
     // A long-press on the bar manually locks now (bumps sys.lock_now).

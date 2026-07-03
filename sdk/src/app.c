@@ -253,6 +253,14 @@ struct ZApp {
     double press_s;              // monotonic time of the press
     ZView long_press_target;     // OnLongPress node under the press (NULL = none)
 
+    // One-shot timer (z_after). Not tied to seat activity — a plain wall-clock
+    // deadline the app loop bounds its poll() on, firing `after_cb` once. Drives
+    // self-dismissing transient UI (the volume HUD). after_armed=false = none.
+    bool after_armed;
+    double after_deadline;       // monotonic s at which after_cb fires
+    ZTimerCb after_cb;
+    void *after_ud;
+
     // Retained build output: the laid-out root from the most recent build, used
     // to hit-test pointer events and route keys until the next build replaces it.
     ZView root;
@@ -2114,6 +2122,15 @@ static int app_run(ZApp *app) {
             double remain = Z_LONG_PRESS_S - (z_now_seconds() - app->press_s);
             timeout = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
         }
+        // A pending one-shot timer (z_after) bounds the wait too; take whichever
+        // deadline comes first (a -1 "block forever" always loses to a finite ms).
+        if (app->after_armed) {
+            double remain = app->after_deadline - z_now_seconds();
+            int at = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
+            if (timeout < 0 || at < timeout) {
+                timeout = at;
+            }
+        }
 
         if (poll(pfds, nf, timeout) < 0) {
             wl_display_cancel_read(dpy);
@@ -2161,6 +2178,19 @@ static int app_run(ZApp *app) {
         if (app->long_press_armed && app->ptr_down && !app->panning &&
             z_now_seconds() - app->press_s >= Z_LONG_PRESS_S) {
             fire_long_press(app);
+        }
+
+        // One-shot timer: fire once the deadline passes (the poll timeout above
+        // woke us). Disarm BEFORE calling so the handler may re-arm a new timer.
+        if (app->after_armed && z_now_seconds() >= app->after_deadline) {
+            ZTimerCb cb = app->after_cb;
+            void *ud = app->after_ud;
+            app->after_armed = false;
+            app->after_cb = NULL;
+            app->after_ud = NULL;
+            if (cb) {
+                cb(app, ud);
+            }
         }
 
         // Render when state is dirty and no frame is in flight; render() arms a
@@ -2452,6 +2482,29 @@ void z_idle_cancel(ZIdle *idle) {
         ext_idle_notification_v1_destroy(idle->notification);
     }
     free(idle);
+}
+
+// One-shot timer: record a deadline the app loop fires from (see the struct).
+void z_after(ZApp *app, int ms, ZTimerCb cb, void *ud) {
+    if (!app) {
+        return;
+    }
+    if (ms < 0) {
+        ms = 0;
+    }
+    app->after_armed = true;
+    app->after_deadline = z_now_seconds() + (double)ms / 1000.0;
+    app->after_cb = cb;
+    app->after_ud = ud;
+}
+
+void z_after_cancel(ZApp *app) {
+    if (!app) {
+        return;
+    }
+    app->after_armed = false;
+    app->after_cb = NULL;
+    app->after_ud = NULL;
 }
 
 // --- permission broker (zsysd) client -------------------------------------
