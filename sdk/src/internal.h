@@ -164,7 +164,6 @@ ZTextField *z_app_active_field(ZApp *app);
 // position (a tap handler gets no coordinates); z_field_select_word selects the
 // word under x; z_field_drag_extend(begin) picks the moving end at begin, then
 // extends the selection to x on each subsequent call.
-void z_field_dbg_insert(ZApp *app);   // TEMP diagnostic: insert a literal marker
 void z_field_tap(ZApp *app, ZTextField *f);
 void z_field_select_word(ZApp *app, ZTextField *f, float x);
 void z_field_drag_extend(ZApp *app, ZTextField *f, float x, bool begin);

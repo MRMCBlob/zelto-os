@@ -1577,12 +1577,6 @@ static int field_offset_at_x(ZApp *app, ZTextField *f, float x) {
     return best;
 }
 
-void z_field_dbg_insert(ZApp *app) {
-    if (app && app->active_field) {
-        field_replace(app, app->active_field, "TAP");
-        z_invalidate(app);
-    }
-}
 void z_field_tap(ZApp *app, ZTextField *f) {
     z_app_focus_field(app, f);
     int off = field_offset_at_x(app, f, (float)app->ptr_x);
