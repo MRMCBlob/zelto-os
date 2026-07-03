@@ -436,7 +436,7 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     ZView content =
         opts->body ? opts->body(app, z_app_state(app)) : z_spacer();
 
-    ZStackOpts col = {.spacing = 6, .align = Z_ALIGN_LEADING};
+    ZStackOpts col = {.spacing = 8, .align = Z_ALIGN_LEADING};
     int k = 0;
     if (opts->title && opts->title[0]) {
         col.children[k++] = Foreground(
@@ -444,7 +444,11 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     }
     col.children[k++] = content;
 
-    return Background(Z_COLOR_SURFACE,
-        CornerRadius(18.0f,
-            Padding(16.0f, z_stack(Z_AXIS_VERTICAL, &col))));
+    // A translucent "glass" fill (not the near-opaque SURFACE) so a widget laid
+    // over the home wallpaper reads as an elevated card the wallpaper glows
+    // through, instead of a flat black slab. The software renderer's source-over
+    // path composites the alpha over whatever is beneath.
+    return Background(z_rgba(0x1e, 0x26, 0x30, 0xcc),
+        CornerRadius(20.0f,
+            Padding(18.0f, z_stack(Z_AXIS_VERTICAL, &col))));
 }
