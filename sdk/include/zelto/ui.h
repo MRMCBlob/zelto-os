@@ -411,6 +411,14 @@ void z_with_animation(ZApp *app, ZSpring spring, ZAction change);
 // (z_animated_get(x), y). Use for gesture-driven drags and screen transitions.
 ZView Offset(ZAnimated *x, float y, ZView view);
 
+// Shift a subtree by a STATIC (x, y) in logical px — the 2-D counterpart to
+// Offset when neither axis is animated. This is how an absolutely-placed grid
+// (the home bento grid: square cells at computed (col,row) pixel positions
+// inside one depth ZStack) positions each cell, since a plain ZStack only
+// centres its children. Composes with Offset (both add into the node's
+// translation), so an animated ghost can sit on top of a statically-placed cell.
+ZView OffsetXY(float x, float y, ZView view);
+
 // ---------------------------------------------------------------------------
 // Navigation.
 //
