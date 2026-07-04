@@ -839,7 +839,8 @@ static void ghost_land(ZApp *app, LauncherState *s) {
     // is the one in view (a cross-page drop may have parked it elsewhere).
     if (pl[idx].page != s->page && s->page_anim) {
         s->page = pl[idx].page;
-        z_animated_spring(s->page_anim, (float)pl[idx].page);
+        z_animated_spring_with(s->page_anim, (float)pl[idx].page,
+                               Z_SPRING_SNAPPY);
     }
     ZRect r = cell_rect(s->surface_w, pl[idx].col, pl[idx].row, pl[idx].cw,
                         pl[idx].ch);
@@ -865,7 +866,8 @@ static void snap_to_page(ZApp *app, LauncherState *s, int p) {
     if (p > maxp) p = maxp;
     s->page = p;
     if (s->page_anim) {
-        z_animated_spring(s->page_anim, (float)p);
+        // A page flip is a decisive move — the SNAPPY token, per the motion vocab.
+        z_animated_spring_with(s->page_anim, (float)p, Z_SPRING_SNAPPY);
     }
     z_full_repaint(app);
     z_invalidate(app);
@@ -892,7 +894,7 @@ static void on_edge_dwell(ZApp *app, void *ud) {
     }
     s->page = target;
     if (s->page_anim) {
-        z_animated_spring(s->page_anim, (float)target);
+        z_animated_spring_with(s->page_anim, (float)target, Z_SPRING_SNAPPY);
     }
     z_after(app, EDGE_DWELL_MS, on_edge_dwell, s);   // keep paging if still held
     z_full_repaint(app);
@@ -1352,7 +1354,8 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         int frames = af ? atoi(af) : 0;
         if (pf && pf[0] && frames > 0 && !state->rearrange) {
             z_animated_set(state->page_anim, (float)atof(pf));
-            z_animated_spring(state->page_anim, (float)state->page);
+            z_animated_spring_with(state->page_anim, (float)state->page,
+                                   Z_SPRING_SNAPPY);   // match the real page flip
             for (int f = 0; f < frames; f++) {
                 z_anim_tick(app, 1.0f / 60.0f);
             }

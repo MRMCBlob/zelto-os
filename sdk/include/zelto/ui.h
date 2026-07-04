@@ -487,6 +487,11 @@ ZAnimated *z_animated_keyed(ZApp *app, uint64_t key, float initial);
 void z_animated_set(ZAnimated *v, float to);        // jump (no animation)
 void z_animated_pin(ZAnimated *v, float to);        // jump, without waking the loop
 void z_animated_spring(ZAnimated *v, float to);      // spring toward `to`
+// Spring toward `to` under an EXPLICIT motion token, independent of the ambient
+// z_with_animation profile — the way to pick the role-named curve (SNAPPY for a
+// decisive page flip, PRESS for touch feedback) at a single call without wrapping
+// it in a z_with_animation block. Honours Reduce Motion (collapses to a jump).
+void z_animated_spring_with(ZAnimated *v, float to, ZSpring spring);
 float z_animated_get(const ZAnimated *v);            // current value
 float z_animated_target(const ZAnimated *v);         // where it's springing to
 bool z_animated_active(const ZAnimated *v);          // still springing?

@@ -214,10 +214,8 @@ const char *z_active_app_id(void);
 // anything is still in motion (so the caller keeps the frame loop running).
 bool z_anim_tick(ZApp *app, float dt);
 double z_now_seconds(void);
-// Spring a value under an explicit profile (bypasses the ambient z_with_animation
-// profile). The press-feedback spring uses this so touch-down always moves with
-// the PRESS token. Honours Reduce Motion (collapses to a jump).
-void z_animated_spring_with(ZAnimated *v, float to, ZSpring spring);
+// z_animated_spring_with (spring under an explicit motion token) is declared in
+// the public <zelto/ui.h>; the press-feedback spring and the page carousel use it.
 
 // Keyed-cell GC bracket (call around each screen's body): begin clears the
 // per-build requested marks; end sweeps any keyed cell not requested this build.
