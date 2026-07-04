@@ -12,6 +12,9 @@ builddir/
 # These are large and reproducible from sources (build-kernel.sh / build-initramfs.sh).
 /device/*/out/
 
+# Generated screenshot-harness gallery (meta/shots.sh) — reproducible from a run.
+out/**/*.html
+
 # --- Compiled objects ------------------------------------------------------
 *.o
 *.a
