@@ -219,10 +219,24 @@ static ZView chip(ZColor bg, const char *label) {
                     Font(Z_FONT_CALLOUT, Text("%s", label))))));
 }
 
-// One label + On/Off toggle row.
-static ZView toggle_row(const char *label, bool on, ZAction act) {
-    ZColor bg = on ? Z_COLOR_PRIMARY
-                   : Z_COLOR_SURFACE_3;
+// One label + On/Off toggle row. The On/Off face CROSS-FADES between off
+// (SURFACE_3) and on (PRIMARY) on a spring-backed, identity-keyed value (P32)
+// instead of hard-swapping colour — the same motion the shade's quick-settings
+// chips use, so a flip reads consistently in both places. ZELTO_QS_ANIM=<0..1>
+// pins the cross-fade mid-flight for a still shot.
+static ZView toggle_row(ZApp *app, uint64_t key, const char *label, bool on,
+                        ZAction act) {
+    ZAnimated *t = z_animated_keyed(app, key, on ? 1.0f : 0.0f);
+    float goal = on ? 1.0f : 0.0f;
+    if (z_animated_target(t) != goal) {
+        z_animated_spring_with(t, goal, Z_SPRING_STANDARD);
+    }
+    const char *qa = getenv("ZELTO_QS_ANIM");
+    if (qa && qa[0]) {
+        z_animated_pin(t, (float)atof(qa));
+    }
+    ZColor bg = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY,
+                             z_animated_get(t));
     return HStack(
         Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label))),
         Spacer(),
@@ -291,10 +305,12 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
     int k = 0;
     col.children[k++] = Foreground(Z_COLOR_TEXT_INV,
         Font(Z_FONT_TITLE, Text("Settings")));
-    col.children[k++] = toggle_row("Wi-Fi", state->wifi, t_wifi);
-    col.children[k++] = toggle_row("Mute", state->mute, t_mute);
-    col.children[k++] = toggle_row("Brightness boost", state->bright, t_bright);
-    col.children[k++] = toggle_row("Airplane mode", state->airplane, t_airplane);
+    col.children[k++] = toggle_row(app, 0x5E7101u, "Wi-Fi", state->wifi, t_wifi);
+    col.children[k++] = toggle_row(app, 0x5E7102u, "Mute", state->mute, t_mute);
+    col.children[k++] = toggle_row(app, 0x5E7103u, "Brightness boost",
+                                   state->bright, t_bright);
+    col.children[k++] = toggle_row(app, 0x5E7104u, "Airplane mode",
+                                   state->airplane, t_airplane);
     // Brightness level stepper (the "at least one more control").
     col.children[k++] = HStack(
         Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("Brightness"))),
@@ -318,15 +334,16 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
     // --- P20 lock screen section ---
     col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("LOCK SCREEN")));
-    col.children[k++] = toggle_row("Lock screen", state->lock_enabled, t_lock);
+    col.children[k++] = toggle_row(app, 0x5E7105u, "Lock screen",
+                                   state->lock_enabled, t_lock);
     col.children[k++] = stepper_row("Dim after", state->dim_s, "s",
                                     dim_dec, dim_inc);
     col.children[k++] = stepper_row("Lock after", state->lock_s, "s",
                                     lock_dec, lock_inc);
     col.children[k++] = stepper_row("Screen off after", state->off_s, "s",
                                     off_dec, off_inc);
-    col.children[k++] = toggle_row("Passcode (1234)", state->passcode_set,
-                                   t_passcode);
+    col.children[k++] = toggle_row(app, 0x5E7106u, "Passcode (1234)",
+                                   state->passcode_set, t_passcode);
     col.children[k++] = OnTap(lock_now,
         Background(Z_COLOR_PRIMARY,
             CornerRadius(14.0f,

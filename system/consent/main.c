@@ -18,9 +18,16 @@ typedef struct ConsentState {
     const char *app_id;
     const char *perm;
     bool armed;   // headless auto-resolve scheduled once
+    // Entrance motion (P32). `enter` springs 0 (below + transparent) -> 1 (centred
+    // + opaque) on the first build. There is NO exit transition: dismissal is a
+    // process exit() that zsysd reads as the Allow/Deny result, and animating
+    // before exit() races the surface teardown against the grant round-trip
+    // (it blocks the requester's synchronous z_perm/z_notify_post) — so the modal
+    // resolves immediately on tap. (Exit transition deferred; see the phase notes.)
+    ZAnimated *enter;
 } ConsentState;
 
-// Buttons resolve the dialog by the process exit code zsysd reads.
+// Buttons resolve the dialog by the process exit code zsysd reads (0 = Allow).
 static void on_allow(ZApp *app, void *state) {
     (void)app;
     (void)state;
@@ -42,13 +49,24 @@ static void on_deny(ZApp *app, void *state) {
 }
 
 static ZView consent_body(ZApp *app, ConsentState *s) {
+    // The entrance/exit spring, allocated first + unconditionally for a stable id.
+    s->enter = z_animated_value(app, 0.0f);
     if (!s->armed) {
         s->armed = true;
+        // Freeze-frame hook (P32): ZELTO_CONSENT_ENTER=<0..1> pins the entrance
+        // mid-flight; otherwise spring it in on the first build.
+        const char *en = getenv("ZELTO_CONSENT_ENTER");
+        if (en && en[0]) {
+            z_animated_pin(s->enter, (float)atof(en));
+        } else {
+            z_animated_spring_with(s->enter, 1.0f, Z_SPRING_STANDARD);
+        }
         char *mode = getenv("ZELTO_CONSENT_AUTO");
         if (mode && mode[0]) {
             z_after(app, 400, auto_resolve, mode);
         }
     }
+    z_full_repaint(app);   // full-screen modal fading/moving over the app
     // The modal card: title, the "<app> wants to use the <perm>" line, and the
     // Deny / Allow actions (tinted via Background over the default button fill).
     ZView card = Shadow(Z_ELEV_3, Background(Z_COLOR_SURFACE,
@@ -71,13 +89,18 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
                         .spacing = 16, .align = Z_ALIGN_CENTER),
                     .padding = 28, .spacing = 18, .align = Z_ALIGN_LEADING)))));
 
+    // Entrance/exit (P32): the whole modal (dim backdrop + card) fades on `enter`
+    // via one Opacity, and the card additionally rises into place — a faked
+    // scale-up (the toolkit has no scale primitive) reading as a gentle lift.
+    float e = z_animated_get(s->enter);
+    ZView risen = OffsetXY(0.0f, (1.0f - e) * 24.0f, card);
     // Dim full-screen backdrop with the card centred in it.
-    return Background(Z_COLOR_SCRIM,
+    return Opacity(e, Background(Z_COLOR_SCRIM,
         VStack(
             Spacer(),
-            HStack(Spacer(), card, Spacer(), .align = Z_ALIGN_CENTER),
+            HStack(Spacer(), risen, Spacer(), .align = Z_ALIGN_CENTER),
             Spacer(),
-            .align = Z_ALIGN_CENTER));
+            .align = Z_ALIGN_CENTER)));
 }
 
 static ZView body_tr(ZApp *app, void *state) {

@@ -32,25 +32,48 @@
 // harness can widen the window (the native sim/QEMU capture may lag the change).
 #define VOL_SHOW_MS_DEFAULT 1500
 
+// How long the exit slide+fade runs before the surface is torn down transparent.
+#define VOL_EXIT_MS 340
+
 typedef struct VolState {
     bool inited;
     bool subscribed;
-    bool visible;         // is the HUD currently shown?
+    bool visible;         // is the HUD currently shown (or animating out)?
     int64_t volume;       // 0..VOL_MAX
     bool mute;
     int show_ms;
+    // Entrance/exit motion (P32). `enter` springs 0 (off-anchor, transparent) ->
+    // 1 (seated, opaque) on show and back to 0 before the surface hides; the panel
+    // Offset + Opacity are bound to it. `exiting` marks the fade-out leg so the
+    // body can tear the surface down once the spring has settled at 0.
+    ZAnimated *enter;
+    bool exiting;
 } VolState;
 
-// The timer fired: the HUD's dwell elapsed with no further change — hide it.
-static void hud_timeout(ZApp *app, void *ud) {
+// The exit slide+fade has run its course: drop the now-transparent surface.
+static void hud_finish_hide(ZApp *app, void *ud) {
     VolState *s = ud;
     s->visible = false;
+    s->exiting = false;
     z_full_repaint(app);   // repaint the now-transparent surface over the app
     z_invalidate(app);
 }
 
+// The dwell elapsed with no further change: start the exit (spring `enter` back to
+// 0) and, once it has settled, hide. Reduce Motion collapses the spring, so the
+// panel simply vanishes when hud_finish_hide fires.
+static void hud_timeout(ZApp *app, void *ud) {
+    VolState *s = ud;
+    s->exiting = true;
+    if (s->enter) {
+        z_animated_spring_with(s->enter, 0.0f, Z_SPRING_STANDARD);
+    }
+    z_after(app, VOL_EXIT_MS, hud_finish_hide, s);
+    z_invalidate(app);
+}
+
 // A setting changed. Only sys.volume / sys.mute concern us; either one pops the
-// HUD and (re)arms the dwell timer. Ignore everything else.
+// HUD (spring it in) and (re)arms the dwell timer. Ignore everything else.
 static void on_changed(ZApp *app, const char *key, const char *value, void *ud) {
     VolState *s = ud;
     if (!key || !value) {
@@ -64,6 +87,10 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         return;
     }
     s->visible = true;
+    s->exiting = false;
+    if (s->enter) {
+        z_animated_spring_with(s->enter, 1.0f, Z_SPRING_SNAPPY);  // slide+fade in
+    }
     z_after(app, s->show_ms, hud_timeout, s);
     z_invalidate(app);
 }
@@ -108,6 +135,8 @@ static ZView vol_body(ZApp *app, VolState *s) {
         const char *ms = getenv("ZELTO_VOLUME_MS");
         s->show_ms = (ms && atoi(ms) > 0) ? atoi(ms) : VOL_SHOW_MS_DEFAULT;
     }
+    // The entrance/exit spring, allocated first + unconditionally for a stable id.
+    s->enter = z_animated_value(app, 0.0f);
     if (!s->subscribed) {
         s->subscribed = true;
         z_settings_observe(app, on_changed, s);
@@ -115,12 +144,26 @@ static ZView vol_body(ZApp *app, VolState *s) {
     // Headless test hook: ZELTO_VOLUME_SHOW=1 pops the HUD on the first build (at
     // the seeded sys.volume/mute level) without needing a media-key/settings change
     // to fire the observer, so the rocker is screenshot-verifiable deterministically.
+    // ZELTO_VOLUME_ENTER=<0..1> instead pins the entrance spring mid-flight (a
+    // frozen slide+fade frame) — the P32 transition freeze-frame hook.
     static bool vol_show_applied = false;
     if (!vol_show_applied) {
         vol_show_applied = true;
+        const char *en = getenv("ZELTO_VOLUME_ENTER");
         const char *vs = getenv("ZELTO_VOLUME_SHOW");
-        if (vs && vs[0] == '1') {
+        if (en && en[0]) {
             s->visible = true;
+            // Under Reduce Motion the entrance spring is suppressed (collapses to
+            // an instant jump), so the "mid-transition" freeze has no mid-state to
+            // show — pin it fully seated instead. This makes the reduce-motion shot
+            // an A/B against 42 (same ENTER=0.5 request, but seated not half-faded),
+            // a still proof that the spring was collapsed.
+            float ev = z_setting_get_int("sys.reduce_motion", 0) ? 1.0f
+                                                                 : (float)atof(en);
+            z_animated_pin(s->enter, ev);
+        } else if (vs && vs[0] == '1') {
+            s->visible = true;
+            z_animated_set(s->enter, 1.0f);              // fully seated
         }
     }
     // Never catch input — the HUD is display-only; taps fall through.
@@ -131,11 +174,14 @@ static ZView vol_body(ZApp *app, VolState *s) {
         return Fill(Spacer());
     }
     // Centre the panel horizontally, a little below the status bar. A tint over
-    // transparent needs a full repaint.
+    // transparent (and a moving/fading subtree) needs a full repaint.
     z_full_repaint(app);
+    float e = z_animated_get(s->enter);
+    float slide = (1.0f - e) * -26.0f;   // slides down into place from above
+    ZView panel = Opacity(e, OffsetXY(0.0f, slide, rocker(s)));
     return Fill(VStack(
         Frame(0.0f, 80.0f, Spacer()),
-        HStack(Spacer(), rocker(s), Spacer(), .spacing = 0),
+        HStack(Spacer(), panel, Spacer(), .spacing = 0),
         Spacer(),
         .spacing = 0));
 }

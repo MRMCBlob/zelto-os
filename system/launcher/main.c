@@ -632,14 +632,35 @@ typedef struct LauncherState {
     double toast_until;
     char toast[64];
 
+    // App-open continuity cue (P32). When an app icon is tapped, `launch_ref` is
+    // the launching app's g_apps index (-1 = none) and `launch_anim` (an
+    // identity-keyed spring, 0..1) drives a brief hand-off: the tapped tile drifts
+    // toward screen centre while the rest of the home fades back, so opening reads
+    // as coming FROM that tile — the client-side "coordinated fade" (the toolkit
+    // has no scale primitive; the true zoom-from-tile is compositor-owned and
+    // deferred). Reset when the launcher returns to the foreground.
+    int launch_ref;
+    bool launch_inited;
+    ZAnimated *launch_anim;
+
     bool test_applied;        // env test-hook armed once
 } LauncherState;
 
 // --- helpers --------------------------------------------------------------
+// Begin the app-open cue then fork/exec the target. Recording the launching index
+// + waking the spring makes the tile the origin of the transition; the exec still
+// happens immediately so the app starts mapping while the cue plays underneath.
 static void launch_app(ZApp *app, void *state, void *data) {
-    (void)app;
-    (void)state;
+    LauncherState *s = state;
     const AppEntry *e = data;
+    if (s) {
+        s->launch_ref = (int)(e - g_apps);
+        if (s->launch_anim) {
+            z_animated_set(s->launch_anim, 0.0f);
+            z_animated_spring_with(s->launch_anim, 1.0f, Z_SPRING_SNAPPY);
+        }
+        z_invalidate(app);
+    }
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
@@ -1185,13 +1206,33 @@ static ZView entry_view(ZApp *app, LauncherState *s, const HomeEntry *e,
         return Frame(r.w, r.h, badged);
     }
 
+    ZView out;
     if (e->kind == HE_WIDGET) {
-        return Frame(r.w, r.h,
+        out = Frame(r.w, r.h,
             OnLongPress(enter_rearrange, pack_id(e->kind, e->ref), content));
+    } else {
+        out = Frame(r.w, r.h,
+            OnLongPress(enter_rearrange, pack_id(e->kind, e->ref),
+                OnTapData(launch_app, (void *)&g_apps[e->ref], content)));
     }
-    return Frame(r.w, r.h,
-        OnLongPress(enter_rearrange, pack_id(e->kind, e->ref),
-            OnTapData(launch_app, (void *)&g_apps[e->ref], content)));
+
+    // App-open continuity cue (P32): while a launch is in flight, the launching
+    // tile drifts toward screen centre (the transition's origin) and every other
+    // entry fades back, handing the screen off to the opening app.
+    float lp = (s->launch_ref >= 0 && s->launch_anim)
+                   ? z_animated_get(s->launch_anim)
+                   : 0.0f;
+    if (lp > 0.001f) {
+        if (e->kind == HE_APP && s->launch_ref == e->ref) {
+            float tcx = r.x + r.w * 0.5f, tcy = r.y + r.h * 0.5f;
+            float dx = (s->surface_w * 0.5f - tcx) * lp * 0.28f;
+            float dy = (s->surface_h * 0.5f - tcy) * lp * 0.28f;
+            out = OffsetXY(dx, dy, out);
+        } else {
+            out = Opacity(1.0f - 0.7f * lp, out);
+        }
+    }
+    return out;
 }
 
 // Place a fixed-size cell view absolutely at rect `r` inside a full-surface
@@ -1249,6 +1290,22 @@ static ZView page_dots(int npages, float page_v) {
 }
 
 // --- body -----------------------------------------------------------------
+// Returning to the foreground (the launched app closed / Home pressed): clear the
+// app-open cue so the tile and home are back to normal.
+static void on_launcher_lifecycle(ZApp *app, void *state, ZLifecycle ev) {
+    LauncherState *s = state;
+    // Skip the reset when the launch cue is frozen for a screenshot
+    // (ZELTO_HOME_LAUNCH) — the launcher activating at boot would otherwise clear
+    // the pinned cue before the frame is grabbed.
+    if (ev == Z_LC_ACTIVE && !getenv("ZELTO_HOME_LAUNCH")) {
+        s->launch_ref = -1;
+        if (s->launch_anim) {
+            z_animated_set(s->launch_anim, 0.0f);
+        }
+        z_invalidate(app);
+    }
+}
+
 static ZView launcher_body(ZApp *app, LauncherState *state) {
     // Retained hooks FIRST + unconditionally so their call-order identity is
     // stable: drawer_anim (cell 0), ghost_anim (cell 1, the only reorder anim),
@@ -1259,6 +1316,14 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     state->drawer_anim = z_animated_value(app, 0.0f);
     state->ghost_anim = z_animated_value(app, 0.0f);
     state->page_anim = z_animated_value(app, 0.0f);
+    // App-open cue spring — IDENTITY-keyed, so it shares no cell with the three
+    // call-order anims above (adding it here can't shift their identity).
+    state->launch_anim = z_animated_keyed(app, 0x1A0C1DULL /*'launch'*/, 0.0f);
+    if (!state->launch_inited) {
+        state->launch_inited = true;
+        state->launch_ref = -1;
+        z_on_lifecycle(app, on_launcher_lifecycle);
+    }
     state->surface_w = (float)z_app_width(app);
     state->surface_h = (float)z_app_height(app);
     ensure_home_layout();
@@ -1341,6 +1406,21 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                 state->held = false;
                 state->landing = true;
             }
+        }
+        // ZELTO_HOME_LAUNCH=1 freezes the app-open cue: mark the first placed home
+        // APP entry as launching and pin its spring at ZELTO_HOME_LAUNCH_PROG
+        // (default 0.6), so the tile-drift + home-fade hand-off is a still shot.
+        const char *lc = getenv("ZELTO_HOME_LAUNCH");
+        if (lc && lc[0] == '1') {
+            for (int i = 0; i < g_n_home; i++) {
+                if (g_home[i].kind == HE_APP) {
+                    state->launch_ref = g_home[i].ref;
+                    break;
+                }
+            }
+            const char *lp = getenv("ZELTO_HOME_LAUNCH_PROG");
+            z_animated_pin(state->launch_anim,
+                           lp && lp[0] ? (float)atof(lp) : 0.6f);
         }
     }
 
@@ -1697,18 +1777,43 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                                   .axis = Z_AXIS_VERTICAL)),
                 .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING))));
 
-    // Toast.
+    // Toast (P32): a spring-driven slide-up + fade on the SNAPPY token. The enter
+    // spring is IDENTITY-keyed (not call-order) so it never disturbs the launcher's
+    // other retained cells; it is driven toward 1 while the toast dwells and back to
+    // 0 in its final ~0.3s, and the toast renders while any of it is still visible.
     ZView toast = NULL;
-    if (state->toast_until > 0.0 && now_s() < state->toast_until) {
+    ZAnimated *toast_enter = z_animated_keyed(app, 0x746F617374ULL /*'toast'*/, 0.0f);
+    // Freeze-frame hook: ZELTO_TOAST_ENTER=<0..1> parks a labelled toast on screen
+    // at a pinned entrance progress for a still mid-transition shot.
+    const char *tenv = getenv("ZELTO_TOAST_ENTER");
+    if (tenv && tenv[0]) {
+        if (!state->toast[0]) {
+            snprintf(state->toast, sizeof(state->toast), "Added to Home");
+        }
+        state->toast_until = now_s() + 100.0;
+    }
+    double t_remaining = state->toast_until - now_s();
+    bool toast_dwell = state->toast_until > 0.0 && t_remaining > 0.30;
+    float t_target = toast_dwell ? 1.0f : 0.0f;
+    if (z_animated_target(toast_enter) != t_target) {
+        z_animated_spring_with(toast_enter, t_target, Z_SPRING_SNAPPY);
+    }
+    if (tenv && tenv[0]) {
+        z_animated_pin(toast_enter, (float)atof(tenv));
+    }
+    float te = z_animated_get(toast_enter);
+    if ((state->toast_until > 0.0 && now_s() < state->toast_until) ||
+        te > 0.01f || z_animated_active(toast_enter)) {
         z_invalidate(app);
-        toast = Fill(VStack(
+        float tslide = (1.0f - te) * 28.0f;   // rises up into place from below
+        toast = Opacity(te, OffsetXY(0.0f, tslide, Fill(VStack(
             Spacer(),
             Background(Z_COLOR_SURFACE_2,
                 CornerRadius(12.0f,
                     Padding(14.0f,
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_BODY, Text("%s", state->toast)))))),
-            .spacing = 0, .padding = 100, .align = Z_ALIGN_CENTER));
+            .spacing = 0, .padding = 100, .align = Z_ALIGN_CENTER))));
     }
 
     // A moving/overlay layer forces a full repaint (partial path under-damages a
@@ -1717,7 +1822,9 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // translates every page subtree, so it needs the full repaint too.
     bool paging = z_animated_active(state->page_anim) ||
                   fabsf(page_v - floorf(page_v + 0.5f)) > 0.001f;
-    if (drawer_v > 0.001f || state->rearrange || toast || paging) {
+    bool launching = state->launch_ref >= 0 &&
+                     z_animated_get(state->launch_anim) > 0.001f;
+    if (drawer_v > 0.001f || state->rearrange || toast || paging || launching) {
         z_full_repaint(app);
     }
 

@@ -96,6 +96,12 @@ typedef struct ShadeState {
     float pull_base;                 // pull value captured at a drag's begin
     bool dragging;                   // a pull/close drag is in flight
 
+    // Heads-up banner entrance (P32). Springs 0 -> 1 when the first banner
+    // arrives (the cards strip slides down + fades in) and resets to 0 once the
+    // last banner clears, so the next heads-up enters fresh. Bound to the strip's
+    // Offset + Opacity in the collapsed-banner branch.
+    ZAnimated *banner_enter;
+
     // Quick-settings toggles, loaded once from prefs and persisted on flip.
     bool qs_loaded;
     bool qs_wifi, qs_mute, qs_bright;
@@ -139,6 +145,8 @@ static void on_qs_setting(ZApp *app, const char *key, const char *value,
 }
 
 // --- notification sink (zsysd push) ---------------------------------------
+static int active_count(ShadeState *s);   // defined below; used by on_show
+
 // Find an active banner by id (NULL if none).
 static Banner *banner_by_id(ShadeState *s, int64_t id) {
     for (int i = 0; i < MAX_BANNERS; i++) {
@@ -153,6 +161,7 @@ static Banner *banner_by_id(ShadeState *s, int64_t id) {
 static void on_show(ZApp *app, const ZShownNotification *n, void *ud) {
     (void)app;
     ShadeState *s = ud;
+    bool was_empty = active_count(s) == 0;
     Banner *b = banner_by_id(s, n->id);
     if (!b) {
         for (int i = 0; i < MAX_BANNERS; i++) {
@@ -164,6 +173,11 @@ static void on_show(ZApp *app, const ZShownNotification *n, void *ud) {
     }
     if (!b) {
         return;   // strip full
+    }
+    // First banner of a fresh heads-up: spring the cards strip in (slide+fade).
+    if (was_empty && s->banner_enter) {
+        z_animated_set(s->banner_enter, 0.0f);
+        z_animated_spring_with(s->banner_enter, 1.0f, Z_SPRING_SNAPPY);
     }
     b->used = true;
     b->id = n->id;
@@ -197,6 +211,11 @@ static void on_hide(ZApp *app, int64_t id, void *ud) {
         s->n_history++;
     }
     b->used = false;
+    // Last banner cleared: reset the entrance spring so the next heads-up enters
+    // fresh from off-anchor.
+    if (active_count(s) == 0 && s->banner_enter) {
+        z_animated_set(s->banner_enter, 0.0f);
+    }
 }
 
 // Count active banners.
@@ -298,11 +317,24 @@ static void toggle_bright(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
-// One quick-settings toggle chip: a rounded label that recolours by its on/off
-// bool (accent on, dark off) and flips it on tap.
-static ZView qs_chip(ZAction on_tap, const char *label, bool on) {
-    ZColor bg = on ? Z_COLOR_PRIMARY
-                   : Z_COLOR_SURFACE_3;
+// One quick-settings toggle chip: a rounded label whose fill CROSS-FADES between
+// off (SURFACE_3) and on (PRIMARY) on a spring-backed value (P32) instead of
+// hard-swapping, and flips on tap. The spring is IDENTITY-keyed (`key`) so each
+// chip keeps its own animation across rebuilds. ZELTO_QS_ANIM=<0..1> pins every
+// chip's cross-fade mid-flight for a still shot.
+static ZView qs_chip(ZApp *app, uint64_t key, ZAction on_tap, const char *label,
+                     bool on) {
+    ZAnimated *t = z_animated_keyed(app, key, on ? 1.0f : 0.0f);
+    float goal = on ? 1.0f : 0.0f;
+    if (z_animated_target(t) != goal) {
+        z_animated_spring_with(t, goal, Z_SPRING_STANDARD);
+    }
+    const char *qa = getenv("ZELTO_QS_ANIM");
+    if (qa && qa[0]) {
+        z_animated_pin(t, (float)atof(qa));
+    }
+    ZColor bg = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY,
+                             z_animated_get(t));
     return Grow(1.0f,
         OnTap(on_tap,
             Background(bg,
@@ -314,7 +346,7 @@ static ZView qs_chip(ZAction on_tap, const char *label, bool on) {
 }
 
 // The quick-settings block: a big clock + a row of toggle chips.
-static ZView qs_block(ShadeState *s) {
+static ZView qs_block(ZApp *app, ShadeState *s) {
     char clock[16] = "--:--";
     time_t t = time(NULL);
     struct tm tmv;
@@ -325,9 +357,9 @@ static ZView qs_block(ShadeState *s) {
         Foreground(Z_COLOR_TEXT_INV,
             Font(Z_FONT_LARGE_TITLE, Text("%s", clock))),
         HStack(
-            qs_chip(toggle_wifi, "Wi-Fi", s->qs_wifi),
-            qs_chip(toggle_mute, "Mute", s->qs_mute),
-            qs_chip(toggle_bright, "Bright", s->qs_bright),
+            qs_chip(app, 0x7135F1u, toggle_wifi, "Wi-Fi", s->qs_wifi),
+            qs_chip(app, 0x7135F2u, toggle_mute, "Mute", s->qs_mute),
+            qs_chip(app, 0x7135F3u, toggle_bright, "Bright", s->qs_bright),
             .spacing = 12, .align = Z_ALIGN_CENTER),
         .spacing = 16, .align = Z_ALIGN_CENTER);
 }
@@ -394,7 +426,33 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         z_settings_observe(app, on_qs_setting, s);
     }
     s->pull = z_animated_value(app, 0.0f);
+    s->banner_enter = z_animated_value(app, 0.0f);
     ensure_qs(s);
+
+    // Freeze-frame hook (P32): ZELTO_BANNER_ENTER=<0..1> pins the heads-up strip's
+    // entrance spring, so a banner shot can be captured mid slide+fade regardless
+    // of when the (spawn-driven) notification actually lands.
+    const char *be_env = getenv("ZELTO_BANNER_ENTER");
+    if (be_env && be_env[0]) {
+        z_animated_pin(s->banner_enter, (float)atof(be_env));
+    }
+    // ZELTO_BANNER_DEMO=1 fabricates a heads-up banner directly in the sink on the
+    // first build, so the entrance transition is deterministically shot-verifiable
+    // WITHOUT the flaky multi-process post->consent->grant->deliver path.
+    static bool banner_demo_applied = false;
+    if (!banner_demo_applied) {
+        banner_demo_applied = true;
+        if (getenv("ZELTO_BANNER_DEMO") && !s->banners[0].used) {
+            Banner *b = &s->banners[0];
+            b->used = true;
+            b->id = 1;
+            snprintf(b->app_id, sizeof(b->app_id), "os.zelto.pinger");
+            snprintf(b->title, sizeof(b->title), "Ping");
+            snprintf(b->body, sizeof(b->body), "You have a new ping");
+            snprintf(b->action_id, sizeof(b->action_id), "ack");
+            snprintf(b->action_title, sizeof(b->action_title), "Ack");
+        }
+    }
 
     // Headless test hook: ZELTO_SHADE_OPEN=1 seeds the panel fully pulled down on
     // the first build, so the expanded quick-settings + notifications shade is
@@ -441,7 +499,8 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
             return Fill(VStack(strip, Spacer(),
                                .spacing = 0, .align = Z_ALIGN_CENTER));
         }
-        // Banners up: the heads-up cards strip (opaque cards over transparent).
+        // Banners up: the heads-up cards strip (opaque cards over transparent),
+        // sliding down + fading in on the entrance spring (P32).
         z_full_repaint(app);
         ZStackOpts col = {.padding = 8, .spacing = 8, .align = Z_ALIGN_LEADING};
         int k = 0;
@@ -451,7 +510,10 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
             }
         }
         col.children[k++] = Spacer();
-        return OnPan(on_shade_pan, Fill(z_stack(Z_AXIS_VERTICAL, &col)));
+        float be = z_animated_get(s->banner_enter);
+        float bslide = (1.0f - be) * -24.0f;   // slides down from behind the bar
+        return OnPan(on_shade_pan,
+            Opacity(be, OffsetXY(0.0f, bslide, Fill(z_stack(Z_AXIS_VERTICAL, &col)))));
     }
 
     // ----- EXPANDED: the whole surface takes input; the panel slides down -----
@@ -464,7 +526,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     // drag anywhere on the panel still controls the pull, not a scroll.
     ZStackOpts list = {.spacing = 10, .padding = 22, .align = Z_ALIGN_LEADING};
     int li = 0;
-    list.children[li++] = qs_block(s);
+    list.children[li++] = qs_block(app, s);
     list.children[li++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("NOTIFICATIONS")));
     bool any = false;
