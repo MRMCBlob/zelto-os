@@ -153,6 +153,49 @@ run_shot 19-consent "Permission consent dialog (Allow / Deny modal)" 7 \
 run_shot 20-banner "Heads-up notification banner (auto-posted + auto-granted)" 10 \
     SIM_APP=zelto-pinger ZELTO_PINGER_POST=1 ZELTO_CONSENT_AUTO=allow
 
+# ---------------------------------------------------------------------------
+# TRANSITION FREEZE-FRAMES (P32): each transient surface's entrance pinned mid-
+# flight via a ZELTO_*_ENTER=<0..1> hook, so the slide+fade is shot-verifiable.
+# ---------------------------------------------------------------------------
+SEED='sys.volume\t7\n' \
+    run_shot 42-volume-enter "Volume HUD mid slide+fade entrance (frozen 0.5)" 6 \
+    ZELTO_VOLUME_ENTER=0.5
+run_shot 43-consent-enter "Consent modal mid slide-up+fade entrance (frozen 0.5)" 7 \
+    SIM_CONSENT="os.zelto.pinger notifications" ZELTO_CONSENT_ENTER=0.5
+# Deterministic: ZELTO_BANNER_DEMO fabricates the banner in the shade sink, so the
+# entrance is verifiable without the flaky post->consent->grant->deliver dance.
+run_shot 44-banner-enter "Heads-up banner mid slide+fade entrance (frozen 0.5)" 6 \
+    ZELTO_BANNER_DEMO=1 ZELTO_BANNER_ENTER=0.5
+run_shot 45-toast-enter "Launcher toast mid slide-up+fade entrance (frozen 0.5)" 6 \
+    ZELTO_TOAST_ENTER=0.5
+
+# State-change cross-fades (P32 item 2): a toggle's on/off fill animates instead
+# of hard-swapping — pinned mid cross-fade via ZELTO_QS_ANIM. Plus the P31 press
+# flash verified over a bottom-nav button (ZELTO_PRESS_APP scopes it to the nav).
+run_shot 46-qs-crossfade "Quick-settings chips mid on/off cross-fade (frozen 0.5)" 6 \
+    ZELTO_SHADE_OPEN=1 ZELTO_QS_ANIM=0.5
+run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)" 8 \
+    SIM_APP=zelto-settings ZELTO_QS_ANIM=0.5
+run_shot 48-nav-press "Bottom-nav Back button press flash (P31 feedback)" 6 \
+    ZELTO_PRESS_APP=nav_body ZELTO_PRESS_X=120 ZELTO_PRESS_Y=30
+
+# App-open continuity (P32 item 3b): the tapped tile drifts toward centre while the
+# rest of home fades — the launch hand-off, frozen mid-flight.
+run_shot 49-home-launch "App-open cue: tapped tile drifts + home fades (frozen 0.6)" 6 \
+    ZELTO_HOME_LAUNCH=1
+
+# In-app Navigator push, unified on the STANDARD token with a coordinated slide +
+# cross-fade (P32 item 3a), frozen mid-push.
+run_shot 50-nav-push "Navigator push: detail slides + cross-fades in (frozen 0.45)" 8 \
+    SIM_APP=zelto-hello ZELTO_NAV_PUSH=0.45
+
+# Reduce Motion (P32 item 4): with sys.reduce_motion=1 the entrance spring is
+# collapsed, so the SAME ENTER=0.5 request that half-fades the HUD in shot 42 now
+# shows it fully seated — a still A/B proof that springs are suppressed.
+SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
+    run_shot 51-reduce-motion "Reduce Motion: volume entrance collapsed (vs 42)" 6 \
+    ZELTO_VOLUME_ENTER=0.5
+
 # ===========================================================================
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
 # ===========================================================================

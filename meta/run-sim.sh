@@ -246,7 +246,19 @@ if [ -n "${SHOT:-}" ]; then
     sleep "$SHOT_DELAY"
     mkdir -p "$(dirname "$SHOT")"
     if command -v grim >/dev/null 2>&1; then
-        grim "$SHOT" && echo "==> wrote $SHOT"
+        # grim can race an unsettled headless zcomp on a cold boot ("failed to
+        # create display" = the screencopy/output isn't up yet). Retry a few times
+        # a second apart instead of re-booting the whole sim, so a transient race
+        # doesn't drop the shot. (Each run_shot in shots.sh is a fresh cold boot,
+        # so every capture is a "first shot" and hits this more often.)
+        for attempt in 1 2 3 4 5 6; do
+            if grim "$SHOT" 2>/dev/null && [ -s "$SHOT" ]; then
+                echo "==> wrote $SHOT (grim attempt $attempt)"
+                break
+            fi
+            echo "   grim attempt $attempt: display not ready, retrying"
+            sleep 1.5
+        done
     else
         echo "!! grim not installed (apt install grim); cannot screenshot"
     fi
