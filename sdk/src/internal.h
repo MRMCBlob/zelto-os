@@ -39,10 +39,12 @@ struct ZNode {
     bool has_bg;
     ZColor bg;
     float radius;
+    float elevation;      // soft drop-shadow blur px (Shadow(); 0 = flat)
     ZColor color;         // Rect fill
     char *text;           // Text content (arena-owned)
     float font_size;
     ZColor fg;
+    bool text_shadow;     // draw a dark offset copy under the ink (legibility over art)
     char *img_path;       // Z_K_IMAGE: source path (arena-owned; PNG or SVG by ext)
     bool img_cover;       // Z_K_IMAGE: cover (aspect-fill, center-crop) vs default fit
 

@@ -77,6 +77,19 @@ static inline ZColor z_scrim(uint8_t a) { return z_rgba(0, 0, 0, a); }
 // Modal backdrop behind an overlay card (chooser / consent / recents).
 #define Z_COLOR_SCRIM       z_scrim(0xb0)
 
+// --- Elevation — soft drop-shadow depth levels ---------------------------
+// A raised surface (a card, the shade panel, an overlay modal, a lifted ghost)
+// casts a soft shadow so it reads as floating above what it sits on. The value
+// is the shadow's blur radius in logical px; the renderer derives the spread,
+// downward offset and peak opacity from it (light from directly above). Pair a
+// level with Shadow() — the higher the level, the further off the surface it
+// floats. SHADOW is the ink (near-black; alpha is scaled per pixel by the
+// distance falloff, so the token's own alpha is the peak under the surface).
+#define Z_ELEV_1   6.0f    // subtle: chips, small raised rows
+#define Z_ELEV_2   14.0f   // cards, home widgets
+#define Z_ELEV_3   28.0f   // overlays, modals, the lifted ghost
+#define Z_COLOR_SHADOW      z_scrim(0x80)
+
 // --- Back-compat aliases (older token names) -----------------------------
 #define Z_COLOR_BACKGROUND Z_COLOR_BG
 

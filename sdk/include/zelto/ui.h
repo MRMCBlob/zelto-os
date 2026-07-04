@@ -292,6 +292,20 @@ ZView Frame(float width, float height, ZView view);
 ZView CornerRadius(float radius, ZView view);
 ZView Font(ZFont size, ZView view);
 ZView Grow(float weight, ZView view);
+
+// Cast a soft drop shadow behind this view — the toolkit's elevation cue. Pass
+// an elevation token (Z_ELEV_1/2/3, the shadow blur in px); the renderer paints
+// a blurred rounded-rect penumbra (matching the view's own corner radius, offset
+// slightly downward as if lit from above) just before the view's fill, so a card
+// / panel / modal / lifted item reads as floating above what it sits on. Apply
+// it to the raised node itself (the one carrying the Background + CornerRadius);
+// a shadow with no fill behind it still draws (an ambient ring). 0 = flat.
+ZView Shadow(float elevation, ZView view);
+
+// Draw a dark, slightly-offset copy of this text under its ink so a light label
+// stays legible over a bright or busy backdrop (a home icon caption over the
+// wallpaper) without a full scrim behind it. No-op on a non-Text view.
+ZView TextShadow(ZView view);
 // Expand this view to fill its parent's inner box. A depth stack (ZStack)
 // otherwise centres each child at its own content size; Fill is how a
 // full-screen layer (e.g. a wallpaper, or a slide-up sheet) covers the stack.

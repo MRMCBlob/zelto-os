@@ -242,6 +242,94 @@ static void blit_image(ZCanvas *c, ZView n) {
     }
 }
 
+// Signed distance from (px,py) to the rounded rectangle [rx0,rx1) x [ry0,ry1)
+// with corner radius r: negative inside, 0 on the edge, positive (the Euclidean
+// distance) outside. Used to shade a soft drop shadow's falloff.
+static float sdf_round_rect(float px, float py, float rx0, float ry0, float rx1,
+                            float ry1, float r) {
+    float cx = (rx0 + rx1) * 0.5f, cy = (ry0 + ry1) * 0.5f;
+    float hw = (rx1 - rx0) * 0.5f, hh = (ry1 - ry0) * 0.5f;
+    float qx = fabsf(px - cx) - (hw - r);
+    float qy = fabsf(py - cy) - (hh - r);
+    float ax = qx > 0.0f ? qx : 0.0f, ay = qy > 0.0f ? qy : 0.0f;
+    float outside = sqrtf(ax * ax + ay * ay);
+    float mx = qx > qy ? qx : qy;
+    float inside = mx < 0.0f ? mx : 0.0f;
+    return outside + inside - r;
+}
+
+// Paint a soft drop shadow behind a node's frame (Shadow()/elevation). The shadow
+// is the node's rounded rect dropped slightly downward (light from above) and
+// blurred over `e` px: for each pixel we take the signed distance to that shifted
+// rect and fade the ink from full (inside) to zero (e px out) with a smoothstep.
+// Pixels the node's own fill will overdraw are skipped, so a translucent card is
+// never muddied from beneath and opaque cards waste no work — the visible result
+// is the penumbra crescent around (mostly below) the surface. Black ink, source-
+// over in premultiplied space preserving destination alpha (like fill_round_rect),
+// so it composites correctly over an opaque surface, the scrim, or bare transparency
+// (a floating overlay's halo over the app beneath).
+static void paint_shadow(ZCanvas *c, ZView n) {
+    float e = n->elevation;
+    if (e < 0.5f) {
+        return;
+    }
+    float dy = e * 0.42f;   // downward drop
+
+    float nx0 = n->x, ny0 = n->y, nx1 = n->x + n->w, ny1 = n->y + n->h;
+    float r = n->radius;
+    float rw = nx1 - nx0, rh = ny1 - ny0;
+    if (r > rw / 2.0f) { r = rw / 2.0f; }
+    if (r > rh / 2.0f) { r = rh / 2.0f; }
+
+    // The shadow shape: the node rect shifted down, with marginally softer corners.
+    float sx0 = nx0, sy0 = ny0 + dy, sx1 = nx1, sy1 = ny1 + dy;
+    float sr = r + 1.0f;
+
+    ZColor sh = Z_COLOR_SHADOW;
+
+    int x0 = (int)floorf(sx0 - e), y0 = (int)floorf(sy0 - e);
+    int x1 = (int)ceilf(sx1 + e), y1 = (int)ceilf(sy1 + e);
+    if (x0 < c->clip_x0) { x0 = c->clip_x0; }
+    if (y0 < c->clip_y0) { y0 = c->clip_y0; }
+    if (x1 > c->clip_x1) { x1 = c->clip_x1; }
+    if (y1 > c->clip_y1) { y1 = c->clip_y1; }
+
+    // The node's own fill rect (int, matching fill_round_rect) — pixels it will
+    // cover are skipped here.
+    int frx0 = (int)(nx0 + 0.5f), fry0 = (int)(ny0 + 0.5f);
+    int frx1 = (int)(nx1 + 0.5f), fry1 = (int)(ny1 + 0.5f);
+
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            if (x >= frx0 && x < frx1 && y >= fry0 && y < fry1 &&
+                rrect_inside(x, y, frx0, fry0, frx1, fry1, r)) {
+                continue;
+            }
+            float d = sdf_round_rect((float)x + 0.5f, (float)y + 0.5f, sx0, sy0,
+                                     sx1, sy1, sr);
+            if (d >= e) {
+                continue;
+            }
+            float t = d < 0.0f ? 0.0f : d / e;
+            float cov = 1.0f - t * t * (3.0f - 2.0f * t);   // smoothstep falloff
+            uint32_t sa = (uint32_t)((float)sh.a * cov + 0.5f);
+            if (sa == 0) {
+                continue;
+            }
+            uint32_t *dst = &c->pixels[y * c->stride_px + x];
+            uint32_t d0 = *dst;
+            uint32_t da = (d0 >> 24) & 0xff, dr = (d0 >> 16) & 0xff,
+                     dg = (d0 >> 8) & 0xff, db = d0 & 0xff;
+            uint32_t inv = 255u - sa;                  // ink is black: src.rgb = 0
+            uint32_t oa = sa + da * inv / 255u;
+            uint32_t rr = dr * inv / 255u;
+            uint32_t gg = dg * inv / 255u;
+            uint32_t bb = db * inv / 255u;
+            *dst = (oa << 24) | (rr << 16) | (gg << 8) | bb;
+        }
+    }
+}
+
 // Draw a rounded plate just outside a node's frame; the node's own fill paints
 // over the interior immediately after, leaving a thin border = the focus ring.
 static void stroke_focus_ring(ZCanvas *c, ZView n) {
@@ -280,6 +368,9 @@ static void paint(ZCanvas *canvas, ZView n) {
         }
     }
 
+    if (n->elevation > 0.5f) {
+        paint_shadow(canvas, n);
+    }
     if (n->focused && (n->has_bg || n->kind == Z_K_RECT)) {
         stroke_focus_ring(canvas, n);
     }
@@ -291,6 +382,12 @@ static void paint(ZCanvas *canvas, ZView n) {
         fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius, n->color);
         break;
     case Z_K_TEXT:
+        if (n->text_shadow) {
+            // A dark, slightly-dropped copy under the ink so a light label holds
+            // legibility over a bright/busy backdrop (a home caption over art).
+            z_text_draw(canvas, n->text, n->font_size, z_scrim(0x9e),
+                        n->x + n->padding + 1.0f, n->y + n->padding + 1.5f);
+        }
         z_text_draw(canvas, n->text, n->font_size, n->fg, n->x + n->padding,
                     n->y + n->padding);
         break;

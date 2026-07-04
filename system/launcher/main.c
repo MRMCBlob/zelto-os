@@ -1126,16 +1126,17 @@ static ZView app_icon_tile(const AppEntry *e) {
         ? Frame(ICON_SIZE - 2.0f * ICON_INSET, ICON_SIZE - 2.0f * ICON_INSET,
                 Image(e->icon_path))
         : app_monogram(e);
-    return Frame(ICON_SIZE, ICON_SIZE,
+    return Shadow(Z_ELEV_1, Frame(ICON_SIZE, ICON_SIZE,
         Background(e->color,
             CornerRadius(ICON_RADIUS,
-                ZStack(art, .align = Z_ALIGN_CENTER))));
+                ZStack(art, .align = Z_ALIGN_CENTER)))));
 }
 
 static ZView app_cell_content(const AppEntry *e) {
     return VStack(
         app_icon_tile(e),
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CAPTION, Text("%s", e->name))),
+        TextShadow(Foreground(Z_COLOR_TEXT_INV,
+            Font(Z_FONT_CAPTION, Text("%s", e->name)))),
         .spacing = 8, .align = Z_ALIGN_CENTER);
 }
 
@@ -1575,9 +1576,10 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             VStack(
                 Rect(.color = Z_COLOR_TEXT_MUTED,
                      .width = 56, .height = 5, .radius = 3),
-                Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("^"))),
-                Foreground(Z_COLOR_TEXT_MUTED,
-                    Font(Z_FONT_CAPTION, Text("All apps"))),
+                TextShadow(Foreground(Z_COLOR_TEXT_INV,
+                    Font(Z_FONT_CALLOUT, Text("^")))),
+                TextShadow(Foreground(Z_COLOR_TEXT_MUTED,
+                    Font(Z_FONT_CAPTION, Text("All apps")))),
                 .spacing = 4, .align = Z_ALIGN_CENTER));
     ZStackOpts bstack = {.spacing = 12, .align = Z_ALIGN_CENTER,
                          .padding = state->rearrange ? 28.0f : 20.0f};

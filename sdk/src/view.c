@@ -385,6 +385,16 @@ ZView Grow(float weight, ZView view) {
     return view;
 }
 
+ZView Shadow(float elevation, ZView view) {
+    view->elevation = elevation;
+    return view;
+}
+
+ZView TextShadow(ZView view) {
+    view->text_shadow = true;
+    return view;
+}
+
 ZView Fill(ZView view) {
     view->fill = true;
     return view;
@@ -447,8 +457,10 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     // A translucent "glass" fill (not the near-opaque SURFACE) so a widget laid
     // over the home wallpaper reads as an elevated card the wallpaper glows
     // through, instead of a flat black slab. The software renderer's source-over
-    // path composites the alpha over whatever is beneath.
-    return Background(z_rgba(0x1e, 0x26, 0x30, 0xcc),
-        CornerRadius(20.0f,
-            Padding(18.0f, z_stack(Z_AXIS_VERTICAL, &col))));
+    // path composites the alpha over whatever is beneath. A soft drop shadow
+    // (Z_ELEV_2) lifts the card off the wallpaper so the glass reads as floating.
+    return Shadow(Z_ELEV_2,
+        Background(z_rgba(0x1e, 0x26, 0x30, 0xcc),
+            CornerRadius(20.0f,
+                Padding(18.0f, z_stack(Z_AXIS_VERTICAL, &col)))));
 }

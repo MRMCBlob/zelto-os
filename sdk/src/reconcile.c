@@ -43,11 +43,19 @@ void z_damage_merge(ZDamage *dst, const ZDamage *src) {
 }
 
 static ZIRect node_rect(ZView n) {
+    // A drop shadow (Shadow()/elevation) spills its blur (~e) plus a downward
+    // drop (~0.42e) beyond the frame, so an elevated node damages a wider box —
+    // else a partial repaint would leave stale penumbra when it moves/changes.
+    int m = Z_DAMAGE_MARGIN;
+    if (n->elevation > 0.5f) {
+        int em = (int)(n->elevation * 1.5f) + 2;
+        if (em > m) { m = em; }
+    }
     ZIRect r = {
-        .x0 = (int)n->x - Z_DAMAGE_MARGIN,
-        .y0 = (int)n->y - Z_DAMAGE_MARGIN,
-        .x1 = (int)(n->x + n->w) + Z_DAMAGE_MARGIN,
-        .y1 = (int)(n->y + n->h) + Z_DAMAGE_MARGIN,
+        .x0 = (int)n->x - m,
+        .y0 = (int)n->y - m,
+        .x1 = (int)(n->x + n->w) + m,
+        .y1 = (int)(n->y + n->h) + m,
     };
     return r;
 }
@@ -63,7 +71,8 @@ static bool node_changed(ZView a, ZView b) {
         return true;
     }
     if (a->has_bg != b->has_bg || a->radius != b->radius ||
-        a->focused != b->focused || a->font_size != b->font_size) {
+        a->focused != b->focused || a->font_size != b->font_size ||
+        a->elevation != b->elevation || a->text_shadow != b->text_shadow) {
         return true;
     }
     if (a->has_bg && !color_eq(a->bg, b->bg)) {
