@@ -119,8 +119,8 @@ static ZView recents_body(ZApp *app, RecentsState *s) {
     ZStackOpts card_opts = {.padding = 24, .spacing = 14,
                             .align = Z_ALIGN_LEADING};
     int k = 0;
-    card_opts.children[k++] = Foreground(Z_COLOR_TEXT_INV,
-        Font(Z_FONT_TITLE, Text("Recents")));
+    card_opts.children[k++] = Weight(Z_WEIGHT_SEMIBOLD,
+        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("Recents"))));
 
     int shown = 0;
     for (int i = 0; i < n && k < Z_MAX_CHILDREN - 2; i++) {

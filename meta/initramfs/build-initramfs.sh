@@ -80,7 +80,7 @@ STORE="${STORE:-$REPO_ROOT/build-arm64/system/apps/store/zelto-store}"
 WIDGET="${WIDGET:-$REPO_ROOT/build-arm64/system/apps/widget/zelto-widget}"
 TRUSTED_PUB="${TRUSTED_PUB:-$REPO_ROOT/meta/keys/trusted.pub}"
 SIGN_KEY="${SIGN_KEY:-$REPO_ROOT/meta/keys/zelto-dev.pem}"
-FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
+FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/Satoshi-Variable.ttf}"
 ARM64_LIBDIR="${ARM64_LIBDIR:-/usr/lib/aarch64-linux-gnu}"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/meta/build/initramfs}"
 OUT_DIR="$REPO_ROOT/device/qemu-virt/out"
@@ -165,7 +165,7 @@ install_bin "$STORE"    zelto-store      # installer UI demo app ("Store")
 # widget.zap (built below) and is installed at runtime by zelto-install.
 if [ -f "$FONT_SRC" ]; then
     mkdir -p "$ROOT/usr/share/zelto/fonts"
-    cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/ZeltoSans.ttf"
+    cp "$FONT_SRC" "$ROOT/usr/share/zelto/fonts/Satoshi-Variable.ttf"
 fi
 
 # --- app manifests ----------------------------------------------------------

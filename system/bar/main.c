@@ -159,14 +159,15 @@ static ZView bar_body(ZApp *app, BarState *state) {
     cluster.children[k++] = Frame(pip_w, 10.0f,
         Rect(.color = Z_COLOR_TEXT, .radius = 3));  // brightness
     cluster.children[k++] = battery_glyph(state->battery_pct, state->charging);
-    cluster.children[k++] = Foreground(Z_COLOR_TEXT_INV, Text("%s", clock));
+    cluster.children[k++] = Weight(Z_WEIGHT_MEDIUM,
+        Foreground(Z_COLOR_TEXT_INV, Text("%s", clock)));
 
     // A long-press on the bar manually locks now (bumps sys.lock_now).
     return OnLongPress(bar_longpress, NULL,
         Background(Z_COLOR_BG,
             HStack(
-                Foreground(Z_COLOR_TEXT_INV,
-                    Font(Z_FONT_BODY, Text("Zelto"))),
+                Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT_INV,
+                    Font(Z_FONT_BODY, Text("Zelto")))),
                 Spacer(),
                 z_stack(Z_AXIS_HORIZONTAL, &cluster),
                 .padding = 12, .spacing = 10, .align = Z_ALIGN_CENTER)));

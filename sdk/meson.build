@@ -67,8 +67,9 @@ zelto_dep = declare_dependency(
 )
 
 # Bundle the default UI font into the image at the path libzelto looks for
-# (overridable with $ZELTO_FONT). A single face is enough for the MVP.
+# (overridable with $ZELTO_FONT). Satoshi is a variable font — libzelto drives
+# its `wght` axis for real weights (Weight()), no separate bold face needed.
 install_data(
-  'assets/fonts/ZeltoSans.ttf',
+  'assets/fonts/Satoshi-Variable.ttf',
   install_dir : get_option('datadir') / 'zelto/fonts',
 )

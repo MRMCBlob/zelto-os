@@ -164,6 +164,7 @@ ZView z_button(ZAction on_tap, const char *fmt, ...) {
     ZView label = node_new(Z_K_TEXT);
     label->text = z_arena_strdup(z_build_arena, buf);
     label->fg = Z_COLOR_TEXT_INV;
+    label->weight = Z_WEIGHT_MEDIUM;   // a control label carries a little weight
 
     ZView n = node_new(Z_K_STACK);
     n->axis = Z_AXIS_HORIZONTAL;
@@ -377,6 +378,11 @@ ZView Cover(ZView view) {
 
 ZView Font(ZFont size, ZView view) {
     view->font_size = (float)size;
+    return view;
+}
+
+ZView Weight(ZWeight weight, ZView view) {
+    view->weight = weight;
     return view;
 }
 

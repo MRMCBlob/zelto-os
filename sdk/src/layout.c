@@ -28,7 +28,8 @@ static void measure(ZView n, ZText *text) {
         break;
     case Z_K_TEXT: {
         float ascent = 0.0f, descent = 0.0f;
-        dw = z_text_measure(text, n->text, n->font_size, &ascent, &descent);
+        dw = z_text_measure(text, n->text, n->font_size, n->weight, &ascent,
+                            &descent);
         dh = ascent + descent;
         break;
     }

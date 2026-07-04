@@ -55,8 +55,8 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
         CornerRadius(20,
             Frame(580.0f, 300.0f,
                 VStack(
-                    Foreground(Z_COLOR_TEXT_INV,
-                        Font(Z_FONT_TITLE, Text("Permission request"))),
+                    Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT_INV,
+                        Font(Z_FONT_TITLE, Text("Permission request")))),
                     Foreground(Z_COLOR_TEXT_MUTED,
                         Font(Z_FONT_CALLOUT,
                             Text("\"%s\" wants to use the %s", s->app_id,

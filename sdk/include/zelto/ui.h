@@ -81,14 +81,36 @@ typedef enum ZAxis {
     Z_AXIS_DEPTH,          // ZStack: back -> front (overlap)
 } ZAxis;
 
-// Font size tokens (logical px). A themed type scale is Planned.
+// Type scale (logical px) — a semantic set of steps, à la the platform text
+// styles (Apple HIG / Material type scale). Pick by ROLE, not by pixel count, so
+// the OS retypes coherently from one place. The ladder is dense in the reading
+// band (Footnote→Body→Headline) where hierarchy is finest and coarser above it.
+// Body is 17 (the legibility floor for sustained reading); Caption2 (11) is the
+// smallest step. Emphasis is a separate axis — pair a step with Weight() (HIG
+// leans on size AND weight for hierarchy, so Headline is Body-sized + Semibold).
 typedef enum ZFont {
-    Z_FONT_CAPTION = 12,
-    Z_FONT_BODY = 16,
-    Z_FONT_CALLOUT = 20,
-    Z_FONT_TITLE = 28,
-    Z_FONT_LARGE_TITLE = 40,
+    Z_FONT_CAPTION2 = 11,     // smallest: dense metadata
+    Z_FONT_CAPTION = 12,      // caption / overline
+    Z_FONT_FOOTNOTE = 13,     // secondary caption
+    Z_FONT_SUBHEAD = 15,      // subheading / dense body
+    Z_FONT_BODY = 17,         // primary reading size (HIG body)
+    Z_FONT_HEADLINE = 17,     // body-sized, meant with Weight(SEMIBOLD)
+    Z_FONT_CALLOUT = 20,      // emphasised body / compact title (Zelto's larger scale)
+    Z_FONT_TITLE2 = 24,       // section title
+    Z_FONT_TITLE = 28,        // screen title
+    Z_FONT_LARGE_TITLE = 40,  // hero / clock
 } ZFont;
+
+// Font weight — the second hierarchy axis. The bundled face is a single Regular;
+// heavier steps are synthesised by emboldening the glyph outline (a modest,
+// legible faux-bold), so weight works without shipping extra faces. Use it with
+// Weight(); Regular is the default on every text node.
+typedef enum ZWeight {
+    Z_WEIGHT_REGULAR = 0,
+    Z_WEIGHT_MEDIUM,
+    Z_WEIGHT_SEMIBOLD,
+    Z_WEIGHT_BOLD,
+} ZWeight;
 
 // ---------------------------------------------------------------------------
 // Stacks.
@@ -292,6 +314,11 @@ ZView Frame(float width, float height, ZView view);
 ZView CornerRadius(float radius, ZView view);
 ZView Font(ZFont size, ZView view);
 ZView Grow(float weight, ZView view);
+
+// Set the text weight (the emphasis axis of the type scale). Heavier weights are
+// a synthesised faux-bold (the bundled face is Regular-only), kept modest so text
+// stays legible. No-op on a non-Text view; Regular is the default.
+ZView Weight(ZWeight weight, ZView view);
 
 // Cast a soft drop shadow behind this view — the toolkit's elevation cue. Pass
 // an elevation token (Z_ELEV_1/2/3, the shadow blur in px); the renderer paints

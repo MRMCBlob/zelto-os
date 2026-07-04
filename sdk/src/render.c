@@ -385,11 +385,11 @@ static void paint(ZCanvas *canvas, ZView n) {
         if (n->text_shadow) {
             // A dark, slightly-dropped copy under the ink so a light label holds
             // legibility over a bright/busy backdrop (a home caption over art).
-            z_text_draw(canvas, n->text, n->font_size, z_scrim(0x9e),
+            z_text_draw(canvas, n->text, n->font_size, n->weight, z_scrim(0x9e),
                         n->x + n->padding + 1.0f, n->y + n->padding + 1.5f);
         }
-        z_text_draw(canvas, n->text, n->font_size, n->fg, n->x + n->padding,
-                    n->y + n->padding);
+        z_text_draw(canvas, n->text, n->font_size, n->weight, n->fg,
+                    n->x + n->padding, n->y + n->padding);
         break;
     case Z_K_IMAGE:
         blit_image(canvas, n);

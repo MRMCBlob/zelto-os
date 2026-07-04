@@ -71,7 +71,7 @@ else
     BACKENDS="${SIM_BACKEND:-wayland}"
 fi
 
-export ZELTO_FONT="${ZELTO_FONT:-$REPO_ROOT/sdk/assets/fonts/ZeltoSans.ttf}"
+export ZELTO_FONT="${ZELTO_FONT:-$REPO_ROOT/sdk/assets/fonts/Satoshi-Variable.ttf}"
 # No /dev/vda here — apps' persistent storage lives under a host temp dir instead
 # of the phone's /var/zelto (libzelto reads $ZELTO_DATA_DIR, storage.c).
 export ZELTO_DATA_DIR="${ZELTO_DATA_DIR:-/tmp/zelto-sim/data}"

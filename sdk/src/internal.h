@@ -43,6 +43,7 @@ struct ZNode {
     ZColor color;         // Rect fill
     char *text;           // Text content (arena-owned)
     float font_size;
+    ZWeight weight;       // text weight (variable-font wght axis); default Regular
     ZColor fg;
     bool text_shadow;     // draw a dark offset copy under the ink (legibility over art)
     char *img_path;       // Z_K_IMAGE: source path (arena-owned; PNG or SVG by ext)
@@ -247,9 +248,11 @@ extern ZArena *z_build_arena;
 typedef struct ZText ZText;          // opaque font/shaping context
 ZText *z_text_open(const char *font_path);
 void z_text_close(ZText *t);
-// Measure a shaped line at `size` px; returns advance width, fills ascent/descent.
-float z_text_measure(ZText *t, const char *s, float size, float *ascent,
-                     float *descent);
+// Measure a shaped line at `size` px + `weight`; returns advance width, fills
+// ascent/descent. Weight matters: a heavier variable-font instance widens the
+// advances, so measure must use the same weight the renderer will paint at.
+float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
+                     float *ascent, float *descent);
 
 // --- Layout ---------------------------------------------------------------
 // Lay out `root` to fill a (w x h) surface, writing x/y/w/h into every node.
@@ -326,7 +329,7 @@ void z_canvas_clear_clip(ZCanvas *canvas);
 void z_render(ZCanvas *canvas, ZView root);
 // Blit one shaped line; used by the renderer (kept here so layout can share
 // the measure path). pen_x/pen_y is the top-left of the text box.
-void z_text_draw(ZCanvas *canvas, const char *s, float size, ZColor color,
-                 float pen_x, float pen_y);
+void z_text_draw(ZCanvas *canvas, const char *s, float size, ZWeight weight,
+                 ZColor color, float pen_x, float pen_y);
 
 #endif  // ZELTO_INTERNAL_H

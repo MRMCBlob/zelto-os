@@ -29,7 +29,7 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
-#define Z_DEFAULT_FONT "/usr/share/zelto/fonts/ZeltoSans.ttf"
+#define Z_DEFAULT_FONT "/usr/share/zelto/fonts/Satoshi-Variable.ttf"
 
 // Max running-app windows tracked by the foreign-toplevel client list.
 #define Z_MAX_TASKS 32
@@ -1599,7 +1599,8 @@ static int field_offset_at_x(ZApp *app, ZTextField *f, float x) {
         memcpy(buf, f->text, (size_t)i);
         buf[i] = '\0';
         float asc, desc;
-        float w = app->text ? z_text_measure(app->text, buf, size, &asc, &desc)
+        float w = app->text ? z_text_measure(app->text, buf, size,
+                                              Z_WEIGHT_REGULAR, &asc, &desc)
                             : 0.0f;
         float d = ox + w - x;
         if (d < 0.0f) {

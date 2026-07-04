@@ -220,7 +220,8 @@ static ZView w_clock(ZApp *app, void *state) {
         strftime(date, sizeof(date), "%a %d %b", &tmv);
     }
     return VStack(
-        Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", hhmm))),
+        Weight(Z_WEIGHT_SEMIBOLD,
+            Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", hhmm)))),
         Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", date))),
         .spacing = 2, .align = Z_ALIGN_LEADING);
 }
@@ -242,7 +243,8 @@ static ZView w_battery(ZApp *app, void *state) {
               : (pct <= 20 ? Z_COLOR_DANGER : Z_COLOR_TEXT);
     const char *net = airplane ? "Airplane" : (wifi ? "Wi-Fi" : "Offline");
     return VStack(
-        Foreground(pc, Font(Z_FONT_TITLE, Text("%d%%", pct))),
+        Weight(Z_WEIGHT_SEMIBOLD,
+            Foreground(pc, Font(Z_FONT_TITLE, Text("%d%%", pct)))),
         Foreground(Z_COLOR_TEXT_MUTED,
             Font(Z_FONT_CAPTION,
                  Text("%s%s", charging ? "Charging \xc2\xb7 " : "", net))),
@@ -255,8 +257,9 @@ static ZView w_notifs(ZApp *app, void *state) {
     (void)state;
     int n = (int)z_setting_get_int("sys.notif_count", 0);
     return VStack(
-        Foreground(n > 0 ? Z_COLOR_ACCENT : Z_COLOR_TEXT_MUTED,
-                   Font(Z_FONT_LARGE_TITLE, Text("%d", n))),
+        Weight(Z_WEIGHT_SEMIBOLD,
+            Foreground(n > 0 ? Z_COLOR_ACCENT : Z_COLOR_TEXT_MUTED,
+                       Font(Z_FONT_LARGE_TITLE, Text("%d", n)))),
         Foreground(Z_COLOR_TEXT_MUTED,
             Font(Z_FONT_CAPTION,
                  Text("%s", n == 1 ? "notification" : "notifications"))),
@@ -1653,7 +1656,8 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             Rect(.color = Z_COLOR_TEXT_MUTED, .width = 56, .height = 5,
                  .radius = 3),
             HStack(
-                Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("All apps"))),
+                Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT_INV,
+                    Font(Z_FONT_TITLE, Text("All apps")))),
                 Spacer(),
                 OnTap(close_drawer,
                     Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("X")))),

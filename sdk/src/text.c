@@ -7,6 +7,8 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_MULTIPLE_MASTERS_H
+#include FT_OUTLINE_H
 #include <harfbuzz/hb.h>
 #include <harfbuzz/hb-ft.h>
 
@@ -17,7 +19,57 @@ struct ZText {
     FT_Face face;
     hb_font_t *hb_font;
     int cur_px;
+    // Variable-font weight axis (Satoshi ships a `wght` axis). When present we
+    // pin the design coordinate per ZWeight for a REAL weight (not faux-bold);
+    // absent (a static face) we fall back to emboldening the outline in draw.
+    bool has_wght;
+    int wght_index;            // which var axis is `wght`
+    FT_Fixed wght_min, wght_max, wght_def;   // 16.16 design range
+    FT_Fixed coords[16];       // current design coords for all axes
+    unsigned n_axes;
+    ZWeight cur_weight;
 };
+
+// Map a ZWeight to a design value on the wght axis (CSS-style 400..700), clamped
+// to the face's advertised range.
+static FT_Fixed wght_value(const struct ZText *t, ZWeight w) {
+    long v = 400;
+    switch (w) {
+    case Z_WEIGHT_REGULAR:  v = 400; break;
+    case Z_WEIGHT_MEDIUM:   v = 500; break;
+    case Z_WEIGHT_SEMIBOLD: v = 600; break;
+    case Z_WEIGHT_BOLD:     v = 700; break;
+    }
+    FT_Fixed f = (FT_Fixed)(v << 16);
+    if (f < t->wght_min) { f = t->wght_min; }
+    if (f > t->wght_max) { f = t->wght_max; }
+    return f;
+}
+
+// Discover a `wght` variation axis, if the face is a variable font.
+static void probe_variations(ZText *t) {
+    t->has_wght = false;
+    if (!FT_HAS_MULTIPLE_MASTERS(t->face)) {
+        return;
+    }
+    FT_MM_Var *mm = NULL;
+    if (FT_Get_MM_Var(t->face, &mm) != 0 || !mm) {
+        return;
+    }
+    t->n_axes = mm->num_axis < 16 ? mm->num_axis : 16;
+    for (unsigned i = 0; i < t->n_axes; i++) {
+        t->coords[i] = mm->axis[i].def;
+        // The wght axis is tagged 'wght' (0x77676874).
+        if (mm->axis[i].tag == FT_MAKE_TAG('w', 'g', 'h', 't')) {
+            t->has_wght = true;
+            t->wght_index = (int)i;
+            t->wght_min = mm->axis[i].minimum;
+            t->wght_max = mm->axis[i].maximum;
+            t->wght_def = mm->axis[i].def;
+        }
+    }
+    FT_Done_MM_Var(t->lib, mm);
+}
 
 ZText *z_text_open(const char *font_path) {
     ZText *t = calloc(1, sizeof(*t));
@@ -33,8 +85,10 @@ ZText *z_text_open(const char *font_path) {
         free(t);
         return NULL;  // caller tolerates NULL
     }
+    probe_variations(t);
     t->hb_font = hb_ft_font_create_referenced(t->face);
     t->cur_px = 0;
+    t->cur_weight = Z_WEIGHT_REGULAR;
     return t;
 }
 
@@ -54,6 +108,21 @@ void z_text_close(ZText *t) {
     free(t);
 }
 
+// Select the variable-font weight instance (no-op on a static face — draw_glyph
+// then emboldens instead). Changing design coords reshapes glyphs + advances, so
+// HarfBuzz is told it changed.
+static void set_weight(ZText *t, ZWeight w) {
+    if (t->cur_weight == w) {
+        return;
+    }
+    t->cur_weight = w;
+    if (t->has_wght) {
+        t->coords[t->wght_index] = wght_value(t, w);
+        FT_Set_Var_Design_Coordinates(t->face, t->n_axes, t->coords);
+        hb_ft_font_changed(t->hb_font);
+    }
+}
+
 // Set the working pixel size on the face (and tell HarfBuzz it changed).
 static void set_px(ZText *t, int px) {
     if (px < 1) {
@@ -69,10 +138,11 @@ static void set_px(ZText *t, int px) {
 
 // Shape `s` and run `glyph_cb` for each glyph; returns total advance width.
 // glyph_cb may be NULL (measure only).
-static float shape_line(ZText *t, const char *s, int px,
+static float shape_line(ZText *t, const char *s, int px, ZWeight weight,
                         void (*glyph_cb)(ZText *, unsigned glyph,
                                          float x_off, float y_off, void *ud),
                         void *ud) {
+    set_weight(t, weight);
     set_px(t, px);
     hb_buffer_t *buf = hb_buffer_create();
     hb_buffer_add_utf8(buf, s, -1, 0, -1);
@@ -95,8 +165,8 @@ static float shape_line(ZText *t, const char *s, int px,
     return advance;
 }
 
-float z_text_measure(ZText *t, const char *s, float size, float *ascent,
-                     float *descent) {
+float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
+                     float *ascent, float *descent) {
     int px = (int)(size + 0.5f);
     if (!t || !t->face) {
         // Rough fallback so layout still allocates space.
@@ -108,7 +178,7 @@ float z_text_measure(ZText *t, const char *s, float size, float *ascent,
         }
         return (float)strlen(s) * size * 0.5f;
     }
-    float adv = shape_line(t, s, px, NULL, NULL);
+    float adv = shape_line(t, s, px, weight, NULL, NULL);
     if (ascent) {
         *ascent = t->face->size->metrics.ascender / 64.0f;
     }
@@ -144,7 +214,23 @@ static void blend_cover(ZCanvas *c, int x, int y, ZColor col, uint8_t cov) {
 static void draw_glyph(ZText *t, unsigned glyph, float x_off, float y_off,
                        void *ud) {
     DrawCtx *ctx = ud;
-    if (FT_Load_Glyph(t->face, glyph, FT_LOAD_RENDER) != 0) {
+    // Variable face: the wght instance is already selected, render straight.
+    // Static face + a heavier weight: synth the bold by emboldening the outline.
+    if (!t->has_wght && t->cur_weight > Z_WEIGHT_REGULAR) {
+        if (FT_Load_Glyph(t->face, glyph, FT_LOAD_DEFAULT) != 0) {
+            return;
+        }
+        FT_GlyphSlot gs = t->face->glyph;
+        if (gs->format == FT_GLYPH_FORMAT_OUTLINE) {
+            float f = t->cur_weight == Z_WEIGHT_MEDIUM     ? 0.5f
+                      : t->cur_weight == Z_WEIGHT_SEMIBOLD ? 0.9f
+                                                           : 1.4f;
+            FT_Outline_Embolden(&gs->outline, (FT_Pos)((float)t->cur_px * f));
+        }
+        if (FT_Render_Glyph(gs, FT_RENDER_MODE_NORMAL) != 0) {
+            return;
+        }
+    } else if (FT_Load_Glyph(t->face, glyph, FT_LOAD_RENDER) != 0) {
         return;
     }
     FT_GlyphSlot g = t->face->glyph;
@@ -160,13 +246,14 @@ static void draw_glyph(ZText *t, unsigned glyph, float x_off, float y_off,
     }
 }
 
-void z_text_draw(ZCanvas *canvas, const char *s, float size, ZColor color,
-                 float pen_x, float pen_y) {
+void z_text_draw(ZCanvas *canvas, const char *s, float size, ZWeight weight,
+                 ZColor color, float pen_x, float pen_y) {
     ZText *t = canvas->text;
     if (!t || !t->face) {
         return;
     }
     int px = (int)(size + 0.5f);
+    set_weight(t, weight);
     set_px(t, px);
     DrawCtx ctx = {
         .canvas = canvas,
@@ -174,5 +261,5 @@ void z_text_draw(ZCanvas *canvas, const char *s, float size, ZColor color,
         .baseline = pen_y + t->face->size->metrics.ascender / 64.0f,
         .color = color,
     };
-    shape_line(t, s, px, draw_glyph, &ctx);
+    shape_line(t, s, px, weight, draw_glyph, &ctx);
 }
