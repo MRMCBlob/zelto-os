@@ -94,10 +94,10 @@ static ZView rocker(VolState *s) {
         HStack(fill, Spacer(), .spacing = 0),
         .align = Z_ALIGN_CENTER);
 
-    return Background(Z_COLOR_SURFACE,
+    return Shadow(Z_ELEV_3, CornerRadius(20.0f, Background(Z_COLOR_SURFACE,
         Padding(16.0f,
             HStack(speaker(s->mute), track,
-                   .spacing = 16, .align = Z_ALIGN_CENTER)));
+                   .spacing = 16, .align = Z_ALIGN_CENTER)))));
 }
 
 static ZView vol_body(ZApp *app, VolState *s) {

@@ -1211,9 +1211,12 @@ static ZView raster_layer(LauncherState *s, int rows) {
     for (int row = 0; row < rr && k < Z_MAX_CHILDREN; row++) {
         for (int col = 0; col < GRID_COLS && k < Z_MAX_CHILDREN; col++) {
             ZRect r = cell_rect(s->surface_w, col, row, 1, 1);
+            // A brighter, accent-tinted slot so the alignment grid actually
+            // reads while dragging (the old near-invisible 0x14 white ghost was
+            // easy to miss against a busy wallpaper).
             ZView tile = Frame(r.w, r.h,
                 CornerRadius(ICON_RADIUS,
-                    Rect(.color = z_rgba(0xf4, 0xf7, 0xfb, 0x14),
+                    Rect(.color = z_rgba(0x4a, 0xa3, 0xff, 0x30),
                          .radius = ICON_RADIUS)));
             st.children[k++] = placed(s->surface_w, s->surface_h, r, tile);
         }
@@ -1542,7 +1545,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                 entry_eq(&disp[i], state->held_kind, state->held_ref)) {
                 ZView ph = Frame(r.w, r.h,
                     CornerRadius(ICON_RADIUS,
-                        Rect(.color = z_rgba(0xf4, 0xf7, 0xfb, 0x22),
+                        Rect(.color = z_rgba(0x4a, 0xa3, 0xff, 0x45),
                              .radius = ICON_RADIUS)));
                 pcells.children[ck++] = placed(state->surface_w,
                                                state->surface_h, r, ph);
@@ -1623,12 +1626,12 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             ? widget_cell_content(app, held.ref)
             : app_cell_content(&g_apps[held.ref]);
         ZView lifted = Frame(gr.w, gr.h,
-            ZStack(
+            Shadow(Z_ELEV_3, ZStack(
                 Fill(CornerRadius(ICON_RADIUS + 2.0f,
                     Rect(.color = Z_COLOR_ACCENT_DIM,
                          .radius = ICON_RADIUS + 2.0f))),
                 Fill(gc),
-                .align = Z_ALIGN_CENTER));
+                .align = Z_ALIGN_CENTER)));
         ghost = Fill(ZStack(
             OffsetXYAnimated(cx, cy, lifted),
             .align = Z_ALIGN_LEADING));

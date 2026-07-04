@@ -91,7 +91,7 @@ static ZView task_card(const ZTask *t) {
     ZColor bg = t->active ? Z_COLOR_SUCCESS_DIM
                           : Z_COLOR_SURFACE_2;
     return OnTapData(on_pick, (void *)t,
-        Background(bg,
+        Shadow(Z_ELEV_1, Background(bg,
             CornerRadius(16,
                 HStack(
                     task_icon(t),
@@ -108,7 +108,7 @@ static ZView task_card(const ZTask *t) {
                                 CornerRadius(12,
                                     Foreground(Z_COLOR_TEXT_INV,
                                         Font(Z_FONT_TITLE, Text("X"))))))),
-                    .padding = 16, .spacing = 14, .align = Z_ALIGN_CENTER))));
+                    .padding = 16, .spacing = 14, .align = Z_ALIGN_CENTER)))));
 }
 
 static ZView recents_body(ZApp *app, RecentsState *s) {
@@ -138,10 +138,10 @@ static ZView recents_body(ZApp *app, RecentsState *s) {
         Button(on_dismiss, "Close"));
 
     float card_h = 150.0f + 96.0f * (float)(shown + 1);
-    ZView card = Background(Z_COLOR_SURFACE,
+    ZView card = Shadow(Z_ELEV_3, Background(Z_COLOR_SURFACE,
         CornerRadius(20,
             Frame(620.0f, card_h,
-                z_stack(Z_AXIS_VERTICAL, &card_opts))));
+                z_stack(Z_AXIS_VERTICAL, &card_opts)))));
 
     // Dim full-screen backdrop (tap to dismiss) with the card centred and the
     // whole surface a keyboard target for Escape.

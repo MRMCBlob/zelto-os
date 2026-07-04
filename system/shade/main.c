@@ -272,8 +272,8 @@ static ZView notif_card(Banner *b, bool interactive) {
                                 Text("%s", b->action_title)))))));
     }
 
-    ZView card = Background(bg,
-        CornerRadius(16, z_stack(Z_AXIS_HORIZONTAL, &row)));
+    ZView card = Shadow(interactive ? Z_ELEV_2 : Z_ELEV_1, Background(bg,
+        CornerRadius(16, z_stack(Z_AXIS_HORIZONTAL, &row))));
     return interactive ? OnTapData(tap_body, b, card) : card;
 }
 
