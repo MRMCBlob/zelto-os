@@ -33,6 +33,19 @@ static inline ZColor z_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 // colour token; use it wherever a surface is darkened rather than tinted.
 static inline ZColor z_scrim(uint8_t a) { return z_rgba(0, 0, 0, a); }
 
+// Linearly interpolate between two colours (t in [0,1]: 0 = a, 1 = b), each
+// channel independently — the cross-fade a state-change animation drives (a
+// toggle chip recolouring off->on on a spring-backed t rather than hard-swapping).
+static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
+    if (t <= 0.0f) { return a; }
+    if (t >= 1.0f) { return b; }
+    return z_rgba(
+        (uint8_t)((float)a.r + ((float)b.r - (float)a.r) * t + 0.5f),
+        (uint8_t)((float)a.g + ((float)b.g - (float)a.g) * t + 0.5f),
+        (uint8_t)((float)a.b + ((float)b.b - (float)a.b) * t + 0.5f),
+        (uint8_t)((float)a.a + ((float)b.a - (float)a.a) * t + 0.5f));
+}
+
 // --- Design tokens — the Zelto design system -----------------------------
 // One deep slate base with a single azure accent and three semantic colours.
 // This header is the single source of truth: every system surface and app

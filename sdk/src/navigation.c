@@ -33,7 +33,10 @@ void z_nav_push(ZNav *nav, ZScreenFn screen, void *props) {
     s->trans.app = nav->app;
     s->trans.used = true;
     s->trans.value = 0.0f;     // start off-screen (right)
-    z_animated_spring(&s->trans, 1.0f);
+    // Push/pop ride the STANDARD motion token explicitly (P32), so screen slides
+    // move in the same language as sheets and drawers regardless of any ambient
+    // z_with_animation profile. Reduce Motion collapses it to an instant swap.
+    z_animated_spring_with(&s->trans, 1.0f, Z_SPRING_STANDARD);
 }
 
 void z_nav_pop(ZNav *nav) {
@@ -43,7 +46,17 @@ void z_nav_pop(ZNav *nav) {
     ZScreen *top = &nav->stack[nav->depth - 1];
     top->op = 2;               // exiting
     top->trans.app = nav->app;
-    z_animated_spring(&top->trans, 0.0f);
+    z_animated_spring_with(&top->trans, 0.0f, Z_SPRING_STANDARD);
+}
+
+void z_nav_freeze_top(ZNav *nav, float progress) {
+    if (!nav || nav->depth < 1) {
+        return;
+    }
+    ZScreen *top = &nav->stack[nav->depth - 1];
+    top->trans.value = top->trans.target = progress;
+    top->trans.velocity = 0.0f;
+    top->trans.animating = false;   // frozen mid-transition for a still shot
 }
 
 ZView z_navigator(ZApp *app, const ZNavOpts *opts) {
@@ -97,6 +110,11 @@ ZView z_navigator(ZApp *app, const ZNavOpts *opts) {
         v->fill = true;
         if (i == nav->depth - 1) {
             v->off_x += (1.0f - top_p) * W;        // top: slide in from the right
+            // Coordinated cross-fade (P32): the entering/leaving screen also fades
+            // with its slide progress (fade = 1 - fill at rest), so a push reads as
+            // the new screen materialising rather than only sliding. (fade stored
+            // as 1 - opacity; top_p 1 at rest -> fade 0 -> fully opaque.)
+            v->fade = 1.0f - top_p;
         } else {
             v->off_x += -top_p * W * 0.25f;        // below: subtle parallax left
         }

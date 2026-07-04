@@ -2162,9 +2162,17 @@ static int app_run(ZApp *app) {
     // Deterministic press freeze-frame for the screenshot harness: pin the press
     // spring at ZELTO_PRESS_AMT (default 1) over (ZELTO_PRESS_X, ZELTO_PRESS_Y) in
     // surface px, so stamp_press highlights the tappable node there on a still
-    // frame with no injected pointer input (mirrors ZELTO_HOME_ANIM_FRAMES).
+    // frame with no injected pointer input (mirrors ZELTO_HOME_ANIM_FRAMES). The
+    // env is process-global, so every System-UI surface booted at once would pin
+    // the same point; ZELTO_PRESS_APP (matched against this app's app_id, else its
+    // title) scopes it to ONE surface, so a press over the bottom nav bar doesn't
+    // also stamp the launcher behind it. Unset = every surface (back-compat).
     const char *pxs = getenv("ZELTO_PRESS_X");
-    if (pxs && pxs[0]) {
+    const char *pa = getenv("ZELTO_PRESS_APP");
+    bool press_match =
+        !(pa && pa[0]) || (app->app_id && strcmp(pa, app->app_id) == 0) ||
+        (app->title && strcmp(pa, app->title) == 0);
+    if (pxs && pxs[0] && press_match) {
         const char *pys = getenv("ZELTO_PRESS_Y");
         const char *pas = getenv("ZELTO_PRESS_AMT");
         app->press_x = app->last_x = atof(pxs);

@@ -425,6 +425,18 @@ ZView Fill(ZView view) {
     return view;
 }
 
+ZView Opacity(float amount, ZView view) {
+    // Stored as the complement (fade = 1 - opacity) so the arena-zero default is
+    // fully opaque. The renderer multiplies effective alpha by (1 - fade).
+    if (amount < 0.0f) {
+        amount = 0.0f;
+    } else if (amount > 1.0f) {
+        amount = 1.0f;
+    }
+    view->fade = 1.0f - amount;
+    return view;
+}
+
 ZView OnTap(ZAction action, ZView view) {
     view->on_tap = action;
     return view;

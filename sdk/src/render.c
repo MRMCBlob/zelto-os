@@ -26,6 +26,19 @@ void z_canvas_clear_clip(ZCanvas *c) {
     }
 }
 
+// Scale a colour's alpha by `a` in [0,1] — the subtree opacity multiplier the
+// renderer threads down for Opacity(). a>=1 returns the colour untouched, so the
+// common (no-Opacity) path is bit-identical to before this existed.
+static ZColor apply_alpha(ZColor col, float a) {
+    if (a >= 0.999f) {
+        return col;
+    }
+    int v = (int)((float)col.a * a + 0.5f);
+    if (v < 0) { v = 0; } else if (v > 255) { v = 255; }
+    col.a = (uint8_t)v;
+    return col;
+}
+
 static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
                             float radius, ZColor col) {
     // Rect geometry (used for the rounded-corner test) — independent of the clip.
@@ -176,7 +189,7 @@ static uint32_t sample_bilinear(const uint32_t *px, int w, int h, float u,
 // clip AND the node frame, masked to the node's rounded corners, composited
 // source-over. Both source and destination are premultiplied ARGB, so the blend
 // is out = src + dst*(1 - src_a).
-static void blit_image(ZCanvas *c, ZView n) {
+static void blit_image(ZCanvas *c, ZView n, float alpha) {
     const ZImage *img = z_image_get(n->img_path);
     if (!img || !img->ok || img->w <= 0 || img->h <= 0) {
         return;   // failed decode: draw nothing (caller supplies any fallback)
@@ -220,15 +233,23 @@ static void blit_image(ZCanvas *c, ZView n) {
             float v = ((float)y + 0.5f - oy) / scale;
             uint32_t s = sample_bilinear(img->px, img->w, img->h, u, v);
             uint32_t sa = (s >> 24) & 0xff;
+            uint32_t sr = (s >> 16) & 0xff, sg = (s >> 8) & 0xff, sb = s & 0xff;
+            // Subtree opacity: scale the whole PREMULTIPLIED pixel (all four
+            // channels) so it stays valid premultiplied as it fades.
+            if (alpha < 0.999f) {
+                sa = (uint32_t)((float)sa * alpha + 0.5f);
+                sr = (uint32_t)((float)sr * alpha + 0.5f);
+                sg = (uint32_t)((float)sg * alpha + 0.5f);
+                sb = (uint32_t)((float)sb * alpha + 0.5f);
+            }
             if (sa == 0) {
                 continue;
             }
             uint32_t *dst = &c->pixels[y * c->stride_px + x];
             if (sa == 0xff) {
-                *dst = s;
+                *dst = (sa << 24) | (sr << 16) | (sg << 8) | sb;
                 continue;
             }
-            uint32_t sr = (s >> 16) & 0xff, sg = (s >> 8) & 0xff, sb = s & 0xff;
             uint32_t d = *dst;
             uint32_t da = (d >> 24) & 0xff, dr = (d >> 16) & 0xff,
                      dg = (d >> 8) & 0xff, db = d & 0xff;
@@ -268,7 +289,7 @@ static float sdf_round_rect(float px, float py, float rx0, float ry0, float rx1,
 // over in premultiplied space preserving destination alpha (like fill_round_rect),
 // so it composites correctly over an opaque surface, the scrim, or bare transparency
 // (a floating overlay's halo over the app beneath).
-static void paint_shadow(ZCanvas *c, ZView n) {
+static void paint_shadow(ZCanvas *c, ZView n, float alpha) {
     float e = n->elevation;
     if (e < 0.5f) {
         return;
@@ -285,7 +306,7 @@ static void paint_shadow(ZCanvas *c, ZView n) {
     float sx0 = nx0, sy0 = ny0 + dy, sx1 = nx1, sy1 = ny1 + dy;
     float sr = r + 1.0f;
 
-    ZColor sh = Z_COLOR_SHADOW;
+    ZColor sh = apply_alpha(Z_COLOR_SHADOW, alpha);
 
     int x0 = (int)floorf(sx0 - e), y0 = (int)floorf(sy0 - e);
     int x1 = (int)ceilf(sx1 + e), y1 = (int)ceilf(sy1 + e);
@@ -332,8 +353,8 @@ static void paint_shadow(ZCanvas *c, ZView n) {
 
 // Draw a rounded plate just outside a node's frame; the node's own fill paints
 // over the interior immediately after, leaving a thin border = the focus ring.
-static void stroke_focus_ring(ZCanvas *c, ZView n) {
-    const ZColor ring = {0x2e, 0x9b, 0xff, 0xff};  // accent
+static void stroke_focus_ring(ZCanvas *c, ZView n, float alpha) {
+    const ZColor ring = apply_alpha((ZColor){0x2e, 0x9b, 0xff, 0xff}, alpha);  // accent
     const float t = 3.0f;     // ring thickness
     const float g = 2.0f;     // gap from the frame
     float x = n->x - g - t, y = n->y - g - t;
@@ -401,27 +422,34 @@ static void stroke_segment(ZCanvas *c, float ax, float ay, float bx, float by,
 
 // Draw a polyline (Z_K_STROKE): points are in the unit box, mapped into the node
 // frame; each consecutive pair is a round-capped segment, optionally closed.
-static void paint_stroke(ZCanvas *c, ZView n) {
+static void paint_stroke(ZCanvas *c, ZView n, float alpha) {
     const float *p = n->stroke_pts;
     int np = n->stroke_n;
     if (!p || np < 2) {
         return;
     }
+    ZColor col = apply_alpha(n->color, alpha);
     float sx = n->x, sy = n->y, sw = n->w, sh = n->h;
     float r = n->stroke_w * 0.5f;
     for (int i = 0; i + 1 < np; i++) {
         stroke_segment(c, sx + p[2 * i] * sw, sy + p[2 * i + 1] * sh,
-                       sx + p[2 * i + 2] * sw, sy + p[2 * i + 3] * sh, r,
-                       n->color);
+                       sx + p[2 * i + 2] * sw, sy + p[2 * i + 3] * sh, r, col);
     }
     if (n->stroke_closed && np > 2) {
         stroke_segment(c, sx + p[2 * (np - 1)] * sw,
                        sy + p[2 * (np - 1) + 1] * sh, sx + p[0] * sw,
-                       sy + p[1] * sh, r, n->color);
+                       sy + p[1] * sh, r, col);
     }
 }
 
-static void paint(ZCanvas *canvas, ZView n) {
+static void paint(ZCanvas *canvas, ZView n, float alpha) {
+    // Subtree opacity (Opacity()): this node's fade compounds with the alpha
+    // inherited from its ancestors. A fully-transparent subtree paints nothing.
+    float a = alpha * (1.0f - n->fade);
+    if (a <= 0.002f) {
+        return;
+    }
+
     // A clipping node (scroll viewport) intersects the active clip with its frame
     // for its subtree, then restores it. Skip entirely if nothing is visible.
     int save_x0 = canvas->clip_x0, save_y0 = canvas->clip_y0;
@@ -448,33 +476,36 @@ static void paint(ZCanvas *canvas, ZView n) {
     }
 
     if (n->elevation > 0.5f) {
-        paint_shadow(canvas, n);
+        paint_shadow(canvas, n, a);
     }
     if (n->focused && (n->has_bg || n->kind == Z_K_RECT)) {
-        stroke_focus_ring(canvas, n);
+        stroke_focus_ring(canvas, n, a);
     }
     if (n->has_bg) {
-        fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius, n->bg);
+        fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius,
+                        apply_alpha(n->bg, a));
     }
     switch (n->kind) {
     case Z_K_RECT:
-        fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius, n->color);
+        fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius,
+                        apply_alpha(n->color, a));
         break;
     case Z_K_TEXT:
         if (n->text_shadow) {
             // A dark, slightly-dropped copy under the ink so a light label holds
             // legibility over a bright/busy backdrop (a home caption over art).
-            z_text_draw(canvas, n->text, n->font_size, n->weight, z_scrim(0x9e),
+            z_text_draw(canvas, n->text, n->font_size, n->weight,
+                        apply_alpha(z_scrim(0x9e), a),
                         n->x + n->padding + 1.0f, n->y + n->padding + 1.5f);
         }
-        z_text_draw(canvas, n->text, n->font_size, n->weight, n->fg,
-                    n->x + n->padding, n->y + n->padding);
+        z_text_draw(canvas, n->text, n->font_size, n->weight,
+                    apply_alpha(n->fg, a), n->x + n->padding, n->y + n->padding);
         break;
     case Z_K_IMAGE:
-        blit_image(canvas, n);
+        blit_image(canvas, n, a);
         break;
     case Z_K_STROKE:
-        paint_stroke(canvas, n);
+        paint_stroke(canvas, n, a);
         break;
     case Z_K_STACK:
     case Z_K_SPACER:
@@ -482,7 +513,7 @@ static void paint(ZCanvas *canvas, ZView n) {
         break;
     }
     for (int i = 0; i < n->n_children; i++) {
-        paint(canvas, n->children[i]);
+        paint(canvas, n->children[i], a);
     }
 
     // Press feedback (P31): a light veil over the whole control (icon + label),
@@ -496,7 +527,7 @@ static void paint(ZCanvas *canvas, ZView n) {
         veil.a = (uint8_t)((float)veil.a * (n->press < 1.0f ? n->press : 1.0f) +
                            0.5f);
         float pr = n->radius > 0.5f ? n->radius : 10.0f;
-        fill_round_rect(canvas, n->x, n->y, n->w, n->h, pr, veil);
+        fill_round_rect(canvas, n->x, n->y, n->w, n->h, pr, apply_alpha(veil, a));
     }
 
     if (n->clip) {
@@ -507,4 +538,4 @@ static void paint(ZCanvas *canvas, ZView n) {
     }
 }
 
-void z_render(ZCanvas *canvas, ZView root) { paint(canvas, root); }
+void z_render(ZCanvas *canvas, ZView root) { paint(canvas, root, 1.0f); }

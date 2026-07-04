@@ -361,6 +361,16 @@ ZView TextShadow(ZView view);
 // full-screen layer (e.g. a wallpaper, or a slide-up sheet) covers the stack.
 ZView Fill(ZView view);
 
+// Fade this view AND everything under it by an opacity multiplier in [0,1] (1 =
+// fully opaque, the default; 0 = invisible). The software renderer multiplies the
+// subtree's effective alpha as it descends, so one Opacity fades a whole card,
+// panel, or screen at once — the fade half of a slide+fade entrance/exit and the
+// Navigator cross-fade. There is no separate animated variant: bind it to a spring
+// by passing z_animated_get(v) (body rebuilds each frame while the spring is in
+// flight, so the fade tracks it). Not group-correct for overlapping translucent
+// children (each leaf is multiplied independently), which is fine for opaque cards.
+ZView Opacity(float amount, ZView view);
+
 // Gesture / input modifiers. OnTap makes any view tappable; OnKey makes it a
 // keyboard target (keys are delivered to the first focusable view in the tree).
 ZView OnTap(ZAction action, ZView view);
@@ -544,6 +554,12 @@ ZView z_navigator(ZApp *app, const ZNavOpts *opts);
 ZNav *z_navigation(ZApp *app);
 void z_nav_push(ZNav *nav, ZScreenFn screen, void *props);
 void z_nav_pop(ZNav *nav);
+
+// Freeze the top screen's push/pop transition at `progress` (0 = fully off-screen
+// right + transparent, 1 = fully present) with no further motion — the deterministic
+// mid-transition hook for the screenshot harness (like z_animated_pin, but for the
+// Navigator's slide+cross-fade). Test/tooling use; a normal app never calls it.
+void z_nav_freeze_top(ZNav *nav, float progress);
 
 // ---------------------------------------------------------------------------
 // App entry + lifecycle.

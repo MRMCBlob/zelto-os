@@ -78,6 +78,13 @@ struct ZNode {
     // whole subtree shifts. Drag/transition motion bakes into layout each frame.
     float off_x, off_y;
 
+    // Opacity (Opacity()). Stored as the COMPLEMENT of opacity (0 = fully opaque,
+    // the arena-zero default, so an unwrapped node needs no initialization; 1 =
+    // fully transparent). The renderer multiplies a subtree's effective alpha by
+    // (1 - fade) as it descends, so wrapping a node fades it and everything under
+    // it — the fade half of a slide+fade transition, and the nav cross-fade.
+    float fade;
+
     // Scroll / virtualised-list support.
     bool clip;            // clip this subtree to the node frame (viewport)
     bool fill;            // in a parent's arrange, expand to the inner box

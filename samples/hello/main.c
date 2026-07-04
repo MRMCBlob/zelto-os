@@ -7,6 +7,7 @@
 // runs the build -> reconcile -> damaged-repaint loop; zcomp composites it.
 // See docs/guides/{animation,gestures,navigation}.md.
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <zelto/ui.h>
 
@@ -154,7 +155,22 @@ typedef struct AppState {
 
 static ZView body(ZApp *app, AppState *state) {
     (void)state;
-    return Navigator(app, .root = list_screen);
+    ZView v = Navigator(app, .root = list_screen);
+    // Freeze-frame hook (P32): ZELTO_NAV_PUSH=<0..1> pushes the detail screen once
+    // and pins the slide+cross-fade transition at that progress, so the unified
+    // Navigator push motion is screenshot-verifiable mid-flight. Runs after the
+    // Navigator has inited this build; the push invalidates, so the next build
+    // renders the pinned mid-transition. Reduce Motion would collapse it to 1.
+    static bool nav_seeded = false;
+    const char *np = getenv("ZELTO_NAV_PUSH");
+    if (np && np[0] && !nav_seeded) {
+        nav_seeded = true;
+        ensure_items();
+        ZNav *nav = z_navigation(app);
+        z_nav_push(nav, detail_screen, &g_items[3]);
+        z_nav_freeze_top(nav, (float)atof(np));
+    }
+    return v;
 }
 
 Z_APP(AppState, body)
