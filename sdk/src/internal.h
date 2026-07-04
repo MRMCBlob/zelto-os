@@ -17,6 +17,7 @@ typedef enum ZKind {
     Z_K_SPACER,
     Z_K_SCROLL,      // clips + translates a single content child by a ZScroll offset
     Z_K_IMAGE,       // a decoded raster/SVG bitmap, aspect-fit (or Cover: fill) the frame
+    Z_K_STROKE,      // a round-capped polyline (vector icon: chevron/circle/square)
 } ZKind;
 
 // One UI node. Arena-allocated per build; the computed frame (x,y,w,h) is filled
@@ -48,6 +49,10 @@ struct ZNode {
     bool text_shadow;     // draw a dark offset copy under the ink (legibility over art)
     char *img_path;       // Z_K_IMAGE: source path (arena-owned; PNG or SVG by ext)
     bool img_cover;       // Z_K_IMAGE: cover (aspect-fill, center-crop) vs default fit
+    float *stroke_pts;    // Z_K_STROKE: arena-owned x,y pairs in [0,1] within the frame
+    int stroke_n;         // Z_K_STROKE: number of points (pairs)
+    float stroke_w;       // Z_K_STROKE: line thickness (px)
+    bool stroke_closed;   // Z_K_STROKE: connect the last point back to the first
 
     // Interactivity. on_tap fires on pointer tap / keyboard activation; on_key
     // receives raw key presses when this node holds focus; focusable marks a

@@ -152,6 +152,25 @@ ZView z_image(const char *path) {
     return n;
 }
 
+ZView z_stroke(const ZStrokeOpts *opts) {
+    ZView n = node_new(Z_K_STROKE);
+    int cnt = opts->count;
+    if (cnt < 0) {
+        cnt = 0;
+    }
+    if (cnt > 0 && opts->points) {
+        n->stroke_pts = z_arena_alloc(z_build_arena, sizeof(float) * 2u * (size_t)cnt);
+        if (n->stroke_pts) {
+            memcpy(n->stroke_pts, opts->points, sizeof(float) * 2u * (size_t)cnt);
+            n->stroke_n = cnt;
+        }
+    }
+    n->stroke_w = opts->thickness > 0.0f ? opts->thickness : 2.0f;
+    n->stroke_closed = opts->closed;
+    n->color = opts->color;
+    return n;
+}
+
 ZView z_button(ZAction on_tap, const char *fmt, ...) {
     char buf[1024];
     va_list ap;

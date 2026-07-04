@@ -18,6 +18,8 @@ static void measure(ZView n, ZText *text) {
     switch (n->kind) {
     case Z_K_RECT:
     case Z_K_SPACER:
+    case Z_K_STROKE:
+        // A vector mark has no intrinsic size; it fills whatever Frame() gives it.
         dw = n->fixed_w;
         dh = n->fixed_h;
         break;

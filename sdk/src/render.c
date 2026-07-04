@@ -342,6 +342,85 @@ static void stroke_focus_ring(ZCanvas *c, ZView n) {
     fill_round_rect(c, x, y, w, h, r, ring);
 }
 
+// Blend a single coverage-weighted pixel of `col` over the destination, in the
+// same premultiplied-preserving-dst-alpha space as fill_round_rect.
+static void blend_coverage(ZCanvas *c, int x, int y, ZColor col, float cov) {
+    if (x < c->clip_x0 || y < c->clip_y0 || x >= c->clip_x1 ||
+        y >= c->clip_y1) {
+        return;
+    }
+    uint32_t a = (uint32_t)((float)col.a * cov + 0.5f);
+    if (a == 0) {
+        return;
+    }
+    uint32_t *dst = &c->pixels[y * c->stride_px + x];
+    uint32_t d = *dst;
+    uint32_t da = (d >> 24) & 0xff, dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff,
+             db = d & 0xff;
+    uint32_t inv = 255u - a;
+    uint32_t oa = a + da * inv / 255u;
+    uint32_t rr = (col.r * a + dr * inv) / 255u;
+    uint32_t gg = (col.g * a + dg * inv) / 255u;
+    uint32_t bb = (col.b * a + db * inv) / 255u;
+    *dst = (oa << 24) | (rr << 16) | (gg << 8) | bb;
+}
+
+// Rasterize one round-capped line segment of half-width `r`: for each pixel in
+// the segment's bounding box, coverage falls from full inside to zero one px
+// past the edge of the capsule (distance to the segment). Round caps come free
+// from clamping the projection parameter to [0,1].
+static void stroke_segment(ZCanvas *c, float ax, float ay, float bx, float by,
+                           float r, ZColor col) {
+    float minx = (ax < bx ? ax : bx) - r - 1.0f;
+    float maxx = (ax > bx ? ax : bx) + r + 1.0f;
+    float miny = (ay < by ? ay : by) - r - 1.0f;
+    float maxy = (ay > by ? ay : by) + r + 1.0f;
+    int x0 = (int)floorf(minx), y0 = (int)floorf(miny);
+    int x1 = (int)ceilf(maxx), y1 = (int)ceilf(maxy);
+    if (x0 < c->clip_x0) { x0 = c->clip_x0; }
+    if (y0 < c->clip_y0) { y0 = c->clip_y0; }
+    if (x1 > c->clip_x1) { x1 = c->clip_x1; }
+    if (y1 > c->clip_y1) { y1 = c->clip_y1; }
+    float dx = bx - ax, dy = by - ay;
+    float len2 = dx * dx + dy * dy;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            float px = (float)x + 0.5f - ax, py = (float)y + 0.5f - ay;
+            float t = len2 > 0.0f ? (px * dx + py * dy) / len2 : 0.0f;
+            if (t < 0.0f) { t = 0.0f; }
+            if (t > 1.0f) { t = 1.0f; }
+            float qx = px - t * dx, qy = py - t * dy;
+            float dist = sqrtf(qx * qx + qy * qy);
+            float cov = r - dist + 0.5f;   // 1px anti-aliased edge
+            if (cov <= 0.0f) { continue; }
+            if (cov > 1.0f) { cov = 1.0f; }
+            blend_coverage(c, x, y, col, cov);
+        }
+    }
+}
+
+// Draw a polyline (Z_K_STROKE): points are in the unit box, mapped into the node
+// frame; each consecutive pair is a round-capped segment, optionally closed.
+static void paint_stroke(ZCanvas *c, ZView n) {
+    const float *p = n->stroke_pts;
+    int np = n->stroke_n;
+    if (!p || np < 2) {
+        return;
+    }
+    float sx = n->x, sy = n->y, sw = n->w, sh = n->h;
+    float r = n->stroke_w * 0.5f;
+    for (int i = 0; i + 1 < np; i++) {
+        stroke_segment(c, sx + p[2 * i] * sw, sy + p[2 * i + 1] * sh,
+                       sx + p[2 * i + 2] * sw, sy + p[2 * i + 3] * sh, r,
+                       n->color);
+    }
+    if (n->stroke_closed && np > 2) {
+        stroke_segment(c, sx + p[2 * (np - 1)] * sw,
+                       sy + p[2 * (np - 1) + 1] * sh, sx + p[0] * sw,
+                       sy + p[1] * sh, r, n->color);
+    }
+}
+
 static void paint(ZCanvas *canvas, ZView n) {
     // A clipping node (scroll viewport) intersects the active clip with its frame
     // for its subtree, then restores it. Skip entirely if nothing is visible.
@@ -393,6 +472,9 @@ static void paint(ZCanvas *canvas, ZView n) {
         break;
     case Z_K_IMAGE:
         blit_image(canvas, n);
+        break;
+    case Z_K_STROKE:
+        paint_stroke(canvas, n);
         break;
     case Z_K_STACK:
     case Z_K_SPACER:

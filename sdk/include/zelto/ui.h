@@ -186,6 +186,29 @@ bool z_image_loads(const char *path);
 //   Frame(w, h, CornerRadius(r, Cover(Image(path))))
 ZView Cover(ZView view);
 
+// A round-capped polyline — the toolkit's vector-mark primitive, for crisp icons
+// that rectangles can't draw (a chevron, a circle, a square outline) at any size
+// without shipping a bitmap. `points` is an array of x,y pairs in the UNIT box
+// [0,1]x[0,1], mapped into the node's frame at paint time, so one shape scales to
+// whatever Frame() you give it; `count` is the number of POINTS (so the array has
+// 2*count floats). `thickness` is the stroke width in px, `color` the ink, and
+// `closed` connects the last point back to the first (a polygon outline). The
+// points are copied, so a static/stack array is fine. Give it a size the usual
+// way: Frame(w, h, Stroke(...)). Segments are drawn anti-aliased with round caps.
+//   static const float chevron[] = {0.6f,0.2f, 0.3f,0.5f, 0.6f,0.8f};
+//   Frame(28, 28, Stroke(.points = chevron, .count = 3, .thickness = 3,
+//                        .color = Z_COLOR_TEXT));
+typedef struct ZStrokeOpts {
+    const float *points;   // x0,y0,x1,y1,... in the unit box [0,1]
+    int count;             // number of points (array holds 2*count floats)
+    float thickness;       // stroke width (px)
+    ZColor color;          // ink
+    bool closed;           // connect last point back to the first
+} ZStrokeOpts;
+
+ZView z_stroke(const ZStrokeOpts *opts);
+#define Stroke(...) z_stroke(&(ZStrokeOpts){__VA_ARGS__})
+
 // A tappable control: a rounded, padded label that runs `on_tap` when tapped or
 // activated from the keyboard (Enter/Space while focused). printf-style label.
 //   Button(on_tap, "Count: %d", s->count);   // on_tap is a static ZAction

@@ -94,6 +94,10 @@ static bool node_changed(ZView a, ZView b) {
     if (a->img_cover != b->img_cover) {
         return true;
     }
+    if (a->stroke_n != b->stroke_n || a->stroke_w != b->stroke_w ||
+        a->stroke_closed != b->stroke_closed) {
+        return true;
+    }
     return false;
 }
 
