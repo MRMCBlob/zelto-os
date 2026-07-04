@@ -12,6 +12,10 @@
 // Spring profiles (critically-ish damped). Tuned for the design language.
 static void spring_params(ZSpring s, float *k, float *c, float *m) {
     switch (s) {
+    case Z_SPRING_PRESS:
+        // Tight + fast so touch-down registers immediately and release snaps back.
+        *k = 520.0f; *c = 34.0f; *m = 1.0f;
+        break;
     case Z_SPRING_SNAPPY:
         *k = 300.0f; *c = 30.0f; *m = 1.0f;
         break;
@@ -133,12 +137,37 @@ void z_animated_pin(ZAnimated *v, float to) {
 
 void z_animated_spring(ZAnimated *v, float to) {
     ZUI *ui = v->app ? z_app_ui(v->app) : NULL;
+    // Reduce Motion (Accessibility): collapse every spring to an instant jump, so
+    // sheets/reflow/press all snap rather than glide. The target still lands in the
+    // same place, so nothing else in the UI needs to know motion was suppressed.
+    if (ui && ui->reduce_motion) {
+        z_animated_set(v, to);
+        return;
+    }
     spring_params(ui ? ui->anim_spring : Z_SPRING_STANDARD, &v->stiffness,
                   &v->damping, &v->mass);
     v->target = to;
     v->animating = true;
     if (v->app) {
         z_invalidate(v->app);  // wake the loop so the tick starts integrating
+    }
+}
+
+// Spring a value under an EXPLICIT profile, independent of the ambient
+// z_with_animation profile (ui->anim_spring). The press-feedback spring uses this
+// so touch-down always moves with the PRESS token no matter what an app set. Honours
+// Reduce Motion like z_animated_spring.
+void z_animated_spring_with(ZAnimated *v, float to, ZSpring spring) {
+    ZUI *ui = v->app ? z_app_ui(v->app) : NULL;
+    if (ui && ui->reduce_motion) {
+        z_animated_set(v, to);
+        return;
+    }
+    spring_params(spring, &v->stiffness, &v->damping, &v->mass);
+    v->target = to;
+    v->animating = true;
+    if (v->app) {
+        z_invalidate(v->app);
     }
 }
 
@@ -241,6 +270,10 @@ static bool tick_screen(ZScreen *s, float dt) {
 bool z_anim_tick(ZApp *app, float dt) {
     ZUI *ui = z_app_ui(app);
     bool active = tick_screen(&ui->implicit, dt);
+    // The global press-feedback spring rides alongside the per-screen cells.
+    if (advance_spring(&ui->press, dt)) {
+        active = true;
+    }
     for (int i = 0; i < ui->nav.depth; i++) {
         if (tick_screen(&ui->nav.stack[i], dt)) {
             active = true;

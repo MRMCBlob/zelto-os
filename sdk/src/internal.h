@@ -69,6 +69,9 @@ struct ZNode {
     bool field_active;                // this field currently has input focus (caret)
     bool focusable;
     bool focused;         // set by the app loop on the focused node (focus ring)
+    float press;          // press-feedback amount (0..1), stamped at render time by
+                          // the app loop onto the node under the live press; the
+                          // renderer draws a Z_COLOR_PRESS veil scaled by it (P31)
     uint64_t key;         // stable identity for keyed reconcile (0 = positional)
 
     // Translation (Offset). Added to this node's origin in arrange(), so the
@@ -169,6 +172,15 @@ typedef struct ZUI {
     ZSpring anim_spring;   // active profile for z_animated_spring (z_with_animation)
     double last_s;         // last tick timestamp (monotonic seconds)
     bool have_last;
+    // Global press-feedback spring (P31). A phone is single-touch, so one retained
+    // spring drives the touch-down highlight for whatever tappable node is under
+    // the finger: the app loop springs it 0->1 on press and 1->0 on release/cancel,
+    // re-hit-tests at the frozen press point each build (so it survives body
+    // rebuilds without a dangling arena pointer), and stamps node->press. Advanced
+    // by z_anim_tick like any spring. `reduce_motion` collapses every spring to an
+    // instant jump (Accessibility): read once at startup from sys.reduce_motion.
+    struct ZAnimated press;
+    bool reduce_motion;
 } ZUI;
 
 // Implemented in app.c (ZApp is private there). z_app_width/z_app_height are
@@ -202,6 +214,10 @@ const char *z_active_app_id(void);
 // anything is still in motion (so the caller keeps the frame loop running).
 bool z_anim_tick(ZApp *app, float dt);
 double z_now_seconds(void);
+// Spring a value under an explicit profile (bypasses the ambient z_with_animation
+// profile). The press-feedback spring uses this so touch-down always moves with
+// the PRESS token. Honours Reduce Motion (collapses to a jump).
+void z_animated_spring_with(ZAnimated *v, float to, ZSpring spring);
 
 // Keyed-cell GC bracket (call around each screen's body): begin clears the
 // per-build requested marks; end sweeps any keyed cell not requested this build.

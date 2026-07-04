@@ -485,6 +485,20 @@ static void paint(ZCanvas *canvas, ZView n) {
         paint(canvas, n->children[i]);
     }
 
+    // Press feedback (P31): a light veil over the whole control (icon + label),
+    // drawn last so it sits above the node's content. The app loop stamps
+    // n->press (0..1) onto the node under the live press; the veil alpha scales
+    // with it, so touch-down fades in and release fades out. Masked to the node's
+    // own rounded corners (a bare tap frame with radius 0 gets a soft default so
+    // the highlight reads as a rounded tap target, not a hard box).
+    if (n->press > 0.003f) {
+        ZColor veil = Z_COLOR_PRESS;
+        veil.a = (uint8_t)((float)veil.a * (n->press < 1.0f ? n->press : 1.0f) +
+                           0.5f);
+        float pr = n->radius > 0.5f ? n->radius : 10.0f;
+        fill_round_rect(canvas, n->x, n->y, n->w, n->h, pr, veil);
+    }
+
     if (n->clip) {
         canvas->clip_x0 = save_x0;
         canvas->clip_y0 = save_y0;

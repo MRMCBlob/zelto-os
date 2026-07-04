@@ -113,6 +113,14 @@ run_shot 09-home-crosspage "Rearrange: ghost held in the right edge gutter on pa
 run_shot 10-app-drawer "App drawer slid up (all installed apps)" 6 \
     ZELTO_HOME_DRAWER=1
 
+# Press feedback (P31): freeze the global press spring over a tappable node so the
+# touch-down highlight veil paints on a still frame (ZELTO_PRESS_X/Y in surface px,
+# ZELTO_PRESS_AMT the spring value). The launcher is the full-screen surface here.
+run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
+    ZELTO_PRESS_X=447 ZELTO_PRESS_Y=460
+run_shot 41-settings-press "Settings: Wi-Fi toggle pressed (veil over PRIMARY chip)" 8 \
+    SIM_APP=zelto-settings ZELTO_PRESS_X=611 ZELTO_PRESS_Y=101
+
 # ===========================================================================
 # SYSTEM OVERLAYS (shade / volume / keyboard / lock / recents / consent / banner)
 # ===========================================================================

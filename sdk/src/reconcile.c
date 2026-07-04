@@ -75,6 +75,11 @@ static bool node_changed(ZView a, ZView b) {
         a->elevation != b->elevation || a->text_shadow != b->text_shadow) {
         return true;
     }
+    // Press-feedback veil (P31): a change in the stamped press amount repaints the
+    // control so the highlight fades in/out (the node is otherwise unchanged).
+    if (a->press != b->press) {
+        return true;
+    }
     if (a->has_bg && !color_eq(a->bg, b->bg)) {
         return true;
     }

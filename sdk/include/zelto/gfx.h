@@ -90,6 +90,14 @@ static inline ZColor z_scrim(uint8_t a) { return z_rgba(0, 0, 0, a); }
 #define Z_ELEV_3   28.0f   // overlays, modals, the lifted ghost
 #define Z_COLOR_SHADOW      z_scrim(0x80)
 
+// --- Press feedback — the touch-down highlight veil ----------------------
+// A tappable control (Button, an OnTap tile, a nav mark) paints this soft light
+// veil over itself while pressed, so touch-down gets an immediate visual response
+// and release fades it out. One token, whose peak alpha the toolkit scales by the
+// live press spring (0 released -> 1 held); a light overlay reads as a highlight
+// on both the dark surfaces and the azure PRIMARY fill. See P31 (Feedback.md).
+#define Z_COLOR_PRESS      z_rgba(0xff, 0xff, 0xff, 0x3d)  // peak ~24% white veil
+
 // --- Back-compat aliases (older token names) -----------------------------
 #define Z_COLOR_BACKGROUND Z_COLOR_BG
 

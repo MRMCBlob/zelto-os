@@ -319,6 +319,8 @@ ZTextField *z_app_active_field(ZApp *app) {
     return app ? app->active_field : NULL;
 }
 static void perm_handle_reply(ZApp *app);
+static void press_release(ZApp *app);   // press-feedback spring (P31), defined below
+static void stamp_press(ZApp *app, ZView root);
 static void clip_handle_read(ZApp *app);
 static void ctrl_handle_read(ZApp *app);
 static void ctrl_connect_register(ZApp *app);
@@ -568,6 +570,11 @@ static void render(ZApp *app) {
         }
     }
 
+    // Press feedback (P31): stamp the live press amount onto the tappable node
+    // under the frozen press point, so the renderer draws its highlight veil. Done
+    // before reconcile so a change in the stamped amount damages the control.
+    stamp_press(app, new_root);
+
     // Diff against the previous tree to find the changed regions.
     ZDamage dmg;
     z_reconcile(old_root, new_root, &dmg);
@@ -816,7 +823,9 @@ static void pointer_enter(void *data, struct wl_pointer *p, uint32_t serial,
 }
 static void pointer_leave(void *data, struct wl_pointer *p, uint32_t serial,
                           struct wl_surface *surface) {
-    (void)data; (void)p; (void)serial; (void)surface;
+    (void)p; (void)serial; (void)surface;
+    // Pointer left the surface: fade any press highlight out (P31).
+    press_release((ZApp *)data);
 }
 // Movement past this many pixels turns a press into a pan (cancelling the tap).
 #define Z_PAN_SLOP 8.0
@@ -832,6 +841,46 @@ static void fire_long_press(ZApp *app) {
     if (t && t->on_long_press) {
         t->on_long_press(app, app->state, t->long_press_data,
                          (float)app->press_x, (float)app->press_y);
+    }
+    // The hold cue (the swelling press veil) ends when the action fires.
+    z_animated_spring_with(&app->ui.press, 0.0f, Z_SPRING_PRESS);
+}
+
+// --- press feedback (P31) --------------------------------------------------
+// One global spring (a phone is single-touch) drives the touch-down highlight
+// for whatever tappable node is under the finger. press_begin springs it up when
+// a press lands on a tappable node; press_release springs it back on a drag /
+// cancel; press_flash_release guarantees a brief visible pulse on a quick tap
+// (down+up in one gesture may release before the spring climbed), so a tap always
+// registers. stamp_press re-hit-tests at the frozen press point each build and
+// stamps node->press, so the veil survives body() rebuilds with no dangling
+// pointer into the discarded arena. (hit_test is defined earlier in this file.)
+static void press_begin(ZApp *app) {
+    if (hit_test(app->root, app->ptr_x, app->ptr_y)) {
+        z_animated_spring_with(&app->ui.press, 1.0f, Z_SPRING_PRESS);
+    }
+}
+static void press_release(ZApp *app) {
+    if (app->ui.press.value > 0.003f || app->ui.press.animating) {
+        z_animated_spring_with(&app->ui.press, 0.0f, Z_SPRING_PRESS);
+    }
+}
+static void press_flash_release(ZApp *app) {
+    // Ensure a floor so a fast tap still flashes, then fade out.
+    if (app->ui.press.value < 0.55f) {
+        app->ui.press.value = 0.55f;
+    }
+    z_animated_spring_with(&app->ui.press, 0.0f, Z_SPRING_PRESS);
+}
+static void stamp_press(ZApp *app, ZView root) {
+    ZUI *ui = &app->ui;
+    float pv = ui->press.value;
+    if (!ui->press.animating && pv <= 0.003f) {
+        return;
+    }
+    ZView pn = hit_test(root, app->press_x, app->press_y);
+    if (pn) {
+        pn->press = pv;
     }
 }
 
@@ -873,6 +922,8 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
         // pick a target (custom OnPan first, else the scroll container under the
         // press) and begin.
         app->long_press_armed = false;
+        // A drag is not a tap: release the press highlight as the pan begins.
+        press_release(app);
         app->panning = true;
         app->pan_target = find_pan(app->root, app->press_x, app->press_y);
         app->pan_handler = app->pan_target ? app->pan_target->on_pan : NULL;
@@ -933,6 +984,8 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         app->long_press_target = find_long_press(app->root, app->ptr_x,
                                                  app->ptr_y);
         app->long_press_armed = app->long_press_target != NULL;
+        // Press feedback: highlight the tappable control under the finger (P31).
+        press_begin(app);
         return;
     }
     // Release.
@@ -945,11 +998,13 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         // The long-press already handled this gesture; swallow the tap/pan-end.
         app->long_pressed = false;
         app->panning = false;
+        press_release(app);
         return;
     }
     if (!app->panning) {
-        // No drag: it was a tap. Hit-test and run the deepest handler.
+        // No drag: it was a tap. Flash the press feedback, then run the handler.
         ZView hit = hit_test(app->root, app->ptr_x, app->ptr_y);
+        press_flash_release(app);
         dispatch_tap(app, hit);
         return;
     }
@@ -2097,6 +2152,27 @@ static int app_run(ZApp *app) {
     // a mailbox, so zsysd can push delivered deep links / shares to us (and we
     // can send resolve requests on it). Best-effort: no broker -> no intents.
     ctrl_connect_register(app);
+
+    // Press feedback (P31): give the global press spring its back-pointer, and
+    // read Reduce Motion once (a live re-read is a later refinement) — under it
+    // every spring collapses to an instant jump.
+    app->ui.press.app = app;
+    app->ui.reduce_motion = z_setting_get_int("sys.reduce_motion", 0) != 0;
+
+    // Deterministic press freeze-frame for the screenshot harness: pin the press
+    // spring at ZELTO_PRESS_AMT (default 1) over (ZELTO_PRESS_X, ZELTO_PRESS_Y) in
+    // surface px, so stamp_press highlights the tappable node there on a still
+    // frame with no injected pointer input (mirrors ZELTO_HOME_ANIM_FRAMES).
+    const char *pxs = getenv("ZELTO_PRESS_X");
+    if (pxs && pxs[0]) {
+        const char *pys = getenv("ZELTO_PRESS_Y");
+        const char *pas = getenv("ZELTO_PRESS_AMT");
+        app->press_x = app->last_x = atof(pxs);
+        app->press_y = app->last_y = pys && pys[0] ? atof(pys) : 0.0;
+        float amt = pas && pas[0] ? (float)atof(pas) : 1.0f;
+        app->ui.press.value = app->ui.press.target = amt;
+        app->ui.press.animating = false;
+    }
 
     // Multi-fd loop: poll the wayland fd plus (when present) the zsysd perm
     // socket of an in-flight request and the persistent intents control socket,

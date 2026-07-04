@@ -459,9 +459,18 @@ void z_scroll_to(ZScroll *sc, float x, float y, bool animated);
 // in flight, idle once settled). z_with_animation runs a state change under a
 // chosen spring (the implicit-animation default for values created within).
 // ---------------------------------------------------------------------------
+// Named motion tokens — the OS's spring vocabulary (P31, Motion.md). Pick by
+// ROLE, not by tuning numbers, so the whole system moves in one consistent
+// language and a retune happens in one place (spring_params in animation.c):
+//   STANDARD  the default settle — sheets, drawers, screen slides, list reflow
+//   SNAPPY    stiffer/quicker — carousel page flips, task-switch, decisive moves
+//   PRESS     very quick, tight — the touch-down highlight (grab attention fast,
+//             release cleanly); used by the global press-feedback spring
+// Under Reduce Motion every profile collapses to an instant jump (Accessibility).
 typedef enum ZSpring {
     Z_SPRING_STANDARD = 0,            // default: settles smoothly
     Z_SPRING_SNAPPY,                  // stiffer, quicker
+    Z_SPRING_PRESS,                   // tight + fast: press/tap feedback
 } ZSpring;
 
 ZAnimated *z_animated_value(ZApp *app, float initial);
