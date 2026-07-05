@@ -631,6 +631,12 @@ typedef struct LauncherState {
     // Transient toast.
     double toast_until;
     char toast[64];
+    // Toast swipe-to-dismiss (P33). `toast_drag` is the finger's live DOWNWARD
+    // translation of the toast (it sits at the bottom, so down dismisses); driven
+    // 1:1 while held and sprung back on a short release. The pointer is cached from
+    // the build (the keyed cell is stable) so the pan handler can reach it.
+    ZAnimated *toast_drag;
+    bool toast_dragging;
 
     // App-open continuity cue (P32). When an app icon is tapped, `launch_ref` is
     // the launching app's g_apps index (-1 = none) and `launch_anim` (an
@@ -675,8 +681,42 @@ static double now_s(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+// Toast swipe-to-dismiss (P33): the toast sits at the bottom, so a DOWNWARD drag
+// carries it 1:1 and dismisses it past a threshold/velocity; a short or upward
+// release snaps it back. Dismiss just clears the dwell so the toast's exit spring
+// (P32) fades it out from the finger's position.
+#define TOAST_DISMISS_THRESH 24.0f
+#define TOAST_DISMISS_DIST 70.0f
+static void on_toast_pan(ZApp *app, void *state, const ZPanEvent *e) {
+    LauncherState *s = state;
+    if (!s->toast_drag) {
+        return;
+    }
+    if (e->phase == Z_PAN_BEGIN) {
+        s->toast_dragging = true;
+        z_animated_grab(s->toast_drag);
+    } else if (e->phase == Z_PAN_CHANGED) {
+        z_animated_set(s->toast_drag, e->translation_y > 0.0f ? e->translation_y
+                                                              : 0.0f);
+    } else {   // Z_PAN_END
+        s->toast_dragging = false;
+        float d = z_animated_get(s->toast_drag);
+        if (d > TOAST_DISMISS_THRESH || e->velocity_y > 700.0f) {
+            s->toast_until = 0.0;                 // end the dwell -> exit spring fades
+        } else {
+            z_animated_spring_velocity(s->toast_drag, 0.0f, Z_SPRING_STANDARD,
+                                       e->velocity_y);
+        }
+    }
+    z_invalidate(app);
+}
+
 static void show_toast(LauncherState *s, const char *msg) {
     snprintf(s->toast, sizeof(s->toast), "%s", msg);
+    s->toast_dragging = false;
+    if (s->toast_drag) {
+        z_animated_set(s->toast_drag, 0.0f);   // fresh toast starts un-dragged
+    }
     s->toast_until = now_s() + 2.0;
 }
 
@@ -1783,6 +1823,10 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // 0 in its final ~0.3s, and the toast renders while any of it is still visible.
     ZView toast = NULL;
     ZAnimated *toast_enter = z_animated_keyed(app, 0x746F617374ULL /*'toast'*/, 0.0f);
+    // Swipe-to-dismiss drag cell (P33), identity-keyed like the entrance so it never
+    // disturbs call-order cells; cached on state so the pan handler can reach it.
+    ZAnimated *toast_drag = z_animated_keyed(app, 0x746F61737464ULL /*'toastd'*/, 0.0f);
+    state->toast_drag = toast_drag;
     // Freeze-frame hook: ZELTO_TOAST_ENTER=<0..1> parks a labelled toast on screen
     // at a pinned entrance progress for a still mid-transition shot.
     const char *tenv = getenv("ZELTO_TOAST_ENTER");
@@ -1801,18 +1845,32 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     if (tenv && tenv[0]) {
         z_animated_pin(toast_enter, (float)atof(tenv));
     }
+    // Swipe-dismiss freeze-frame: ZELTO_TOAST_DRAG=<px> pins a held downward drag.
+    const char *tdenv = getenv("ZELTO_TOAST_DRAG");
+    if (tdenv && tdenv[0]) {
+        z_animated_pin(toast_drag, (float)atof(tdenv));
+    }
     float te = z_animated_get(toast_enter);
     if ((state->toast_until > 0.0 && now_s() < state->toast_until) ||
         te > 0.01f || z_animated_active(toast_enter)) {
         z_invalidate(app);
         float tslide = (1.0f - te) * 28.0f;   // rises up into place from below
-        toast = Opacity(te, OffsetXY(0.0f, tslide, Fill(VStack(
-            Spacer(),
+        float td = z_animated_get(toast_drag);   // >=0 dragged down toward dismissal
+        float dprog = td / TOAST_DISMISS_DIST;
+        if (dprog > 1.0f) {
+            dprog = 1.0f;
+        }
+        // OnPan wraps only the toast box (not the full-screen filler), so a drag on
+        // the toast dismisses it while drags elsewhere still reach the home gestures.
+        ZView box = OnPan(on_toast_pan,
             Background(Z_COLOR_SURFACE_2,
                 CornerRadius(12.0f,
                     Padding(14.0f,
                         Foreground(Z_COLOR_TEXT_INV,
-                            Font(Z_FONT_BODY, Text("%s", state->toast)))))),
+                            Font(Z_FONT_BODY, Text("%s", state->toast)))))));
+        toast = Opacity(te * (1.0f - dprog), OffsetXY(0.0f, tslide + td, Fill(VStack(
+            Spacer(),
+            box,
             .spacing = 0, .padding = 100, .align = Z_ALIGN_CENTER))));
     }
 

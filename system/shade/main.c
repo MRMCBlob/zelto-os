@@ -70,6 +70,11 @@
                     // the finger leaves it (input then stays over the full surface)
 #define BANNER_STRIP_H 150
 
+// Heads-up swipe-to-dismiss (P33): an upward drag past THRESH px (or a strong
+// up-fling) hides the pop-over; DIST is the travel the strip fades out over.
+#define BANNER_DISMISS_THRESH 30.0f
+#define BANNER_DISMISS_DIST 100.0f
+
 // One stored notification (active banner or history). The pushed
 // ZShownNotification strings are valid only during the show callback, so copy.
 typedef struct Banner {
@@ -101,6 +106,17 @@ typedef struct ShadeState {
     // last banner clears, so the next heads-up enters fresh. Bound to the strip's
     // Offset + Opacity in the collapsed-banner branch.
     ZAnimated *banner_enter;
+
+    // Heads-up swipe-to-dismiss (P33). `banner_drag` is the finger's live vertical
+    // translation of the cards strip (<=0 dragged up toward dismissal), sprung back
+    // on a short release. `banner_mode` latches the drag's intent on the first real
+    // motion: an UP drag dismisses the heads-up, a DOWN drag opens the shade (the
+    // same surface hosts both gestures). `heads_up_hidden` collapses the strip after
+    // a dismiss — the notifications stay active in the panel (swiping a heads-up away
+    // only hides the pop-over, the Android/iOS way); a new post clears it.
+    ZAnimated *banner_drag;
+    int banner_mode;   // 0 undecided, 1 pull-shade, 2 dismiss-heads-up
+    bool heads_up_hidden;
 
     // Quick-settings toggles, loaded once from prefs and persisted on flip.
     bool qs_loaded;
@@ -173,6 +189,11 @@ static void on_show(ZApp *app, const ZShownNotification *n, void *ud) {
     }
     if (!b) {
         return;   // strip full
+    }
+    // A new post re-pops the heads-up even if the last one was swiped away.
+    s->heads_up_hidden = false;
+    if (s->banner_drag) {
+        z_animated_set(s->banner_drag, 0.0f);
     }
     // First banner of a fresh heads-up: spring the cards strip in (slide+fade).
     if (was_empty && s->banner_enter) {
@@ -398,6 +419,56 @@ static void on_shade_pan(ZApp *app, void *state, const ZPanEvent *e) {
     }
 }
 
+// Heads-up banner gesture (P33). The cards strip hosts BOTH the shade-pull and a
+// swipe-to-dismiss, so latch the intent from the first real motion: a DOWN drag
+// opens the shade (delegate to the pull handler), an UP drag lifts the strip 1:1
+// and dismisses the heads-up past a threshold/velocity (snapping back if short).
+static void on_banner_pan(ZApp *app, void *state, const ZPanEvent *e) {
+    ShadeState *s = state;
+    if (!s->banner_drag) {
+        return;
+    }
+    if (e->phase == Z_PAN_BEGIN) {
+        s->banner_mode = 0;
+        s->pull_base = s->pull ? z_animated_get(s->pull) : 0.0f;
+        s->dragging = true;
+        z_animated_grab(s->banner_drag);
+        return;
+    }
+    // Latch direction once the finger has moved enough to be unambiguous.
+    if (s->banner_mode == 0 && (e->translation_y > 6.0f || e->translation_y < -6.0f)) {
+        s->banner_mode = e->translation_y > 0.0f ? 1 : 2;
+    }
+    if (s->banner_mode == 1) {
+        on_shade_pan(app, state, e);   // downward: this is a shade pull
+        return;
+    }
+    if (s->banner_mode != 2) {
+        return;                        // not yet decided (tiny motion)
+    }
+    // Upward: 1:1 lift toward dismissal.
+    if (e->phase == Z_PAN_CHANGED) {
+        z_animated_set(s->banner_drag, e->translation_y < 0.0f ? e->translation_y
+                                                               : 0.0f);
+    } else {   // Z_PAN_END
+        s->dragging = false;
+        float d = z_animated_get(s->banner_drag);
+        if (d < -BANNER_DISMISS_THRESH || e->velocity_y < -700.0f) {
+            // Hide the pop-over: the notifications stay active in the panel.
+            s->heads_up_hidden = true;
+            if (s->banner_enter) {
+                z_animated_set(s->banner_enter, 0.0f);
+            }
+            z_animated_set(s->banner_drag, 0.0f);
+        } else {
+            z_animated_spring_velocity(s->banner_drag, 0.0f, Z_SPRING_STANDARD,
+                                       e->velocity_y);   // snap back
+        }
+        s->banner_mode = 0;
+    }
+    z_invalidate(app);
+}
+
 // Tap the dimmed area outside the panel: spring the shade closed.
 static void close_shade(ZApp *app, void *state) {
     ShadeState *s = state;
@@ -427,6 +498,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     }
     s->pull = z_animated_value(app, 0.0f);
     s->banner_enter = z_animated_value(app, 0.0f);
+    s->banner_drag = z_animated_value(app, 0.0f);
     ensure_qs(s);
 
     // Freeze-frame hook (P32): ZELTO_BANNER_ENTER=<0..1> pins the heads-up strip's
@@ -435,6 +507,15 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     const char *be_env = getenv("ZELTO_BANNER_ENTER");
     if (be_env && be_env[0]) {
         z_animated_pin(s->banner_enter, (float)atof(be_env));
+    }
+    // Swipe-dismiss freeze-frame (P33): ZELTO_BANNER_DRAG=<px> pins the strip at a
+    // held upward drag (negative = toward dismissal), seating the entrance first so
+    // the mid-drag lift+fade is shot-verifiable with no injected input.
+    const char *bd_env = getenv("ZELTO_BANNER_DRAG");
+    if (bd_env && bd_env[0]) {
+        z_animated_set(s->banner_enter, 1.0f);
+        z_animated_pin(s->banner_drag, (float)atof(bd_env));
+        s->banner_mode = 2;
     }
     // ZELTO_BANNER_DEMO=1 fabricates a heads-up banner directly in the sink on the
     // first build, so the entrance transition is deterministically shot-verifiable
@@ -478,7 +559,12 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     int panel_h = (int)((float)full_h * 0.85f);   // panel covers most of it
     g_pull_dist = (float)panel_h;
     int n_active = active_count(s);
-    bool expanded = pull_v > 0.001f || s->dragging;
+    // The heads-up pop-over shows only while there are active banners AND it has
+    // not been swiped away (a dismiss hides the pop-over but keeps the banners in
+    // the panel). banner_mode 2 keeps it up through the dismiss drag itself.
+    bool show_heads_up = n_active > 0 &&
+                         (!s->heads_up_hidden || s->banner_mode == 2);
+    bool expanded = pull_v > 0.001f || (s->dragging && s->banner_mode != 2);
 
     // ----- COLLAPSED: idle grab strip or heads-up banners -----
     if (!expanded) {
@@ -486,9 +572,9 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         // is input-transparent, so taps below fall through to the app. (An
         // in-flight pull keeps its events via the compositor's pointer grab, so
         // the region narrowing here never interrupts a drag.)
-        int strip_h = n_active == 0 ? GRAB_H : BANNER_STRIP_H;
+        int strip_h = !show_heads_up ? GRAB_H : BANNER_STRIP_H;
         z_layer_set_input_region(app, 0, 0, w, strip_h);
-        if (n_active == 0) {
+        if (!show_heads_up) {
             // Idle: a thin top strip with a faint centred grab handle, the rest
             // transparent. The OnPan strip catches the down-swipe.
             ZView strip = OnPan(on_shade_pan,
@@ -512,8 +598,17 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         col.children[k++] = Spacer();
         float be = z_animated_get(s->banner_enter);
         float bslide = (1.0f - be) * -24.0f;   // slides down from behind the bar
-        return OnPan(on_shade_pan,
-            Opacity(be, OffsetXY(0.0f, bslide, Fill(z_stack(Z_AXIS_VERTICAL, &col)))));
+        // Swipe-to-dismiss (P33): an upward drag lifts the strip 1:1 and fades it
+        // out toward dismissal; combined with the entrance slide/fade above.
+        float bd = z_animated_get(s->banner_drag);
+        float dprog = bd < 0.0f ? (-bd / BANNER_DISMISS_DIST) : 0.0f;
+        if (dprog > 1.0f) {
+            dprog = 1.0f;
+        }
+        return OnPan(on_banner_pan,
+            Opacity(be * (1.0f - dprog),
+                OffsetXY(0.0f, bslide + bd,
+                    Fill(z_stack(Z_AXIS_VERTICAL, &col)))));
     }
 
     // ----- EXPANDED: the whole surface takes input; the panel slides down -----
