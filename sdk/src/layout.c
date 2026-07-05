@@ -127,11 +127,17 @@ static void arrange(ZView n, float x, float y, float w, float h) {
             if (max < 0.0f) {
                 max = 0.0f;
             }
-            if (n->scroll->offset > max) {
-                n->scroll->offset = max;
-            }
-            if (n->scroll->offset < 0.0f) {
-                n->scroll->offset = 0.0f;
+            // Keep the RESTING offset valid (content may have shrunk since the last
+            // frame), but leave an intentional over-pull alone: while a drag holds
+            // the offset past a bound, or a release settles it back, the rubber-band
+            // (scroll.c) owns the out-of-range value — clamping here would cancel it.
+            if (!n->scroll->dragging && !n->scroll->settling) {
+                if (n->scroll->offset > max) {
+                    n->scroll->offset = max;
+                }
+                if (n->scroll->offset < 0.0f) {
+                    n->scroll->offset = 0.0f;
+                }
             }
         }
         float off = n->scroll ? n->scroll->offset : 0.0f;

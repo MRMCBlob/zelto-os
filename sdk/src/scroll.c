@@ -4,6 +4,8 @@
 // and pan drags move (with fling momentum from animation.c). List builds only
 // the rows in (and just around) the viewport, keying each so the reconciler
 // reuses them across scrolls. See docs/ui/components/{scroll,list}.md.
+#include <stdlib.h>
+
 #include "internal.h"
 
 extern ZArena *z_build_arena;
@@ -19,9 +21,24 @@ static ZScroll *next_scroll_cell(ZApp *app) {
     ZScroll *sc = &s->scrolls[i];
     if (!sc->used) {
         sc->used = true;
-        sc->offset = sc->velocity = 0.0f;
-        sc->flinging = false;
+        sc->offset = sc->velocity = sc->raw = 0.0f;
+        sc->flinging = sc->settling = false;
         sc->painted_offset = -1.0f;
+        // Deterministic past-limit freeze-frame for the screenshot harness (P33):
+        // ZELTO_SCROLL_OVERPULL=<px> pins the FIRST scroll cell at a rubber-banded
+        // over-pull off the TOP (content dragged down, resisting) on a still frame,
+        // so the rubber-band curve is shot-verifiable without injected drag input.
+        // Env-gated, so zero production effect. (Only the first cell, so a nested
+        // scroll elsewhere is unaffected.)
+        if (i == 0) {
+            const char *op = getenv("ZELTO_SCROLL_OVERPULL");
+            if (op && op[0]) {
+                float px = (float)atof(op);
+                sc->raw = -px;
+                sc->offset = z_rubber_band(-px, 400.0f);
+                sc->dragging = true;   // hold the over-pull so layout won't clamp it
+            }
+        }
         if (s->scroll_count <= i) {
             s->scroll_count = i + 1;
         }
@@ -36,8 +53,11 @@ void z_scroll_to(ZScroll *sc, float x, float y, bool animated) {
     (void)x;
     (void)animated;  // MVP: immediate; spring-to is Planned.
     sc->offset = y < 0.0f ? 0.0f : y;
+    sc->raw = sc->offset;
     sc->velocity = 0.0f;
     sc->flinging = false;
+    sc->settling = false;
+    sc->dragging = false;
     if (sc->app) {
         z_invalidate(sc->app);
     }
@@ -49,27 +69,54 @@ static float scroll_max(const ZScroll *sc) {
     return m > 0.0f ? m : 0.0f;
 }
 
+// Map a raw (un-damped) drag position to the applied offset: inside [0,max] it is
+// the identity; past either bound it resists with the shared rubber-band curve, so
+// an over-pull moves a shrinking amount instead of stopping dead at the edge.
+static float rubber_offset(const ZScroll *sc, float raw) {
+    float max = scroll_max(sc);
+    float dim = sc->viewport_h > 1.0f ? sc->viewport_h : 400.0f;
+    if (raw < 0.0f) {
+        return z_rubber_band(raw, dim);          // above the top
+    }
+    if (raw > max) {
+        return max + z_rubber_band(raw - max, dim);  // below the bottom
+    }
+    return raw;
+}
+
 void z_scroll_begin_drag(ZScroll *sc) {
     sc->flinging = false;
+    sc->settling = false;
+    sc->dragging = true;
     sc->velocity = 0.0f;
+    sc->raw = sc->offset;   // seed the un-damped position from where we are
 }
 
 void z_scroll_drag_by(ZScroll *sc, float dy) {
-    float max = scroll_max(sc);
-    sc->offset += dy;
-    if (sc->offset < 0.0f) {
-        sc->offset = 0.0f;
-    } else if (sc->offset > max) {
-        sc->offset = max;
-    }
+    // Accumulate the raw drag and apply the rubber-banded mapping. The wheel path
+    // (which never calls begin_drag) keeps raw in step with offset so a wheel notch
+    // past the edge also resists rather than jerking.
+    sc->raw += dy;
+    sc->offset = rubber_offset(sc, sc->raw);
     if (sc->app) {
         z_invalidate(sc->app);
     }
 }
 
 void z_scroll_end_drag(ZScroll *sc, float velocity_y) {
-    sc->velocity = velocity_y;
-    sc->flinging = (velocity_y < -40.0f || velocity_y > 40.0f);
+    float max = scroll_max(sc);
+    sc->dragging = false;
+    // Released while over-pulled: settle elastically back to the nearest bound
+    // (rubber-band snap-back), ignoring any fling velocity into the wall.
+    if (sc->raw < 0.0f || sc->raw > max) {
+        sc->settling = true;
+        sc->settle_target = sc->raw < 0.0f ? 0.0f : max;
+        sc->flinging = false;
+        sc->velocity = 0.0f;
+    } else {
+        sc->velocity = velocity_y;
+        sc->flinging = (velocity_y < -40.0f || velocity_y > 40.0f);
+    }
     if (sc->app) {
         z_invalidate(sc->app);
     }

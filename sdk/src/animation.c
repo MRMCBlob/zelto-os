@@ -171,6 +171,41 @@ void z_animated_spring_with(ZAnimated *v, float to, ZSpring spring) {
     }
 }
 
+// Spring toward `to` with an EXPLICIT initial velocity injected into the
+// integrator — the continuous hand-off a gesture release needs. When a finger
+// lets go of a surface it was dragging 1:1, the surface should re-fling from the
+// finger's live velocity, not ease from a standstill; and touching a spring
+// mid-flight then releasing should carry the value's current velocity forward.
+// This is the one entry point that seeds v->velocity rather than leaving it. Same
+// Reduce-Motion collapse (an instant jump, no fling) as the other spring starters.
+void z_animated_spring_velocity(ZAnimated *v, float to, ZSpring spring,
+                                float velocity) {
+    ZUI *ui = v->app ? z_app_ui(v->app) : NULL;
+    if (ui && ui->reduce_motion) {
+        z_animated_set(v, to);
+        return;
+    }
+    spring_params(spring, &v->stiffness, &v->damping, &v->mass);
+    v->target = to;
+    v->velocity = velocity;   // seed the release velocity for a fluid hand-off
+    v->animating = true;
+    if (v->app) {
+        z_invalidate(v->app);
+    }
+}
+
+// Grab a spring that may be mid-flight: freeze it at its CURRENT value and return
+// that value, so a finger touching a moving surface takes control from where it
+// is (no jump, no ignored touch) and drives it 1:1 from here. The velocity is
+// retained (not zeroed) so a later z_animated_spring_velocity can carry it — but
+// the value stops evolving on its own until the drag sets it. Does not wake the
+// loop (the caller is handling live input and will invalidate).
+float z_animated_grab(ZAnimated *v) {
+    v->target = v->value;
+    v->animating = false;
+    return v->value;
+}
+
 float z_animated_get(const ZAnimated *v) { return v->value; }
 
 void z_with_animation(ZApp *app, ZSpring spring, ZAction change) {
@@ -239,6 +274,27 @@ static bool advance_fling(ZScroll *sc, float dt) {
     if (settled) {
         sc->flinging = false;
         sc->velocity = 0.0f;
+        sc->raw = sc->offset;   // keep the un-damped drag base in sync for the wheel
+        return false;
+    }
+    return true;
+}
+
+// Elastic snap-back from an over-pull (P33): after a rubber-banded drag is released
+// past a bound, ease the offset to the nearest edge. Exponential approach — no
+// velocity term needed (the release into the wall has none), and it reads as the
+// standard rubber-band recoil. Reduce Motion never reaches here: an over-pull under
+// it can't happen because the drag itself is 1:1 but the release just clamps below.
+static bool advance_settle(ZScroll *sc, float dt) {
+    if (!sc->settling) {
+        return false;
+    }
+    float a = 1.0f - expf(-14.0f * dt);
+    sc->offset += (sc->settle_target - sc->offset) * a;
+    if (fabsf(sc->offset - sc->settle_target) < 0.5f) {
+        sc->offset = sc->settle_target;
+        sc->raw = sc->offset;
+        sc->settling = false;
         return false;
     }
     return true;
@@ -253,6 +309,9 @@ static bool tick_screen(ZScreen *s, float dt) {
     }
     for (int i = 0; i < s->scroll_count; i++) {
         if (advance_fling(&s->scrolls[i], dt)) {
+            active = true;
+        }
+        if (advance_settle(&s->scrolls[i], dt)) {
             active = true;
         }
     }

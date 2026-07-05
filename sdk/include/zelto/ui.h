@@ -502,9 +502,42 @@ void z_animated_spring(ZAnimated *v, float to);      // spring toward `to`
 // decisive page flip, PRESS for touch feedback) at a single call without wrapping
 // it in a z_with_animation block. Honours Reduce Motion (collapses to a jump).
 void z_animated_spring_with(ZAnimated *v, float to, ZSpring spring);
+// Spring toward `to` with an initial VELOCITY injected — the continuous hand-off a
+// gesture release needs. A surface dragged 1:1 should re-fling from the finger's
+// live velocity (px/s in the value's units) rather than easing from rest, and a
+// spring grabbed mid-flight should carry its momentum forward on release. This is
+// how an interruptible, physically-continuous drag settles (P33). Honours Reduce
+// Motion (collapses to a jump — a direct-manipulation drag can't be reduced, but
+// its RELEASE animation can).
+void z_animated_spring_velocity(ZAnimated *v, float to, ZSpring spring,
+                                float velocity);
+// Grab a (possibly mid-flight) spring: stop it evolving on its own and return its
+// current value, so a finger touching a moving surface takes control from where it
+// is — no jump, no ignored touch. Drive it 1:1 with z_animated_set from here, then
+// hand it back with z_animated_spring_velocity on release. Velocity is preserved.
+float z_animated_grab(ZAnimated *v);
 float z_animated_get(const ZAnimated *v);            // current value
 float z_animated_target(const ZAnimated *v);         // where it's springing to
 bool z_animated_active(const ZAnimated *v);          // still springing?
+
+// Rubber-banding at a limit (Motion.md — resist, don't hard-stop). When a drag
+// pushes a value PAST a boundary (the top of a scroll, a sheet dragged the wrong
+// way, an over-pulled shade), don't clamp it dead: let it move with diminishing
+// returns so the boundary feels elastic, then snap back on release. `overshoot` is
+// how far past the limit the raw drag went (signed); `dim` is the reference span
+// the resistance is scaled against (usually the viewport/screen extent). Returns
+// the DAMPED offset to actually apply past the limit — small for a big pull, never
+// reaching `dim`. The standard iOS curve b(x)=x·c·d/(x·c+d), c=0.55, pure
+// arithmetic (no libm). Sign-symmetric, so it works at either end of a range.
+static inline float z_rubber_band(float overshoot, float dim) {
+    if (dim <= 0.0f) {
+        return overshoot;
+    }
+    const float c = 0.55f;
+    float x = overshoot < 0.0f ? -overshoot : overshoot;
+    float r = (x * c * dim) / (x * c + dim);
+    return overshoot < 0.0f ? -r : r;
+}
 
 void z_with_animation(ZApp *app, ZSpring spring, ZAction change);
 

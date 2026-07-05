@@ -196,6 +196,43 @@ SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
     run_shot 51-reduce-motion "Reduce Motion: volume entrance collapsed (vs 42)" 6 \
     ZELTO_VOLUME_ENTER=0.5
 
+# ---------------------------------------------------------------------------
+# GESTURE / INTERRUPTIBLE MOTION FREEZE-FRAMES (P33): every gesture-reachable
+# mid-drag / past-limit / interrupted-handoff state, pinned by a deterministic
+# ZELTO_*_DRAG / _OVERPULL / _BACK hook (grep them in the surface's main.c). No
+# injected pointer input — the drag amount is frozen so the frame is byte-stable.
+# ---------------------------------------------------------------------------
+# Rubber-band at a scroll edge: the Settings list over-pulled off the top, the
+# gap resisting with the diminishing-returns curve (ZELTO_SCROLL_OVERPULL px).
+run_shot 52-scroll-overpull "Scroll edge rubber-band: list over-pulled off the top" 8 \
+    SIM_APP=zelto-settings ZELTO_SCROLL_OVERPULL=160
+# Swipe-to-dismiss transient surfaces, each dragged partway toward dismissal.
+SEED='sys.volume\t7\n' \
+    run_shot 53-volume-dismiss "Volume HUD dragged up toward swipe-dismiss (frozen)" 6 \
+    ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
+run_shot 54-banner-dismiss "Heads-up banner dragged up toward swipe-dismiss (frozen)" 6 \
+    ZELTO_BANNER_DEMO=1 ZELTO_BANNER_DRAG=-64
+run_shot 55-toast-dismiss "Launcher toast dragged down toward swipe-dismiss (frozen)" 6 \
+    ZELTO_TOAST_ENTER=1 ZELTO_TOAST_DRAG=60
+# Consent: dragged down partway (a downward flick past threshold maps to Deny).
+run_shot 56-consent-drag "Consent modal dragged down toward flick-to-Deny (frozen)" 7 \
+    SIM_CONSENT="os.zelto.pinger notifications" ZELTO_CONSENT_DRAG=90
+# Interruptible Navigator back-swipe: the top screen dragged partway back, the
+# incoming screen sliding under it (ZELTO_NAV_BACK=<0..1> = how far the finger is).
+run_shot 57-nav-back-swipe "Navigator back-swipe tracking the finger (frozen 0.5)" 8 \
+    SIM_APP=zelto-hello ZELTO_NAV_BACK=0.5
+# Shade over-pull past fully-open, resisting with the rubber-band.
+run_shot 58-shade-overpull "Shade pulled past open, rubber-banding at the limit (frozen)" 6 \
+    ZELTO_SHADE_PULL=1.25
+# App drawer over-pulled past fully-up, rubber-banding.
+run_shot 59-drawer-overpull "App drawer over-pulled past open, rubber-banding (frozen)" 6 \
+    ZELTO_HOME_DRAWER=1 ZELTO_DRAWER_OVERPULL=120
+# Reduce Motion A/B: the release animation collapses, but the 1:1 drag itself is
+# intact — the SAME volume drag as 53, still shown at the frozen finger position.
+SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
+    run_shot 60-reduce-drag "Reduce Motion: drag tracks finger, release would snap (vs 53)" 6 \
+    ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
+
 # ===========================================================================
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
 # ===========================================================================

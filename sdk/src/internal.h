@@ -120,9 +120,19 @@ struct ZAnimated {
 // pass fills viewport_h/content_h (used to clamp + for fling settling).
 struct ZScroll {
     ZApp *app;
-    float offset;          // current scroll offset
+    float offset;          // current scroll offset (may sit PAST a bound mid-drag,
+                           // rubber-banded, until release settles it back in)
     float velocity;        // px/s, for fling
     bool flinging;
+    // Rubber-band drag state (P33). `raw` is the UN-damped accumulated drag
+    // position; `offset` is `raw` passed through z_rubber_band past the bounds, so
+    // an over-pull resists instead of hard-clamping. On release, if `raw` is out of
+    // range the scroll SETTLES elastically back to the nearest bound (settling),
+    // rather than flinging.
+    float raw;
+    bool dragging;         // a finger drag holds `offset` (may be past a bound)
+    bool settling;
+    float settle_target;
     float viewport_h;      // last laid-out viewport height
     float content_h;       // last laid-out content height
     float painted_offset;  // offset the buffer was last painted at (reconcile)
