@@ -232,6 +232,14 @@ run_shot 59-drawer-overpull "App drawer over-pulled past open, rubber-banding (f
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
     run_shot 60-reduce-drag "Reduce Motion: drag tracks finger, release would snap (vs 53)" 6 \
     ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
+# Hit-test on a MOVING subtree: the shade panel is frozen OVER-PULLED (slid down
+# past open by the rubber-band) and the press freeze-hook is aimed at the Wi-Fi
+# quick-settings chip AT ITS LIVE offset position. The press veil landing on the
+# (opaque, translated) chip proves hit_test uses the offset frame — a moving subtree
+# stays tappable where it visually is, not at its un-shifted layout home.
+run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset shade chip" 6 \
+    ZELTO_SHADE_PULL=1.18 ZELTO_PRESS_APP=shade_body \
+    ZELTO_PRESS_X=356 ZELTO_PRESS_Y=252
 
 # ===========================================================================
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
