@@ -35,6 +35,15 @@
 // How long the exit slide+fade runs before the surface is torn down transparent.
 #define VOL_EXIT_MS 340
 
+// Swipe-to-dismiss (P33). The HUD sits near the top, so an UPWARD drag dismisses it
+// (a downward drag resists with the rubber-band). DISMISS_THRESH px up (or a strong
+// up-fling) past release commits; DISMISS_DIST is the travel over which the panel
+// fades fully out as it leaves. INPUT_BAND is the top strip the surface catches
+// input in while shown (so the drag reaches the panel; taps below fall through).
+#define VOL_DISMISS_THRESH 36.0f
+#define VOL_DISMISS_DIST 110.0f
+#define VOL_INPUT_BAND 220
+
 typedef struct VolState {
     bool inited;
     bool subscribed;
@@ -48,6 +57,13 @@ typedef struct VolState {
     // body can tear the surface down once the spring has settled at 0.
     ZAnimated *enter;
     bool exiting;
+    // Swipe-to-dismiss (P33). `drag` is the finger's live vertical translation (px),
+    // driven 1:1 while a finger is down and sprung back to 0 on a short release. A
+    // release past the threshold/velocity dismisses via the P32 exit spring — the
+    // enter/exit spring is now the RELEASE animation, not the whole story. `dragging`
+    // suppresses the self-dismiss timer while the finger holds the panel.
+    ZAnimated *drag;
+    bool dragging;
 } VolState;
 
 // The exit slide+fade has run its course: drop the now-transparent surface.
@@ -59,16 +75,52 @@ static void hud_finish_hide(ZApp *app, void *ud) {
     z_invalidate(app);
 }
 
-// The dwell elapsed with no further change: start the exit (spring `enter` back to
-// 0) and, once it has settled, hide. Reduce Motion collapses the spring, so the
-// panel simply vanishes when hud_finish_hide fires.
-static void hud_timeout(ZApp *app, void *ud) {
-    VolState *s = ud;
+// Begin the exit slide+fade (spring `enter` back to 0, carrying an optional release
+// velocity for a swipe-dismiss hand-off) and schedule the teardown once it settles.
+// Reduce Motion collapses the spring, so the panel just vanishes when the timer
+// fires. Shared by the dwell timeout and swipe-to-dismiss.
+static void start_exit(ZApp *app, VolState *s, float velocity) {
     s->exiting = true;
     if (s->enter) {
-        z_animated_spring_with(s->enter, 0.0f, Z_SPRING_STANDARD);
+        z_animated_spring_velocity(s->enter, 0.0f, Z_SPRING_STANDARD, velocity);
     }
     z_after(app, VOL_EXIT_MS, hud_finish_hide, s);
+    z_invalidate(app);
+}
+
+// The dwell elapsed with no further change: fade out.
+static void hud_timeout(ZApp *app, void *ud) {
+    start_exit(app, ud, 0.0f);
+}
+
+// Swipe-to-dismiss the HUD (P33): a drag moves the panel 1:1 with the finger; an
+// upward release past the threshold (or a strong up-fling) dismisses via the exit
+// spring, a short release snaps back and re-arms the dwell timer. A downward drag
+// resists (dismiss is upward), handled in the body via the rubber-band.
+static void on_vol_pan(ZApp *app, void *state, const ZPanEvent *e) {
+    VolState *s = state;
+    if (!s->drag) {
+        return;
+    }
+    if (e->phase == Z_PAN_BEGIN) {
+        s->dragging = true;
+        z_after_cancel(app);           // hold: don't self-dismiss under the finger
+        z_animated_grab(s->drag);      // take control of any snap-back in flight
+    } else if (e->phase == Z_PAN_CHANGED) {
+        z_animated_set(s->drag, e->translation_y);
+    } else {                            // Z_PAN_END
+        s->dragging = false;
+        float d = z_animated_get(s->drag);
+        bool dismiss = d < -VOL_DISMISS_THRESH || e->velocity_y < -700.0f;
+        if (dismiss) {
+            start_exit(app, s, e->velocity_y);   // continue up + fade, from the hand
+        } else {
+            z_animated_spring_velocity(s->drag, 0.0f, Z_SPRING_STANDARD,
+                                       e->velocity_y);   // snap back
+            z_after(app, s->show_ms, hud_timeout, s);    // re-arm the dwell
+        }
+    }
+    z_full_repaint(app);
     z_invalidate(app);
 }
 
@@ -135,8 +187,10 @@ static ZView vol_body(ZApp *app, VolState *s) {
         const char *ms = getenv("ZELTO_VOLUME_MS");
         s->show_ms = (ms && atoi(ms) > 0) ? atoi(ms) : VOL_SHOW_MS_DEFAULT;
     }
-    // The entrance/exit spring, allocated first + unconditionally for a stable id.
+    // The entrance/exit spring + the swipe drag value, allocated first +
+    // unconditionally (call-order cells) for a stable identity across rebuilds.
     s->enter = z_animated_value(app, 0.0f);
+    s->drag = z_animated_value(app, 0.0f);
     if (!s->subscribed) {
         s->subscribed = true;
         z_settings_observe(app, on_changed, s);
@@ -165,25 +219,48 @@ static ZView vol_body(ZApp *app, VolState *s) {
             s->visible = true;
             z_animated_set(s->enter, 1.0f);              // fully seated
         }
+        // Swipe-dismiss freeze-frame: ZELTO_VOLUME_DRAG=<px> pins the panel at a
+        // held finger translation (negative = dragged up toward dismissal), so the
+        // mid-drag frame is shot-verifiable with no injected pointer input.
+        const char *dr = getenv("ZELTO_VOLUME_DRAG");
+        if (dr && dr[0]) {
+            s->visible = true;
+            if (z_animated_get(s->enter) < 0.5f) {
+                z_animated_set(s->enter, 1.0f);          // seated, then held
+            }
+            z_animated_pin(s->drag, (float)atof(dr));
+            s->dragging = true;
+        }
     }
-    // Never catch input — the HUD is display-only; taps fall through.
-    z_layer_set_input_none(app);
 
     if (!s->visible) {
         // Nothing painted -> fully transparent surface, the app shows through.
+        z_layer_set_input_none(app);
         return Fill(Spacer());
     }
-    // Centre the panel horizontally, a little below the status bar. A tint over
-    // transparent (and a moving/fading subtree) needs a full repaint.
+    // Catch input only in the top band the panel occupies, so the drag reaches it
+    // while taps below still fall through to the app. Centre the panel horizontally,
+    // a little below the status bar. A tint over transparent (and a moving/fading
+    // subtree) needs a full repaint.
+    z_layer_set_input_region(app, 0, 0, z_app_width(app), VOL_INPUT_BAND);
     z_full_repaint(app);
     float e = z_animated_get(s->enter);
+    float d = z_animated_get(s->drag);
     float slide = (1.0f - e) * -26.0f;   // slides down into place from above
-    ZView panel = Opacity(e, OffsetXY(0.0f, slide, rocker(s)));
-    return Fill(VStack(
+    // An upward drag (d < 0) carries the panel 1:1 and fades it toward dismissal; a
+    // downward drag resists elastically (dismiss is upward, so down is "wrong way").
+    float dy = d < 0.0f ? d : z_rubber_band(d, (float)z_app_height(app));
+    float prog = d < 0.0f ? (-d / VOL_DISMISS_DIST) : 0.0f;
+    if (prog > 1.0f) {
+        prog = 1.0f;
+    }
+    ZView panel = Opacity(e * (1.0f - prog),
+                          OffsetXY(0.0f, slide + dy, rocker(s)));
+    return OnPan(on_vol_pan, Fill(VStack(
         Frame(0.0f, 80.0f, Spacer()),
         HStack(Spacer(), panel, Spacer(), .spacing = 0),
         Spacer(),
-        .spacing = 0));
+        .spacing = 0)));
 }
 
 // OVERLAY (above the app + status bar) filling the app area below the bar, never
