@@ -123,8 +123,19 @@ typedef struct ShadeState {
     bool qs_wifi, qs_mute, qs_bright;
 } ShadeState;
 
-static float clamp01(float a) {
-    return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+// The pull value is stored RAW (a drag may push it past either end); this maps it
+// to the DISPLAYED pull, rubber-banding the over-pull so dragging past fully-open
+// (or above fully-closed) resists with diminishing returns instead of running off
+// the panel. In [0,1] it is the identity. dim is in pull-units (a fraction of the
+// panel travel), tuned so a hard over-pull adds only a little slack (P33).
+static float shade_display_pull(float raw) {
+    if (raw > 1.0f) {
+        return 1.0f + z_rubber_band(raw - 1.0f, 0.4f);
+    }
+    if (raw < 0.0f) {
+        return z_rubber_band(raw, 0.4f);
+    }
+    return raw;
 }
 
 // Load the quick-settings toggles once from the brokered settings store
@@ -402,10 +413,13 @@ static void on_shade_pan(ZApp *app, void *state, const ZPanEvent *e) {
     }
     float dist = g_pull_dist > 1.0f ? g_pull_dist : 1.0f;
     if (e->phase == Z_PAN_BEGIN) {
-        s->pull_base = z_animated_get(s->pull);
+        // Grab the (possibly still-settling) spring so the finger takes over from
+        // its live value with no jump — the pull is interruptible mid-animation.
+        s->pull_base = z_animated_grab(s->pull);
         s->dragging = true;
     } else if (e->phase == Z_PAN_CHANGED) {
-        z_animated_set(s->pull, clamp01(s->pull_base + e->translation_y / dist));
+        // Store the RAW pull (unclamped); the render rubber-bands the over-pull.
+        z_animated_set(s->pull, s->pull_base + e->translation_y / dist);
     } else {   // Z_PAN_END
         s->dragging = false;
         float v = z_animated_get(s->pull);
@@ -415,7 +429,9 @@ static void on_shade_pan(ZApp *app, void *state, const ZPanEvent *e) {
         } else if (e->velocity_y < -600.0f) {
             open = false;           // strong up-fling closes
         }
-        z_animated_spring(s->pull, open ? 1.0f : 0.0f);
+        // Settle to the chosen end, carrying the finger velocity (px/s -> pull/s).
+        z_animated_spring_velocity(s->pull, open ? 1.0f : 0.0f, Z_SPRING_STANDARD,
+                                   e->velocity_y / dist);
     }
 }
 
@@ -545,6 +561,13 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         if (so && so[0] == '1') {
             z_animated_set(s->pull, 1.0f);
         }
+        // Over-pull freeze-frame (P33): ZELTO_SHADE_PULL=<val> pins the RAW pull at
+        // a value past 1 so the rubber-banded resistance past fully-open is
+        // shot-verifiable (the render damps it via shade_display_pull).
+        const char *sp = getenv("ZELTO_SHADE_PULL");
+        if (sp && sp[0]) {
+            z_animated_pin(s->pull, (float)atof(sp));
+        }
     }
 
     float pull_v = z_animated_get(s->pull);
@@ -654,7 +677,9 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
                     Fill(z_stack(Z_AXIS_VERTICAL, &list)),
                     .align = Z_ALIGN_CENTER))));
 
-    float slide = (pull_v - 1.0f) * (float)panel_h;   // -panel_h hidden .. 0 down
+    // Rubber-band the over-pull: past fully-open the panel resists instead of
+    // sliding off the bottom, and snaps back on release (raw pull -> display pull).
+    float slide = (shade_display_pull(pull_v) - 1.0f) * (float)panel_h;
 
     // Back: a bg-less full-surface scrim — drag controls the pull, tap closes,
     // and it paints nothing so the app shows through where the panel isn't.

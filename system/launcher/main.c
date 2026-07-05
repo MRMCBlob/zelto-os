@@ -916,8 +916,18 @@ static void ghost_land(ZApp *app, LauncherState *s) {
     s->landing = true;
 }
 
-static float clamp01(float a) {
-    return a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+// Map the RAW drawer position (a drag may push it past either end) to the DISPLAYED
+// one, rubber-banding the over-pull so dragging the drawer up past fully-open (or
+// down past fully-closed) resists instead of running off-screen, and snaps back on
+// release (P33). dim is in drawer-units (a fraction of the surface travel).
+static float drawer_display(float raw) {
+    if (raw > 1.0f) {
+        return 1.0f + z_rubber_band(raw - 1.0f, 0.4f);
+    }
+    if (raw < 0.0f) {
+        return z_rubber_band(raw, 0.4f);
+    }
+    return raw;
 }
 
 // Spring the carousel to page `p` (clamped) and record it as the settled page.
@@ -1043,6 +1053,7 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
                 s->pan_axis = 1;
             } else if (ay > 8.0f) {
                 s->pan_axis = 2;
+                z_animated_grab(s->drawer_anim);   // interruptible: take a settle over
             }
         }
         if (s->pan_axis == 1) {
@@ -1054,7 +1065,8 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
             z_full_repaint(app);
             z_invalidate(app);
         } else if (s->pan_axis == 2) {
-            z_animated_set(s->drawer_anim, clamp01(-e->translation_y / h));
+            // Store the RAW drawer position (render rubber-bands the over-pull).
+            z_animated_set(s->drawer_anim, -e->translation_y / h);
         }
     } else if (e->phase == Z_PAN_END) {
         if (s->pan_axis == 1) {
@@ -1069,7 +1081,10 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
         } else if (s->pan_axis == 2) {
             float a = z_animated_get(s->drawer_anim);
             bool open = a > 0.35f || e->velocity_y < -500.0f;
-            z_animated_spring(s->drawer_anim, open ? 1.0f : 0.0f);
+            // Settle carrying the finger velocity (px/s -> drawer-units/s; up = open,
+            // so an upward (negative) velocity raises the drawer value -> negate).
+            z_animated_spring_velocity(s->drawer_anim, open ? 1.0f : 0.0f,
+                                       Z_SPRING_STANDARD, -e->velocity_y / h);
         }
     }
 }
@@ -1081,18 +1096,18 @@ static void on_drawer_pan(ZApp *app, void *state, const ZPanEvent *e) {
         return;
     }
     float h = s->surface_h > 1.0f ? s->surface_h : 1.0f;
-    if (e->phase == Z_PAN_CHANGED) {
-        float a = 1.0f - e->translation_y / h;
-        if (a < 0.0f) {
-            a = 0.0f;
-        } else if (a > 1.0f) {
-            a = 1.0f;
-        }
-        z_animated_set(s->drawer_anim, a);
+    if (e->phase == Z_PAN_BEGIN) {
+        // Interruptible: grab a settling drawer so the finger takes over its live
+        // value with no jump.
+        z_animated_grab(s->drawer_anim);
+    } else if (e->phase == Z_PAN_CHANGED) {
+        // RAW (unclamped) drawer position; the render rubber-bands the over-pull.
+        z_animated_set(s->drawer_anim, 1.0f - e->translation_y / h);
     } else if (e->phase == Z_PAN_END) {
         float a = z_animated_get(s->drawer_anim);
         bool close = a < 0.65f || e->velocity_y > 500.0f;
-        z_animated_spring(s->drawer_anim, close ? 0.0f : 1.0f);
+        z_animated_spring_velocity(s->drawer_anim, close ? 0.0f : 1.0f,
+                                   Z_SPRING_STANDARD, -e->velocity_y / h);
     }
 }
 
@@ -1413,6 +1428,15 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         const char *dr = getenv("ZELTO_HOME_DRAWER");
         if (dr && dr[0] == '1') {
             z_animated_set(state->drawer_anim, 1.0f);
+        }
+        // Over-pull freeze-frame (P33): ZELTO_DRAWER_OVERPULL=<px> pins the RAW
+        // drawer position past fully-open so the rubber-banded resistance (via
+        // drawer_display) is shot-verifiable.
+        const char *dop = getenv("ZELTO_DRAWER_OVERPULL");
+        if (dop && dop[0]) {
+            float px = (float)atof(dop);
+            float hh = state->surface_h > 1.0f ? state->surface_h : 1280.0f;
+            z_animated_set(state->drawer_anim, 1.0f + px / hh);
         }
         const char *rr = getenv("ZELTO_HOME_REARRANGE");
         if (rr && rr[0] == '1' && g_n_home > 0) {
@@ -1774,9 +1798,10 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     }
     ZView home = OnPan(on_home_pan, Fill(z_stack(Z_AXIS_DEPTH, &hs)));
 
-    // The app drawer (unchanged): an opaque panel slid up from below.
+    // The app drawer: an opaque panel slid up from below. The slide uses the
+    // rubber-banded DISPLAY position, so an over-pull past fully-open resists (P33).
     float drawer_v = z_animated_get(state->drawer_anim);
-    float slide = (1.0f - drawer_v) * state->surface_h;
+    float slide = (1.0f - drawer_display(drawer_v)) * state->surface_h;
     ZView grabber = OnPan(on_drawer_pan,
         VStack(
             Rect(.color = Z_COLOR_TEXT_MUTED, .width = 56, .height = 5,
