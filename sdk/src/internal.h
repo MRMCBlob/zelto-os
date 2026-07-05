@@ -250,6 +250,14 @@ void z_keyed_frame_end(ZScreen *s);
 int z_net_collect_fds(struct pollfd *pfds, int max);
 void z_net_handle_ready(struct pollfd *pfds, int count);
 
+// --- Navigator back-swipe (called from the app loop's pointer handling) ----
+// The interruptible edge-swipe (P33). app.c owns the pointer geometry and drives
+// the top screen's transition spring through these; see navigation.c.
+bool z_nav_can_back(ZNav *nav);
+void z_nav_back_begin(ZNav *nav);
+void z_nav_back_drag(ZNav *nav, float progress);
+void z_nav_back_end(ZNav *nav, bool pop, float velocity);
+
 // --- Scroll input (called from the app loop's pointer handling) -----------
 void z_scroll_begin_drag(ZScroll *sc);              // pan begin: stop any fling
 void z_scroll_drag_by(ZScroll *sc, float dy);       // wheel / pan delta (clamped)

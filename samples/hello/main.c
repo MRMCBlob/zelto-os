@@ -170,6 +170,20 @@ static ZView body(ZApp *app, AppState *state) {
         z_nav_push(nav, detail_screen, &g_items[3]);
         z_nav_freeze_top(nav, (float)atof(np));
     }
+    // Freeze-frame hook (P33): ZELTO_NAV_BACK=<0..1> pushes a detail screen and pins
+    // the top screen mid back-swipe (the finger dragging it out to the right, the
+    // list sliding under it) — the interruptible edge-swipe frozen at a finger
+    // position, verifying the incoming screen tracks under the outgoing one. Same
+    // pin as the push (progress is progress); the value is how far the finger is.
+    static bool nav_back_seeded = false;
+    const char *nb = getenv("ZELTO_NAV_BACK");
+    if (nb && nb[0] && !nav_back_seeded) {
+        nav_back_seeded = true;
+        ensure_items();
+        ZNav *nav = z_navigation(app);
+        z_nav_push(nav, detail_screen, &g_items[3]);
+        z_nav_freeze_top(nav, (float)atof(nb));
+    }
     return v;
 }
 

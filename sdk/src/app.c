@@ -236,6 +236,12 @@ struct ZApp {
     double last_x, last_y;       // previous motion sample
     double last_motion_s;        // its timestamp (monotonic s)
     double drag_vel_y;           // latest finger velocity (px/s)
+    double drag_vel_x;           // latest horizontal finger velocity (px/s)
+    // Interruptible Navigator back-swipe (P33): an edge-drag drives the top
+    // screen's transition 1:1 with the finger (the screen below sliding under it)
+    // instead of popping only on release. Latched at the slop-cross when the press
+    // began within the left edge inset and the nav stack can pop.
+    bool nav_back;
     ZScroll *drag_scroll;        // scroll being dragged (NULL = none)
     ZView pan_target;            // custom OnPan target (NULL = none)
     // The pan handler resolved when the drag began, cached as a plain function
@@ -925,16 +931,24 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
         // A drag is not a tap: release the press highlight as the pan begins.
         press_release(app);
         app->panning = true;
-        app->pan_target = find_pan(app->root, app->press_x, app->press_y);
-        app->pan_handler = app->pan_target ? app->pan_target->on_pan : NULL;
-        if (!app->pan_target) {
-            ZView sv = find_scroll(app->root, app->press_x, app->press_y);
-            app->drag_scroll = sv ? sv->scroll : NULL;
-            if (app->drag_scroll) {
-                z_scroll_begin_drag(app->drag_scroll);
+        // A drag that began within the left edge inset, on a poppable nav stack, is
+        // the interruptible back-swipe: it drives the top screen out 1:1 (P33),
+        // taking precedence over any pan/scroll under the finger.
+        if (app->press_x < 32.0 && z_nav_can_back(&app->ui.nav)) {
+            app->nav_back = true;
+            z_nav_back_begin(&app->ui.nav);
+        } else {
+            app->pan_target = find_pan(app->root, app->press_x, app->press_y);
+            app->pan_handler = app->pan_target ? app->pan_target->on_pan : NULL;
+            if (!app->pan_target) {
+                ZView sv = find_scroll(app->root, app->press_x, app->press_y);
+                app->drag_scroll = sv ? sv->scroll : NULL;
+                if (app->drag_scroll) {
+                    z_scroll_begin_drag(app->drag_scroll);
+                }
             }
+            dispatch_pan(app, Z_PAN_BEGIN);
         }
-        dispatch_pan(app, Z_PAN_BEGIN);
     }
 
     if (app->panning) {
@@ -943,13 +957,27 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
         if (mdt < 0.001) {
             mdt = 0.001;
         }
-        double vy = (app->ptr_y - app->last_y) / mdt;   // finger velocity (px/s)
-        app->drag_vel_y = vy;
-        if (app->drag_scroll) {
+        app->drag_vel_y = (app->ptr_y - app->last_y) / mdt;   // finger vel (px/s)
+        app->drag_vel_x = (app->ptr_x - app->last_x) / mdt;
+        if (app->nav_back) {
+            // Edge back-swipe: map the horizontal travel to transition progress
+            // (1 present -> 0 popped), resisting past either end with the rubber
+            // band, and drive the top screen there 1:1.
+            float W = (float)app->width;
+            float dx = (float)(app->ptr_x - app->press_x);
+            if (dx < 0.0f) {
+                dx = z_rubber_band(dx, W);          // wrong-way (left): resist
+            } else if (dx > W) {
+                dx = W + z_rubber_band(dx - W, W);
+            }
+            z_nav_back_drag(&app->ui.nav, 1.0f - (W > 0.0f ? dx / W : 0.0f));
+        } else if (app->drag_scroll) {
             // Content follows the finger: dragging down (y increases) scrolls up.
             z_scroll_drag_by(app->drag_scroll, -(float)(app->ptr_y - app->last_y));
         }
-        dispatch_pan(app, Z_PAN_CHANGED);
+        if (!app->nav_back) {
+            dispatch_pan(app, Z_PAN_CHANGED);
+        }
         app->last_x = app->ptr_x;
         app->last_y = app->ptr_y;
         app->last_motion_s = now;
@@ -970,10 +998,12 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         // Arm the recognizer; defer the tap-vs-pan decision to release/motion.
         app->ptr_down = true;
         app->panning = false;
+        app->nav_back = false;
         app->drag_scroll = NULL;
         app->pan_target = NULL;
         app->pan_handler = NULL;
         app->drag_vel_y = 0.0;
+        app->drag_vel_x = 0.0;
         app->press_x = app->last_x = app->ptr_x;
         app->press_y = app->last_y = app->ptr_y;
         app->last_motion_s = z_now_seconds();
@@ -1008,14 +1038,22 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         dispatch_tap(app, hit);
         return;
     }
-    // Drag end: edge-swipe-from-left pops the navigator; otherwise fling/notify.
-    double total_dx = app->ptr_x - app->press_x;
-    if (app->press_x < 32.0 && total_dx > (double)app->width * 0.30) {
-        z_nav_pop(z_navigation(app));
+    // Drag end. An interruptible back-swipe either flings the pop through or snaps
+    // back (finger velocity injected); otherwise fling a scroll / notify a pan.
+    if (app->nav_back) {
+        float W = (float)app->width;
+        double total_dx = app->ptr_x - app->press_x;
+        bool pop = total_dx > (double)W * 0.30 || app->drag_vel_x > 500.0;
+        // Convert finger px/s to progress-units/s (rightward drag lowers progress).
+        float vprog = W > 0.0f ? -(float)app->drag_vel_x / W : 0.0f;
+        z_nav_back_end(&app->ui.nav, pop, vprog);
+        app->nav_back = false;
     } else if (app->drag_scroll) {
         z_scroll_end_drag(app->drag_scroll, -(float)app->drag_vel_y);
+        dispatch_pan(app, Z_PAN_END);
+    } else {
+        dispatch_pan(app, Z_PAN_END);
     }
-    dispatch_pan(app, Z_PAN_END);
     app->panning = false;
 }
 

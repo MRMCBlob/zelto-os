@@ -49,6 +49,57 @@ void z_nav_pop(ZNav *nav) {
     z_animated_spring_with(&top->trans, 0.0f, Z_SPRING_STANDARD);
 }
 
+// --- interruptible back-swipe (P33) ---------------------------------------
+// The edge-swipe used to pop only on release past a threshold; now it drives the
+// top screen's transition progress 1:1 with the finger, the screen below sliding
+// under it, and either flings the pop through or snaps back on release. app.c owns
+// the pointer geometry (edge detection, px->progress, the rubber-band past the
+// ends) and calls these; here we just move the retained spring.
+bool z_nav_can_back(ZNav *nav) {
+    return nav && nav->inited && nav->depth > 1;
+}
+
+// Begin a back-drag: grab the top screen's transition spring at its current value,
+// so a swipe that starts mid-push/pop takes control from where it is (no jump).
+void z_nav_back_begin(ZNav *nav) {
+    if (!z_nav_can_back(nav)) {
+        return;
+    }
+    ZScreen *top = &nav->stack[nav->depth - 1];
+    top->op = 2;                 // dragging toward a pop
+    top->trans.app = nav->app;
+    z_animated_grab(&top->trans);
+}
+
+// Drive the top screen to `progress` (1 = fully present, 0 = fully popped). The
+// caller has already applied the rubber-band past the ends, so `progress` may sit
+// a little outside [0,1]; the render offsets both screens by it either way.
+void z_nav_back_drag(ZNav *nav, float progress) {
+    if (!z_nav_can_back(nav)) {
+        return;
+    }
+    ZScreen *top = &nav->stack[nav->depth - 1];
+    z_animated_set(&top->trans, progress);
+    if (nav->app) {
+        z_invalidate(nav->app);
+    }
+}
+
+// Release a back-drag: `pop` true flings the top screen the rest of the way out
+// (it is retired once it settles at 0, like z_nav_pop), false snaps it back to
+// present. Either way the finger's velocity (in progress-units/s) is injected for
+// a continuous hand-off.
+void z_nav_back_end(ZNav *nav, bool pop, float velocity) {
+    if (!z_nav_can_back(nav)) {
+        return;
+    }
+    ZScreen *top = &nav->stack[nav->depth - 1];
+    top->op = pop ? 2 : 1;
+    top->trans.app = nav->app;
+    z_animated_spring_velocity(&top->trans, pop ? 0.0f : 1.0f, Z_SPRING_STANDARD,
+                               velocity);
+}
+
 void z_nav_freeze_top(ZNav *nav, float progress) {
     if (!nav || nav->depth < 1) {
         return;
