@@ -39,6 +39,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "common/exec_cmd.h"
+
 #define MANIFEST_DIR "/usr/share/zelto/apps"
 #define CONSENT_BIN "/usr/bin/zelto-consent"
 #define CHOOSER_BIN "/usr/bin/zelto-chooser"
@@ -71,7 +73,7 @@ typedef struct Manifest {
     char perms[256];          // CSV of declared permission names
     char share_targets[256];  // CSV of accepted MIME globs ("text/plain,image/*")
     char links[128];          // CSV of handled URL schemes ("zelto,myapp")
-    char exec[160];           // launch path for launch-if-needed delivery
+    char exec[256];           // launch command (path + args) for launch-if-needed
 } Manifest;
 static Manifest g_manifests[MAX_MANIFESTS];
 static int g_n_manifests;
@@ -94,6 +96,23 @@ static Pending g_pending[MAX_PENDING];
 // app_id registered on each client slot (empty until it sends {"op":"register"}).
 static char g_client_app[MAX_CLIENTS][96];
 static int g_client_fd[MAX_CLIENTS];   // mirror of clients[] for mailbox lookup
+
+// The listening socket, and the state that lets the daemon keep serving while a
+// consent dialog is up (see show_consent). g_in_consent is true only while a
+// dialog is on screen; a perm-gated request that arrives in that window is
+// stashed in g_deferred and replayed once the dialog closes, so two apps asking
+// at once queue up instead of stacking two dialogs.
+#define MAX_DEFERRED 16
+static int g_lfd = -1;
+static bool g_in_consent;
+typedef struct Deferred {
+    int slot;
+    char line[REQ_MAX];
+} Deferred;
+static Deferred g_deferred[MAX_DEFERRED];
+static int g_n_deferred;
+
+static void serve_once(int timeout_ms);
 
 // --- grant store (the cached decisions) -----------------------------------
 typedef struct Grant {
@@ -339,9 +358,20 @@ static void grant_set(const char *app_id, const char *perm, bool granted) {
     g->granted = granted;
 }
 
-// Show the System-UI consent dialog and block until the user answers. The
-// dialog is a separate overlay layer-shell helper; it exits 0 for Allow, 1 for
-// Deny (anything else — e.g. exec failure — counts as Deny).
+// Show the System-UI consent dialog and wait for the user's answer. The dialog is
+// a separate overlay layer-shell helper; it exits 0 for Allow, 1 for Deny
+// (anything else — e.g. exec failure — counts as Deny).
+//
+// The wait CANNOT be a plain waitpid: the dialog is itself a libzelto app, and
+// every libzelto app makes a synchronous settings_get to this very daemon while
+// starting up (Reduce Motion, app.c). Blocking here would leave the broker unable
+// to answer it — the child waits on us, we wait on the child, and the permission
+// prompt hangs forever, taking every other app's settings call down with it.
+//
+// So we keep SERVING while the dialog is up: poll the socket as usual and reap
+// the child with WNOHANG. The daemon stays responsive (the dialog can start, the
+// shade keeps updating), and the requesting client simply gets its reply later —
+// it is parked on its own fd waiting, which is exactly what it expects.
 static bool show_consent(const char *app_id, const char *perm) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -358,9 +388,27 @@ static bool show_consent(const char *app_id, const char *perm) {
         execl(bin, "zelto-consent", app_id, perm, (char *)NULL);
         _exit(2);
     }
+
+    // Re-entrancy guard: while this dialog is up, another app's perm_request (or
+    // a notify_post, which is perm-gated too) must not fork a SECOND dialog on
+    // top of it. Such a line is set aside and replayed once this one closes, so
+    // the second app gets a real prompt rather than a spurious denial.
+    g_in_consent = true;
+
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
+            break;
+        }
+        if (r < 0 && errno != EINTR) {
+            status = 0;
+            break;
+        }
+        serve_once(50);   // keep the broker alive for the dialog we just forked
     }
+
+    g_in_consent = false;
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
@@ -509,7 +557,8 @@ static void launch_app(const char *app_id) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        execl(m->exec, m->exec, (char *)NULL);
+        char cmd[256];
+        z_exec_cmd(m->exec, cmd, sizeof(cmd));
         _exit(127);
     }
 }
@@ -1174,6 +1223,24 @@ static void handle_line(int slot, int fd, char *line) {
     char op[32] = {0};
     json_get(line, "op", op, sizeof(op));
 
+    // A consent dialog is already on screen: the two ops that can raise one must
+    // wait their turn rather than stack a second dialog over it. Set the line
+    // aside — the client stays parked on its fd, exactly as it would be if we
+    // were simply slow — and replay it when the current dialog closes. Every
+    // other op (settings_get above all, which the dialog itself is blocked on)
+    // falls through and is served normally: that is the point of serving while a
+    // prompt is up.
+    if (g_in_consent &&
+        (strcmp(op, "perm_request") == 0 || strcmp(op, "notify_post") == 0)) {
+        if (g_n_deferred < MAX_DEFERRED) {
+            g_deferred[g_n_deferred].slot = slot;
+            snprintf(g_deferred[g_n_deferred].line,
+                     sizeof(g_deferred[g_n_deferred].line), "%s", line);
+            g_n_deferred++;
+        }
+        return;
+    }
+
     // Persistent intents control connection: register this app's mailbox, or
     // resolve one of its outgoing intents.
     if (strcmp(op, "register") == 0) {
@@ -1304,6 +1371,93 @@ static void handle_line(int slot, int fd, char *line) {
     }
 }
 
+// One turn of the daemon: wait up to `timeout_ms` for socket traffic, accept new
+// connections, and handle whatever arrived. Factored out of main so show_consent
+// can call it too — that is what keeps the broker answering while a consent
+// dialog (itself a client of ours) is starting up.
+static void serve_once(int timeout_ms) {
+    struct pollfd pfds[1 + MAX_CLIENTS];
+    int slot_of[1 + MAX_CLIENTS];
+    pfds[0].fd = g_lfd;
+    pfds[0].events = POLLIN;
+    pfds[0].revents = 0;
+    int nf = 1;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (g_client_fd[i] >= 0) {
+            pfds[nf].fd = g_client_fd[i];
+            pfds[nf].events = POLLIN;
+            pfds[nf].revents = 0;
+            slot_of[nf] = i;
+            nf++;
+        }
+    }
+
+    if (poll(pfds, (nfds_t)nf, timeout_ms) < 0) {
+        if (errno != EINTR) {
+            perror("zsysd: poll");
+        }
+        return;
+    }
+
+    // Battery: advance the source whenever a tick is due (poll woke us at the
+    // deadline even with no socket traffic). Cheap in-memory + one settings
+    // fan-out on an actual change.
+    if (g_batt_active && now_ms() >= g_next_batt_ms) {
+        g_next_batt_ms = now_ms() + g_batt_tick_ms;
+        battery_tick();
+    }
+
+    // New connection.
+    if (pfds[0].revents & POLLIN) {
+        int c = accept(g_lfd, NULL, NULL);
+        if (c >= 0) {
+            int slot = -1;
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (g_client_fd[i] < 0) {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                close(c);   // table full
+            } else {
+                g_client_fd[slot] = c;
+                g_client_app[slot][0] = '\0';   // unregistered until it says so
+            }
+        }
+    }
+
+    // Existing connections with data.
+    for (int k = 1; k < nf; k++) {
+        if (!(pfds[k].revents & (POLLIN | POLLHUP | POLLERR))) {
+            continue;
+        }
+        int slot = slot_of[k];
+        int cfd = g_client_fd[slot];
+        char buf[REQ_MAX];
+        ssize_t r = read(cfd, buf, sizeof(buf) - 1);
+        if (r <= 0) {
+            close(cfd);
+            g_client_fd[slot] = -1;
+            g_client_app[slot][0] = '\0';   // mailbox gone
+            if (cfd == g_shade_fd) {
+                g_shade_fd = -1;   // shade sink disconnected
+            }
+            settings_unsubscribe_fd(cfd);   // drop a settings observer too
+            continue;
+        }
+        buf[r] = '\0';
+        // Each request is one newline-terminated line; handle every complete
+        // line in this read (a status conn sends one; a control conn may
+        // batch several).
+        char *save = NULL;
+        for (char *ln = strtok_r(buf, "\n", &save); ln;
+             ln = strtok_r(NULL, "\n", &save)) {
+            handle_line(slot, cfd, ln);
+        }
+    }
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     load_manifests();
@@ -1346,86 +1500,20 @@ int main(void) {
         g_client_app[i][0] = '\0';
     }
 
+    g_lfd = lfd;
+
     for (;;) {
-        struct pollfd pfds[1 + MAX_CLIENTS];
-        int slot_of[1 + MAX_CLIENTS];
-        pfds[0].fd = lfd;
-        pfds[0].events = POLLIN;
-        pfds[0].revents = 0;
-        int nf = 1;
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (g_client_fd[i] >= 0) {
-                pfds[nf].fd = g_client_fd[i];
-                pfds[nf].events = POLLIN;
-                pfds[nf].revents = 0;
-                slot_of[nf] = i;
-                nf++;
-            }
-        }
+        serve_once(battery_poll_timeout());
 
-        if (poll(pfds, (nfds_t)nf, battery_poll_timeout()) < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("zsysd: poll");
-            break;
-        }
-
-        // Battery: advance the source whenever a tick is due (poll woke us at the
-        // deadline even with no socket traffic). Cheap in-memory + one settings
-        // fan-out on an actual change.
-        if (g_batt_active && now_ms() >= g_next_batt_ms) {
-            g_next_batt_ms = now_ms() + g_batt_tick_ms;
-            battery_tick();
-        }
-
-        // New connection.
-        if (pfds[0].revents & POLLIN) {
-            int c = accept(lfd, NULL, NULL);
-            if (c >= 0) {
-                int slot = -1;
-                for (int i = 0; i < MAX_CLIENTS; i++) {
-                    if (g_client_fd[i] < 0) {
-                        slot = i;
-                        break;
-                    }
-                }
-                if (slot < 0) {
-                    close(c);   // table full
-                } else {
-                    g_client_fd[slot] = c;
-                    g_client_app[slot][0] = '\0';   // unregistered until it says so
-                }
-            }
-        }
-
-        // Existing connections with data.
-        for (int k = 1; k < nf; k++) {
-            if (!(pfds[k].revents & (POLLIN | POLLHUP | POLLERR))) {
-                continue;
-            }
-            int slot = slot_of[k];
-            int cfd = g_client_fd[slot];
-            char buf[REQ_MAX];
-            ssize_t r = read(cfd, buf, sizeof(buf) - 1);
-            if (r <= 0) {
-                close(cfd);
-                g_client_fd[slot] = -1;
-                g_client_app[slot][0] = '\0';   // mailbox gone
-                if (cfd == g_shade_fd) {
-                    g_shade_fd = -1;   // shade sink disconnected
-                }
-                settings_unsubscribe_fd(cfd);   // drop a settings observer too
-                continue;
-            }
-            buf[r] = '\0';
-            // Each request is one newline-terminated line; handle every complete
-            // line in this read (a status conn sends one; a control conn may
-            // batch several).
-            char *save = NULL;
-            for (char *ln = strtok_r(buf, "\n", &save); ln;
-                 ln = strtok_r(NULL, "\n", &save)) {
-                handle_line(slot, cfd, ln);
+        // Replay whatever queued behind a consent dialog, now that it is gone.
+        // Taken off the queue BEFORE handling, because handling one may raise the
+        // next dialog (and so defer more lines behind it).
+        while (g_n_deferred > 0 && !g_in_consent) {
+            Deferred d = g_deferred[0];
+            memmove(&g_deferred[0], &g_deferred[1],
+                    (size_t)(--g_n_deferred) * sizeof(g_deferred[0]));
+            if (d.slot >= 0 && d.slot < MAX_CLIENTS && g_client_fd[d.slot] >= 0) {
+                handle_line(d.slot, g_client_fd[d.slot], d.line);
             }
         }
     }

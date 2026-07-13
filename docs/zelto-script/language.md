@@ -5,7 +5,12 @@ know JavaScript/TypeScript, you already know it. This page covers the syntax and
 small set of differences from standard JavaScript.
 
 > Runtime: Zelto Script runs on an embedded [QuickJS](https://bellard.org/quickjs/)
-> engine. See [runtime.md](runtime.md) for performance and limits.
+> engine. See [runtime.md](runtime.md) for performance, limits, and exactly which parts
+> of this page are live today.
+>
+> Two gaps worth knowing before you write code: **type annotations are not erased yet**
+> (write plain JS — a `: string` is a syntax error today), and modules resolve to source
+> files at launch, so `import` paths are real paths.
 
 ## Syntax overview
 

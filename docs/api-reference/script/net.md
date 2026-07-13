@@ -4,6 +4,13 @@ HTTP, WebSockets, transfers, and connectivity. Requires the `network` permission
 ([../../packaging/manifest.md](../../packaging/manifest.md)). Guide:
 [../../guides/networking.md](../../guides/networking.md).
 
+> **Status.** Live today: `fetch` / `get` / `post` with `method`, `headers` and `body`,
+> and a response carrying `ok`, `status`, `headers` and synchronous `.text()` / `.json()`.
+> The `network` grant is awaited inside the call, so a denial rejects the promise.
+> Still to come: `timeout` / `signal` (needs `AbortController`), `.bytes()`, `WebSocket`,
+> and the transfer helpers. The transport is plain HTTP/1.x to a numeric IPv4 host — DNS
+> and TLS are platform work, not this module's.
+
 ## `fetch(url, options?) → Promise<Response>`
 
 ```js

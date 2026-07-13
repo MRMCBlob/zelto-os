@@ -8,7 +8,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <linux/input-event-codes.h>
 
 #include <wlr/backend.h>
 #include <wlr/types/wlr_compositor.h>
@@ -147,10 +150,13 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener,
     process_cursor_motion(server, event->time_msec);
 }
 
-static void handle_cursor_button(struct wl_listener *listener, void *data) {
-    ZcompServer *server = wl_container_of(listener, server, cursor_button);
-    struct wlr_pointer_button_event *event = data;
-    bool pressed = event->state == WLR_BUTTON_PRESSED;
+// The button half of the pointer path, independent of where the event came from:
+// a real device (handle_cursor_button) or the scripted-gesture test hook, which
+// must take exactly this path — the implicit grab is the whole reason a drag
+// keeps reaching the surface it began on.
+static void process_cursor_button(ZcompServer *server, uint32_t time,
+                                  uint32_t button, enum wlr_button_state state) {
+    bool pressed = state == WLR_BUTTON_PRESSED;
     notify_activity(server);
 
     // Begin an implicit grab on the first press so motion keeps reaching the
@@ -173,15 +179,20 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                                       server->cursor->y - server->grab_oy);
     }
 
-    wlr_seat_pointer_notify_button(server->seat, event->time_msec,
-                                   event->button, event->state);
+    wlr_seat_pointer_notify_button(server->seat, time, button, state);
 
     // End the grab once every button is up, then refocus to whatever the cursor
     // now rests over (so the next hover/tap targets the right surface).
     if (!pressed && server->seat->pointer_state.button_count == 0) {
         end_grab(server);
-        process_cursor_motion(server, event->time_msec);
+        process_cursor_motion(server, time);
     }
+}
+
+static void handle_cursor_button(struct wl_listener *listener, void *data) {
+    ZcompServer *server = wl_container_of(listener, server, cursor_button);
+    struct wlr_pointer_button_event *event = data;
+    process_cursor_button(server, event->time_msec, event->button, event->state);
 }
 
 static void handle_cursor_axis(struct wl_listener *listener, void *data) {
@@ -494,7 +505,150 @@ static void handle_new_virtual_keyboard(struct wl_listener *listener,
     update_capabilities(server);
 }
 
+// ---------------------------------------------------------------------------
+// Scripted gestures (test hook).
+//
+// The screenshot harness can already click (wlrctl), but it cannot HOLD a button
+// — and a press-and-hold is the whole substance of a drag and a long-press, the
+// two gestures with the most machinery behind them (the implicit grab here, the
+// slop/latch recognizer in the SDK). Verifying those needs input that presses,
+// moves, and only then releases.
+//
+// Rather than teach the harness a new Wayland protocol, zcomp drives its own seat
+// through the SAME functions a real device does — process_cursor_motion /
+// process_cursor_button, implicit grab and all — so a scripted gesture is
+// indistinguishable from a finger, and a bug in the grab path cannot hide behind
+// a test that bypasses it.
+//
+//   ZCOMP_DRAG="x0 y0 x1 y1 [ms]"   press at (x0,y0), glide to (x1,y1), release
+//   ZCOMP_HOLD="x y [ms]"           press at (x,y), hold still, release (long-press)
+//   ZCOMP_INPUT_DELAY=ms            wait before starting (default 4000: let the
+//                                   app map and settle first)
+//
+// Test-only, env-gated, and off in any normal run. See docs/tooling/simulator.md.
+#define ZCOMP_GESTURE_STEP_MS 16     // ~60Hz, like a real pointer
+
+typedef enum {
+    GESTURE_NONE = 0,
+    GESTURE_DRAG,
+    GESTURE_HOLD,
+} GestureKind;
+
+static struct {
+    ZcompServer *server;
+    struct wl_event_source *timer;
+    GestureKind kind;
+    double x0, y0, x1, y1;
+    int duration_ms;
+    int elapsed_ms;
+    bool pressed;
+} g_gesture;
+
+static uint32_t gesture_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static void gesture_warp(ZcompServer *server, double x, double y) {
+    wlr_cursor_warp(server->cursor, NULL, x, y);
+    process_cursor_motion(server, gesture_now_ms());
+    wlr_seat_pointer_notify_frame(server->seat);
+}
+
+static void gesture_button(ZcompServer *server, enum wlr_button_state state) {
+    process_cursor_button(server, gesture_now_ms(), BTN_LEFT, state);
+    wlr_seat_pointer_notify_frame(server->seat);
+}
+
+static int gesture_tick(void *data) {
+    (void)data;
+    ZcompServer *server = g_gesture.server;
+
+    if (!g_gesture.pressed) {
+        // Hover first, THEN press: the grab latches onto the surface the preceding
+        // motion hovered, so a press with no motion before it would grab nothing.
+        gesture_warp(server, g_gesture.x0, g_gesture.y0);
+        gesture_button(server, WLR_BUTTON_PRESSED);
+        g_gesture.pressed = true;
+        wl_event_source_timer_update(g_gesture.timer, ZCOMP_GESTURE_STEP_MS);
+        return 0;
+    }
+
+    g_gesture.elapsed_ms += ZCOMP_GESTURE_STEP_MS;
+    double t = g_gesture.duration_ms > 0
+                   ? (double)g_gesture.elapsed_ms / (double)g_gesture.duration_ms
+                   : 1.0;
+    if (t > 1.0) {
+        t = 1.0;
+    }
+
+    if (g_gesture.kind == GESTURE_DRAG) {
+        // Move in steps, not one jump: the recognizer needs to cross the slop and
+        // then keep receiving motion (and it derives velocity from the samples), so
+        // a single teleport would read as a different gesture entirely.
+        gesture_warp(server, g_gesture.x0 + (g_gesture.x1 - g_gesture.x0) * t,
+                     g_gesture.y0 + (g_gesture.y1 - g_gesture.y0) * t);
+    }
+    // A HOLD deliberately sends no motion: any movement past the slop would cancel
+    // the long-press and become a pan.
+
+    if (t >= 1.0) {
+        gesture_button(server, WLR_BUTTON_RELEASED);
+        wlr_log(WLR_INFO, "scripted gesture complete");
+        return 0;   // one-shot: the timer is not re-armed
+    }
+    wl_event_source_timer_update(g_gesture.timer, ZCOMP_GESTURE_STEP_MS);
+    return 0;
+}
+
+static void gesture_init(ZcompServer *server) {
+    const char *drag = getenv("ZCOMP_DRAG");
+    const char *hold = getenv("ZCOMP_HOLD");
+    if (!drag && !hold) {
+        return;
+    }
+
+    g_gesture.server = server;
+    if (drag) {
+        g_gesture.kind = GESTURE_DRAG;
+        g_gesture.duration_ms = 300;
+        if (sscanf(drag, "%lf %lf %lf %lf %d", &g_gesture.x0, &g_gesture.y0,
+                   &g_gesture.x1, &g_gesture.y1, &g_gesture.duration_ms) < 4) {
+            wlr_log(WLR_ERROR, "ZCOMP_DRAG: want \"x0 y0 x1 y1 [ms]\"");
+            return;
+        }
+    } else {
+        g_gesture.kind = GESTURE_HOLD;
+        g_gesture.duration_ms = 800;   // past the long-press threshold
+        if (sscanf(hold, "%lf %lf %d", &g_gesture.x0, &g_gesture.y0,
+                   &g_gesture.duration_ms) < 2) {
+            wlr_log(WLR_ERROR, "ZCOMP_HOLD: want \"x y [ms]\"");
+            return;
+        }
+        g_gesture.x1 = g_gesture.x0;
+        g_gesture.y1 = g_gesture.y0;
+    }
+
+    // Late by default: an app spawned at boot is not mapped for several seconds,
+    // and a gesture delivered before it maps lands on whatever is underneath (the
+    // launcher) — which looks exactly like a broken gesture. Wait for the app.
+    int delay = 6500;
+    const char *d = getenv("ZCOMP_INPUT_DELAY");
+    if (d && *d) {
+        delay = atoi(d);
+    }
+
+    g_gesture.timer = wl_event_loop_add_timer(
+        wl_display_get_event_loop(server->display), gesture_tick, NULL);
+    wl_event_source_timer_update(g_gesture.timer, delay);
+    wlr_log(WLR_INFO, "scripted %s gesture armed (+%dms)",
+            g_gesture.kind == GESTURE_DRAG ? "drag" : "hold", delay);
+}
+
 void zcomp_virtual_input_init(ZcompServer *server) {
+    gesture_init(server);
+
     server->virtual_pointer =
         wlr_virtual_pointer_manager_v1_create(server->display);
     server->new_virtual_pointer.notify = handle_new_virtual_pointer;

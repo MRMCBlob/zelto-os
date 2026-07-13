@@ -7,22 +7,31 @@ additions. For platform features (UI, net, storage…) see
 
 ## Globals
 
-| Global | Notes |
-|---|---|
-| `console` | `log`, `warn`, `error`, `debug`, `assert` |
-| `setTimeout` / `clearTimeout` | Timers |
-| `setInterval` / `clearInterval` | Repeating timers |
-| `queueMicrotask` | Microtask scheduling |
-| `Promise` | Full promise support + `async/await` |
-| `AbortController` / `AbortSignal` | Cancellation (used by `fetch`) |
-| `structuredClone` | Deep clone |
-| `crypto` | `randomUUID`, `getRandomValues`, `subtle` (digest/HMAC) |
+| Global | Notes | Status |
+|---|---|---|
+| `console` | `log`, `info`, `debug`, `warn`, `error` | Available |
+| `setTimeout` / `clearTimeout` | Timers, on the app loop | Available |
+| `setInterval` / `clearInterval` | Repeating timers | Available |
+| `queueMicrotask` | Microtask scheduling | Available |
+| `Promise` | Full promise support + `async/await` | Available |
+| `AbortController` / `AbortSignal` | Cancellation (used by `fetch`) | Planned |
+| `structuredClone` | Deep clone | Planned |
+| `crypto` | `randomUUID`, `getRandomValues`, `subtle` (digest/HMAC) | Planned |
+
+Timers run on the same single loop as your component and your tap handlers
+([runtime.md](runtime.md)), so a callback can call `setState` and the UI rebuilds — but a
+callback that blocks stalls the frame.
 
 ## Built-in objects
 
 Standard ECMAScript objects: `Object`, `Array`, `Map`, `Set`, `WeakMap`, `WeakSet`,
 `Math`, `Date`, `JSON`, `RegExp`, `Number`, `String`, `Boolean`, `Symbol`, `BigInt`,
 `Error` (and subclasses), `Proxy`, `Reflect`.
+
+The ECMAScript standard library below is whatever QuickJS provides (ES2023), so
+`Object`/`Array`/`Map`/`JSON`/`RegExp`/`BigInt` and friends are all there today. The
+"Planned" rows above are *web platform* globals the host has yet to bind — they are not
+part of the engine.
 
 ## Typed arrays & binary
 

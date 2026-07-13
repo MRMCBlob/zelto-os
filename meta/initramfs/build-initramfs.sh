@@ -78,6 +78,9 @@ FETCH="${FETCH:-$REPO_ROOT/build-arm64/system/apps/fetch/zelto-fetch}"
 INSTALLER="${INSTALLER:-$REPO_ROOT/build-arm64/system/installer/zelto-install}"
 STORE="${STORE:-$REPO_ROOT/build-arm64/system/apps/store/zelto-store}"
 WIDGET="${WIDGET:-$REPO_ROOT/build-arm64/system/apps/widget/zelto-widget}"
+# P34 Zelto Script: the shared JS runtime (QuickJS + the libzelto bindings). One
+# binary for every script app — a script app's manifest exec=s it with its .js.
+SCRIPT_RT="${SCRIPT_RT:-$REPO_ROOT/build-arm64/script/zelto-script}"
 TRUSTED_PUB="${TRUSTED_PUB:-$REPO_ROOT/meta/keys/trusted.pub}"
 SIGN_KEY="${SIGN_KEY:-$REPO_ROOT/meta/keys/zelto-dev.pem}"
 FONT_SRC="${FONT_SRC:-$REPO_ROOT/sdk/assets/fonts/Satoshi-Variable.ttf}"
@@ -161,6 +164,7 @@ install_bin "$SETTINGS_APP" zelto-settings # brokered-settings demo app ("Settin
 install_bin "$FETCH"    zelto-fetch      # networking demo app ("Fetch")
 install_bin "$INSTALLER" zelto-install   # runtime package installer (libsodium)
 install_bin "$STORE"    zelto-store      # installer UI demo app ("Store")
+install_bin "$SCRIPT_RT" zelto-script    # Zelto Script runtime (P34; runs *.js apps)
 # NOTE: $WIDGET is deliberately NOT installed here — it ships only inside
 # widget.zap (built below) and is installed at runtime by zelto-install.
 if [ -f "$FONT_SRC" ]; then
@@ -181,12 +185,26 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/notepad/zelto-notepad.app" \
          "$REPO_ROOT/system/apps/settings/zelto-settings.app" \
          "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
-         "$REPO_ROOT/system/apps/store/zelto-store.app"; do
+         "$REPO_ROOT/system/apps/store/zelto-store.app" \
+         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app"; do
     if [ -f "$m" ]; then
         echo "    manifest: $(basename "$m")"
         cp "$m" "$ROOT/usr/share/zelto/apps/"
     else
         echo "WARN: manifest missing: $m"
+    fi
+done
+
+# --- script apps (P34) ------------------------------------------------------
+# A Zelto Script app ships its .js instead of a binary; the manifest's exec=
+# names the shared runtime plus this path. Installed to /usr/share/zelto/scripts.
+mkdir -p "$ROOT/usr/share/zelto/scripts"
+for js in "$REPO_ROOT/system/apps/jsdemo/jsdemo.js"; do
+    if [ -f "$js" ]; then
+        echo "    script: $(basename "$js")"
+        cp "$js" "$ROOT/usr/share/zelto/scripts/"
+    else
+        echo "WARN: script missing: $js"
     fi
 done
 # NOTE: system/apps/widget/zelto-widget.app is intentionally absent here — it is

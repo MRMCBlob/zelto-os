@@ -63,6 +63,8 @@ struct ZNode {
     void *tap_data;
     ZKeyAction on_key;
     ZPanHandler on_pan;   // pan/drag recognizer (NULL = none)
+    ZPanDataHandler on_pan_data;  // pan handler carrying pan_data (script closures)
+    void *pan_data;
     ZLongPressHandler on_long_press;  // press-and-hold recognizer (NULL = none)
     void *long_press_data;            // per-view data passed to on_long_press
     struct ZTextField *field;         // Z_K_STACK built by TextField: its buffer

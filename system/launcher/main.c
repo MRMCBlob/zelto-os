@@ -69,6 +69,7 @@
 #include <zelto/ui.h>
 
 #include "common/app_icons.h"
+#include "common/exec_cmd.h"
 #include "common/wallpaper.h"
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
@@ -81,7 +82,7 @@ typedef struct AppEntry {
     char id[96];
     char name[64];
     char subtitle[96];
-    char exec_path[160];
+    char exec_path[256];   // manifest exec= — a command, args and all
     char icon_path[192];   // manifest icon= (PNG/SVG); empty -> placeholder
     ZColor color;
 } AppEntry;
@@ -670,7 +671,8 @@ static void launch_app(ZApp *app, void *state, void *data) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        execlp(e->exec_path, e->exec_path, (char *)NULL);
+        char cmd[256];
+        z_exec_cmd(e->exec_path, cmd, sizeof(cmd));
         _exit(127);
     }
 }

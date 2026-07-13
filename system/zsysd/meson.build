@@ -4,5 +4,6 @@
 executable(
   'zsysd',
   files('main.c'),
+  include_directories : include_directories('..'),   # system/common/*.h
   install : true,
 )

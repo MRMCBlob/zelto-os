@@ -67,6 +67,67 @@ src = ["native/imgproc.c"]
 `zelto build` and `zelto doctor` validate the manifest (schema, icon size, semver,
 permission names). Fix reported errors before packaging.
 
+## The runtime manifest (`.app`)
+
+`zelto.toml` is the *authoring* format. What actually ships in the image (and inside a
+`.zap`) is a flat `key=value` file — `/usr/share/zelto/apps/<app>.app` — which the
+launcher and `zsysd` scan at boot. It is deliberately trivial to parse: no TOML reader
+in the boot path.
+
+```ini
+id=os.zelto.notepad
+name=Notepad
+subtitle=Persistent prefs + SQLite
+exec=/usr/bin/zelto-notepad
+icon=/usr/share/zelto/apps/icons/Notepad.png
+color=2e9bff
+permissions=notifications,network
+share_targets=text/plain
+links=zelto
+```
+
+`exec=` is a **command, not just a path**: it is split on whitespace and executed
+directly (no shell). That is what makes an interpreted app launchable by the same
+machinery as a native one — a [Zelto Script](../zelto-script/runtime.md) app has no
+binary of its own, so it names the shared runtime and its entry file:
+
+```ini
+id=os.zelto.jsdemo
+name=JS Demo
+exec=/usr/bin/zelto-script --id os.zelto.jsdemo /usr/share/zelto/scripts/jsdemo.js
+```
+
+Passing `--id` keeps one identity across the shell: the window's `app_id`, the manifest,
+the switcher entry, and the permission grants all agree. Because there is no shell, a
+path containing spaces cannot be expressed (see `system/common/exec_cmd.h`).
+
+### `script=` — inside a package
+
+The `exec=` above is what an app installed *as part of the image* looks like. A script
+app that ships as a signed `.zap` does **not** write `exec=` at all. It declares only its
+entry file, and the installer synthesises the command:
+
+```ini
+id=os.zelto.greeter
+name=Greeter
+version=1.0.0
+script=script/greeter.js      # added by meta/mkzap.sh; the in-package path
+```
+
+`zelto-install` then writes the runtime manifest with
+`exec=/usr/bin/zelto-script --id os.zelto.greeter /var/zelto/installed/os.zelto.greeter/greeter.js`.
+
+The split matters for more than tidiness: **the package does not get to name its own
+interpreter.** If a signed manifest could set `exec=` freely, it could point at any binary
+on the device and the signature would faithfully attest to it. So the author supplies the
+`.js` and the installer decides what runs it. The `.js` itself is covered by
+`MANIFEST.sha256` and the Ed25519 signature exactly as a native binary is — a flipped byte
+in the script is rejected at install, just like a tampered ELF
+([zap-format.md](zap-format.md), [signing.md](signing.md)).
+
+A script package also carries **no ABI**: with no compiled code in it, the same `.zap`
+installs on the aarch64 device and in the x86_64 simulator.
+
 ## See also
 
 - [zap-format.md](zap-format.md) — how the manifest is packaged.

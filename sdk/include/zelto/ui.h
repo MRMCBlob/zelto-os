@@ -405,6 +405,18 @@ typedef void (*ZPanHandler)(ZApp *app, void *state, const ZPanEvent *e);
 
 ZView OnPan(ZPanHandler handler, ZView view);
 
+// OnPan with a per-view data pointer, the pan counterpart of OnTapData. A plain
+// ZPanHandler only receives the app state, so every pannable view in one app
+// shares one handler and cannot tell which of them the finger grabbed — fine for
+// a C app (one named function per drag), useless for a runtime that maps each
+// view to a different closure (Zelto Script) or for data-driven rows. `data` is
+// bound at build time; point it at stable state, never at the arena. Like the
+// handler, it is cached at the slop-cross, so it survives rebuilds mid-gesture.
+typedef void (*ZPanDataHandler)(ZApp *app, void *state, void *data,
+                                const ZPanEvent *e);
+
+ZView OnPanData(ZPanDataHandler handler, void *data, ZView view);
+
 // Long-press: fires when a press is held in place past a time threshold without
 // crossing the pan slop. It composes with OnTap and OnPan on the same subtree —
 // moving past the slop first becomes a pan (no long-press), a quick release
@@ -587,6 +599,14 @@ ZView z_navigator(ZApp *app, const ZNavOpts *opts);
 ZNav *z_navigation(ZApp *app);
 void z_nav_push(ZNav *nav, ZScreenFn screen, void *props);
 void z_nav_pop(ZNav *nav);
+
+// How many screens are on the stack (1 = only the root). A C app knows its own
+// stack depth, but a runtime hosting screens on behalf of a script does not: the
+// back gesture and the Escape key pop WITHOUT going through z_nav_pop's caller,
+// so a host that keeps per-screen state alongside the stack (Zelto Script keeps
+// each screen's hooks in its own scope) needs to see that a screen was retired in
+// order to drop it. Read it at the top of a build and truncate to match.
+int z_nav_depth(ZNav *nav);
 
 // Freeze the top screen's push/pop transition at `progress` (0 = fully off-screen
 // right + transparent, 1 = fully present) with no further motion — the deterministic
@@ -1249,6 +1269,14 @@ void z_net_cancel(ZNetRequest *r);
 // response header by name (case-insensitive), NULL if absent.
 ZBytes      z_net_body(ZNetResponse *res);
 const char *z_net_header(ZNetResponse *res, const char *name);
+
+// Iterate every response header (name, value), in the order the server sent them.
+// z_net_header answers "what is the content type"; this answers "what headers are
+// there at all", which is what a runtime binding needs to hand a script a whole
+// `res.headers` object without reaching into ZNetResponse's internal fields.
+// Both name and value are valid only for the duration of the callback.
+typedef void (*ZNetHeaderCb)(const char *name, const char *value, void *ud);
+void z_net_headers(ZNetResponse *res, ZNetHeaderCb cb, void *ud);
 
 // WebSockets (unfragmented text frames; binary/fragmented are Planned). Gated by
 // the `network` permission (typically already granted via a prior z_net_send).

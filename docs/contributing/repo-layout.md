@@ -18,8 +18,11 @@ zelto-os/
 │   ├── include/zelto/       # public headers (ui.h, system.h, platform.h, gfx.h)
 │   └── src/                 # scene graph, layout, render, text, gestures
 ├── script/                  # Zelto Script runtime (QuickJS embed + bindings)
-│   ├── engine/              # QuickJS integration
-│   └── bindings/            # zelto/* module implementations
+│   ├── src/                 # host.c (engine + app loop), ui.c (views/gestures/motion),
+│   │                        #   sys.c (permissions, net, notifications, settings, intents)
+│   ├── js/                  # the zelto/* modules, authored in JS, baked into the binary
+│   └── include/zelto/       # script.h — z_script_main(entry, id, title)
+├── third_party/quickjs/     # vendored JS engine (MIT; see its README)
 ├── system-ui/               # shell: status bar, launcher, switcher, lock screen
 ├── services/
 │   ├── zsysd/               # lifecycle, permissions broker, package manager

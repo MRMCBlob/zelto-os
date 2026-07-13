@@ -3,6 +3,12 @@
 Post and manage notifications. Requires the `notifications` permission. Guide:
 [../../guides/notifications.md](../../guides/notifications.md).
 
+> **Status.** Live today: `defineChannel`, `post` (title, body, `channel`, `tapRoute`, and
+> one action button via `actionId`/`actionTitle`), `cancel`, `setBadge`, and `onAction`.
+> `post` awaits the `notifications` grant, so it never blocks the frame loop on consent.
+> Register `onAction` at startup: a tapped action can LAUNCH the app, and the runtime
+> replays the event that started it.
+
 ## Post
 
 ```js

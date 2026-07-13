@@ -18,8 +18,19 @@
 # screenshot, `wlrctl`/`wtype` inject taps + keystrokes — the desktop analog of
 # run-qemu.sh's QMP screendump + input-send-event. See docs/tooling/simulator.md.
 #
+# Gestures that must PRESS AND HOLD (a drag, a long-press) cannot be driven by
+# wlrctl, which only clicks. zcomp scripts those itself, through the same seat
+# path a real device takes (compositor/src/seat.c):
+#
+#   ZCOMP_DRAG="x0 y0 x1 y1 [ms]"  press, glide, release  (pan / swipe)
+#   ZCOMP_HOLD="x y [ms]"          press, hold, release   (long-press; a short
+#                                  hold is also just a TAP at a chosen moment)
+#   ZCOMP_INPUT_DELAY=ms           when to start (default 6500 — after the app maps)
+#
 # Env: BUILD (build-host), WLR_RENDERER (gles2|pixman fallback), SHOT_DELAY (7),
-#      ZELTO_DATA_DIR (/tmp/zelto-sim/data), SIM_APP (extra app to launch).
+#      ZELTO_DATA_DIR (/tmp/zelto-sim/data), SIM_APP (extra app to launch),
+#      SIM_SCRIPT (.js app to launch) + SIM_SCRIPT_ID, SIM_NET=1 (local HTTP
+#      endpoint for the networking demo).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -151,7 +162,14 @@ export WAYLAND_DISPLAY="$SIM_WL"
 # omitted there too — it ships only inside widget.zap for the P13 install demo).
 MANIFEST_OUT="$ZELTO_DATA_DIR/apps/manifests"
 mkdir -p "$MANIFEST_OUT"
-rm -f "$MANIFEST_OUT"/*.app
+# Clear only the manifests this script OWNS (each is rewritten below). A manifest
+# put here by zelto-install belongs to a runtime-installed package and must
+# survive a reboot — wiping the whole directory would uninstall it, which is
+# precisely the thing the install harness needs to prove does not happen.
+for stale in "$MANIFEST_OUT"/*.app; do
+    [ -f "$stale" ] || continue
+    grep -q '^# Installed at runtime by zelto-install' "$stale" || rm -f "$stale"
+done
 for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/cards/zelto-cards.app" \
          "$REPO_ROOT/system/share/zelto-share.app" \
@@ -160,26 +178,39 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/notepad/zelto-notepad.app" \
          "$REPO_ROOT/system/apps/settings/zelto-settings.app" \
          "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
-         "$REPO_ROOT/system/apps/store/zelto-store.app"; do
+         "$REPO_ROOT/system/apps/store/zelto-store.app" \
+         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app"; do
     [ -f "$m" ] || { echo "!! manifest missing: $m"; continue; }
-    # Pull the image exec path (/usr/bin/zelto-X), find that binary under build-host.
+    # exec= is a COMMAND (system/common/exec_cmd.h): the binary, then optional
+    # args — a script app is "/usr/bin/zelto-script --id X /usr/share/zelto/
+    # scripts/X.js". Rewrite the binary to its build-host path, and any .js
+    # argument to the copy that lives next to the manifest in the repo.
     exec_img="$(sed -n 's/^exec=//p' "$m" | head -1)"
-    bin_name="$(basename "$exec_img")"
-    bin_host="$(find "$BUILD/system" "$BUILD/samples" -type f -name "$bin_name" -perm -u+x 2>/dev/null | head -1)"
+    bin_name="$(basename "${exec_img%% *}")"
+    exec_args="${exec_img#* }"
+    [ "$exec_args" = "$exec_img" ] && exec_args=""     # no args
+    bin_host="$(find "$BUILD/system" "$BUILD/samples" "$BUILD/script" -type f -name "$bin_name" -perm -u+x 2>/dev/null | head -1)"
     if [ -z "$bin_host" ]; then
         echo "!! host binary missing for $(basename "$m") ($bin_name); skipping tile"
         continue
     fi
-    # Copy the manifest verbatim but repoint exec= at the host binary, and
+    if [ -n "$exec_args" ]; then
+        # /usr/share/zelto/scripts/foo.js -> <dir of this manifest>/foo.js
+        exec_args="$(echo "$exec_args" | sed "s#[^ ]*/\([^/ ]*\.js\)#$(dirname "$m")/\1#g")"
+        exec_host="$bin_host $exec_args"
+    else
+        exec_host="$bin_host"
+    fi
+    # Copy the manifest verbatim but repoint exec= at the host command, and
     # rewrite any icon= from its device path to the matching in-repo asset:
     # <...>/<name>.svg -> resources/icons/<name>.svg, and a .png -> the authored
     # resources/app-icons/<name>.png. Apps with no icon= fall back to the
     # Placeholder resolved via $ZELTO_PLACEHOLDER_ICON above.
-    sed -e "s#^exec=.*#exec=$bin_host#" \
+    sed -e "s#^exec=.*#exec=$exec_host#" \
         -e "s#^icon=.*/\([^/]*\.svg\)\$#icon=$REPO_ROOT/resources/icons/\1#" \
         -e "s#^icon=.*/\([^/]*\.png\)\$#icon=$REPO_ROOT/resources/app-icons/\1#" \
         "$m" > "$MANIFEST_OUT/$(basename "$m")"
-    echo "    tile: $(basename "$m" .app) -> $bin_host"
+    echo "    tile: $(basename "$m" .app) -> $exec_host"
 done
 
 # Launch the shell in the same order /init does (minus the kernel/udev/net/binder
@@ -207,8 +238,43 @@ spawn "$SYS/launcher/zelto-launcher"
 # Resolve a binary by name (or accept an absolute path) under the host build.
 resolve_bin() {
     if [ -x "$1" ]; then echo "$1"; return; fi
-    find "$BUILD/system" "$BUILD/samples" -type f -name "$1" -perm -u+x 2>/dev/null | head -1
+    find "$BUILD/system" "$BUILD/samples" "$BUILD/script" -type f -name "$1" -perm -u+x 2>/dev/null | head -1
 }
+
+# Optional (SIM_NET=1): a local HTTP endpoint for the networking demo, the sim's
+# answer to the QEMU harness's host server on 10.0.2.2 (run-qemu.sh's NET=1).
+#
+# In the VM the guest reaches the host through slirp's 10.0.2.2 alias; the sim has
+# no VM and no slirp — an app here runs natively, so the server is simply on
+# loopback. The app must therefore be TOLD where to look, which it reads from its
+# own prefs (jsdemo.endpoint): the .prefs file is a TAB-separated key/value store
+# in the app's data dir (sdk/src/storage.c), so seeding it is a one-line write and
+# needs no special-casing inside the app.
+if [ "${SIM_NET:-0}" = "1" ]; then
+    NET_PORT="${NET_PORT:-8080}"
+    SERVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zelto-sim-net.XXXXXX")"
+    printf 'hello from the host\n' > "$SERVE_DIR/hello"
+    ( cd "$SERVE_DIR" && exec python3 -m http.server "$NET_PORT" --bind 127.0.0.1 ) \
+        >/dev/null 2>&1 &
+    NET_SRV_PID=$!
+    trap 'kill "$NET_SRV_PID" 2>/dev/null || true; rm -rf "$SERVE_DIR"' EXIT
+    echo "==> [net] host HTTP server on 127.0.0.1:$NET_PORT ($SERVE_DIR)"
+
+    JSDEMO_PREFS="$ZELTO_DATA_DIR/apps/os.zelto.jsdemo/documents"
+    mkdir -p "$JSDEMO_PREFS"
+    printf 'jsdemo.endpoint\thttp://127.0.0.1:%s/hello\n' "$NET_PORT" \
+        > "$JSDEMO_PREFS/.prefs"
+fi
+
+# Optional: auto-launch a Zelto Script app by .js path (SIM_SCRIPT=path/to/app.js),
+# the script analog of SIM_APP — the runtime is one binary shared by every script
+# app, so the app to launch is an argument, not a binary name. SIM_SCRIPT_ID
+# overrides the app id (defaults to the JS Demo's, which most script shots use).
+if [ -n "${SIM_SCRIPT:-}" ]; then
+    sleep 2
+    spawn "$(resolve_bin zelto-script)" \
+        --id "${SIM_SCRIPT_ID:-os.zelto.jsdemo}" "$SIM_SCRIPT"
+fi
 
 # Optional: auto-launch an app (name like "zelto-notepad", or a full path), handy
 # for a headless screenshot of a specific app without scripting a tile tap.
@@ -244,6 +310,20 @@ fi
 # the agent/CI verification path. Otherwise block on zcomp (interactive window).
 if [ -n "${SHOT:-}" ]; then
     sleep "$SHOT_DELAY"
+
+    # Optional: tap a point before capturing (SIM_TAP="x y"), for a shot that has
+    # to show the RESULT of an interaction — a script app's counter after +1, say.
+    # zcomp's virtual pointer takes RELATIVE motion only, so the cursor is parked
+    # at the origin first (a large negative move saturates at 0,0) and then moved
+    # by exactly x,y.
+    if [ -n "${SIM_TAP:-}" ] && command -v wlrctl >/dev/null 2>&1; then
+        set -- $SIM_TAP
+        wlrctl pointer move -9999 -9999 2>/dev/null || true
+        wlrctl pointer move "$1" "$2" 2>/dev/null || true
+        wlrctl pointer click left 2>/dev/null || true
+        sleep 1
+    fi
+
     mkdir -p "$(dirname "$SHOT")"
     if command -v grim >/dev/null 2>&1; then
         # grim can race an unsettled headless zcomp on a cold boot ("failed to

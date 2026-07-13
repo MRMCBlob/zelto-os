@@ -17,6 +17,11 @@ init        text eol=lf
 *.c         text eol=lf
 *.h         text eol=lf
 
+# Vendored third-party sources (QuickJS): ours to build, not ours to review —
+# keep them out of language stats and collapsed in diffs.
+third_party/** linguist-vendored
+third_party/** -diff
+
 # Binary assets — never normalize or diff as text.
 *.png       binary
 *.ppm       binary

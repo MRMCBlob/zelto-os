@@ -21,6 +21,19 @@ static ZView new_node(ZKind kind) {
 
 ZNav *z_navigation(ZApp *app) { return &z_app_ui(app)->nav; }
 
+// The stack depth as the Navigator currently sees it. A screen popped by the back
+// gesture is retired inside z_navigator (once its slide settles), not by the code
+// that pushed it, so this is the only way a host keeping state per screen can
+// learn that the top one is gone. Before the first z_navigator call the stack is
+// uninitialised — report the root that is about to be created, so the caller never
+// sees depth 0.
+int z_nav_depth(ZNav *nav) {
+    if (!nav) {
+        return 0;
+    }
+    return nav->inited ? nav->depth : 1;
+}
+
 void z_nav_push(ZNav *nav, ZScreenFn screen, void *props) {
     if (!nav || nav->depth >= Z_MAX_SCREENS) {
         return;

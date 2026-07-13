@@ -43,6 +43,12 @@ Chainable methods on any view. Return a new view; order matters (wrap outward).
 `.onTap(fn)` · `.onLongPress(fn)` · `.onDoubleTap(fn)` · `.onPan(fn)` · `.onPanEnd(fn)` ·
 `.onSwipe(dir, fn)` · `.disabled(bool)` · `.hitSlop(n)` · `.a11yLabel(str)`
 
+> **Status.** Bound today: `.onTap(fn)`, `.onPan(fn)` and `.onLongPress(fn)`, plus the
+> offset modifiers `.offset(animated, y)`, `.offsetXY(x, y)` and `.offsetXYAnimated(x, y)`.
+> An `onPan` handler receives `{ x, y, dx, dy, vx, vy, phase }` — `dx`/`dy` are the
+> translation since the gesture began and `vx`/`vy` the release velocity (px/s) to hand to
+> `.fling()`. `.onDoubleTap`, `.onSwipe`, `.hitSlop` and `.disabled` are not bound yet.
+
 ### Presentation / animation
 
 `.transition(name|spec)` · `.sharedElement(key)` · `.sticky()` · `.swipeActions(spec)`
@@ -63,6 +69,22 @@ useFocus()           // focus handle: .focus(), .blur()
 useBackGuard(fn)     // intercept back/pop; return false to cancel
 useTheme()           // resolved tokens for the current theme
 ```
+
+> **Status.** Bound today (all from the `zelto` module):
+>
+> ```js
+> useNavigation()      // { push(component, props), pop(), depth } — also exported
+>                      // as `navigation`. Back (edge-swipe / Escape) pops on its own.
+> useAnimatedValue(n)  // .get() .set(n) .pin(n) .spring(n, token) .grab() .fling(n, v)
+> useTextField(text)   // { text, setText } — bind with TextField(field, placeholder)
+> ```
+>
+> A spring takes a NAMED motion token (`Spring.standard` / `snappy` / `press`), never raw
+> numbers, and Reduce Motion collapses every one of them to a jump inside the toolkit — a
+> script gets that for free. `.grab()` / `.fling()` are the interruptible-drag pair: grab a
+> spring mid-flight, drive it 1:1 from the finger, then release it with the finger's own
+> velocity. `useColorScheme`, `useSafeArea`, `useScroll`, `useFocus`, `useBackGuard` and
+> `useTheme` are not bound yet.
 
 ## Theme provider
 

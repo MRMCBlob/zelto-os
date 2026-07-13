@@ -44,14 +44,14 @@ experience.
 
 Zelto OS ships in phases; docs are ordered to match.
 
-1. **Foundation** — Linux base boots on device; Waydroid runs an APK.
-2. **Compositor** — `zcomp` brings up display + input.
-3. **SDK MVP** — `libzelto` renders a static view tree.
-4. **Interactivity** — state, gestures, animation, navigation.
-5. **Zelto Script** — JS-like language bound to the SDK.
-6. **System UI** — status bar, launcher, switcher, lock screen.
-7. **Services + APK integration** — lifecycle, permissions, Android bridge.
-8. **Packaging + store** — `.zap`, signing, install, store.
+1. **Foundation** — Linux base boots on device; Waydroid runs an APK. *(Linux base done; Waydroid pending.)*
+2. **Compositor** — `zcomp` brings up display + input. *(Done.)*
+3. **SDK MVP** — `libzelto` renders a static view tree. *(Done.)*
+4. **Interactivity** — state, gestures, animation, navigation. *(Done.)*
+5. **Zelto Script** — JS-like language bound to the SDK. *(Done — see [zelto-script/runtime.md](zelto-script/runtime.md) for what is live.)*
+6. **System UI** — status bar, launcher, switcher, lock screen. *(Done.)*
+7. **Services + APK integration** — lifecycle, permissions, Android bridge. *(Services done; the Android bridge is the big remaining piece.)*
+8. **Packaging + store** — `.zap`, signing, install, store. *(Done.)*
 
 See [overview/architecture-overview.md](overview/architecture-overview.md) for the full
 component breakdown.

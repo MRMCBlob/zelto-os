@@ -453,6 +453,12 @@ ZView OnPan(ZPanHandler handler, ZView view) {
     return view;
 }
 
+ZView OnPanData(ZPanDataHandler handler, void *data, ZView view) {
+    view->on_pan_data = handler;
+    view->pan_data = data;
+    return view;
+}
+
 ZView OnLongPress(ZLongPressHandler handler, void *data, ZView view) {
     view->on_long_press = handler;
     view->long_press_data = data;

@@ -31,6 +31,34 @@ hello-1.0.0.zap
 
 A pure-C app has no `bundle/` and ships its UI in `native/`.
 
+### Today: a script app ships its source
+
+Until `zelto build` exists to produce `bundle/app.qbc`, a Zelto Script package carries its
+entry file as plain source and the manifest names it with `script=`:
+
+```
+greeter-1.0.0.zap
+├── zelto.toml              # id, name, version, permissions… + script=script/greeter.js
+├── script/
+│   └── greeter.js          # the entry module (source; bytecode is Planned)
+├── MANIFEST.sha256
+└── SIGNATURE
+```
+
+Two properties follow, and both are the point:
+
+- **No ABI.** A script package contains no compiled code, so the same `.zap` installs on
+  the aarch64 device and in the x86_64 simulator. It runs on the shared Zelto Script
+  runtime already present on the system, which is why it ships no binary of its own.
+- **The code is signed like any other code.** The `.js` is listed in `MANIFEST.sha256` and
+  covered by the signature, so a flipped byte in the script is rejected at install exactly
+  as a tampered ELF is. Source is not a weaker link than a binary here.
+
+The package deliberately does **not** carry `exec=` — `zelto-install` synthesises the
+command that runs the entry, so a signed manifest cannot nominate its own interpreter
+([manifest.md](manifest.md)). Build one with `meta/mkzap.sh <manifest> <entry.js> <out.zap>`
+(the dev stand-in for `zelto build`).
+
 ## Building
 
 ```sh

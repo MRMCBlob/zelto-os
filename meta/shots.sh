@@ -47,16 +47,21 @@ GALLERY=()
 # Optional settings.conf body for the NEXT shot (TAB-separated key\tvalue lines),
 # set by the caller just before run_shot and cleared by it.
 SEED=""
+# Optional "<manifest.app>:<entry.js>" for the NEXT shot: package it as a signed
+# .zap and install it into that shot's data dir before booting, so the shot can
+# photograph an app that exists ONLY because it was installed.
+ZAP=""
 
 # run_shot NAME CAPTION DELAY [ENV=VAL ...]
 #   NAME     out/shots/NAME.png + gallery id
 #   CAPTION  human description (how the state is reached)
 #   DELAY    seconds to let the sim settle before grim (SHOT_DELAY)
 #   ENV=VAL  extra environment for run-sim.sh (test-hooks, SIM_APP, SIM_EXTRA, ...)
-# Pre-seed the brokered settings store by setting $SEED before the call.
+# Pre-seed the brokered settings store by setting $SEED before the call; install a
+# script package first by setting $ZAP.
 run_shot() {
     local name="$1" caption="$2" delay="$3"; shift 3
-    if [ -n "$ONLY" ] && [[ "$name" != *"$ONLY"* ]]; then SEED=""; return 0; fi
+    if [ -n "$ONLY" ] && [[ "$name" != *"$ONLY"* ]]; then SEED=""; ZAP=""; return 0; fi
 
     local dir="$TMP/$name"
     local data="$dir/data" xdg="$dir/xdg"
@@ -64,6 +69,23 @@ run_shot() {
     # A fresh data dir per shot => a clean home layout + prefs (no cross-shot
     # bleed). Seed the settings store before boot when the state needs it.
     if [ -n "$SEED" ]; then printf '%b' "$SEED" > "$data/settings.conf"; fi
+
+    # ZAP=<manifest>:<entry.js> — package and INSTALL a script app into this
+    # shot's data dir before booting it, so the boot that gets photographed knows
+    # the app only from what the installer left on disk (the app is nowhere in the
+    # image). The install must happen after the wipe above, hence here.
+    if [ -n "$ZAP" ]; then
+        local zap_manifest="${ZAP%%:*}" zap_entry="${ZAP#*:}"
+        local zap_file="$dir/app.zap"
+        "$REPO_ROOT/meta/mkzap.sh" "$zap_manifest" "$zap_entry" "$zap_file" \
+            >"$dir/zap.log" 2>&1
+        ZELTO_DATA_DIR="$data" \
+        ZELTO_TRUSTED_KEY="$REPO_ROOT/meta/keys/trusted.pub" \
+        ZELTO_SCRIPT_BIN="$BUILD/script/zelto-script" \
+            "$BUILD/system/installer/zelto-install" "$zap_file" \
+            >>"$dir/zap.log" 2>&1 \
+            || echo "    !! install failed (see $dir/zap.log)"
+    fi
 
     local png="$OUT/$name.png"
     rm -f "$png"
@@ -75,6 +97,7 @@ run_shot() {
     if [ -f "$png" ]; then echo "    ok"; else echo "    !! MISSING (see $dir/log)"; fi
     GALLERY+=("$name|$caption")
     SEED=""
+    ZAP=""
 }
 
 # ===========================================================================
@@ -264,6 +287,70 @@ run_shot 34-app-settings "App: Settings" 8 SIM_APP=zelto-settings
 run_shot 35-app-store    "App: Store"    8 SIM_APP=zelto-store
 run_shot 36-app-hello    "App: Rows (SDK sample)" 8 SIM_APP=zelto-hello
 run_shot 37-app-pinger   "App: Pinger"   8 SIM_APP=zelto-pinger
+# A Zelto Script app: one shared runtime binary, so it is launched by .js path
+# (SIM_SCRIPT) rather than by binary name (SIM_APP).
+run_shot 38-app-jsdemo   "App: JS Demo (Zelto Script)" 9 \
+    SIM_SCRIPT="$REPO_ROOT/system/apps/jsdemo/jsdemo.js"
+
+# ===========================================================================
+# ZELTO SCRIPT: PARITY WITH C (P35)
+# Each of these drives a binding that a script app could not reach before —
+# gestures, motion, text input, navigation, and the brokered system APIs — so the
+# shot is of the FEATURE WORKING, not of a layout that merely mentions it.
+#
+# Unlike the frozen gesture shots above, these use real input: zcomp scripts the
+# press-and-hold that wlrctl cannot (ZCOMP_DRAG / ZCOMP_HOLD, seat.c), driving the
+# same seat path a finger does. ZCOMP_INPUT_DELAY waits for the app to map.
+# ===========================================================================
+JSDEMO="$REPO_ROOT/system/apps/jsdemo/jsdemo.js"
+
+# onPan: the card dragged sideways, caught MID-drag (it springs home on release,
+# so a shot after the release would show nothing). Proves the JS closure is
+# driving the spring 1:1 from the finger.
+run_shot 59-script-pan "Script: card dragged by onPan (mid-drag, finger-tracked)" 7 \
+    SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_DRAG="180 418 520 418 6000"
+
+# onLongPress: a hold in place past the threshold toggles "Pinned" (and suppresses
+# the tap the release would otherwise have produced).
+run_shot 60-script-longpress "Script: onLongPress pinned the card (tap suppressed)" 11 \
+    SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 418 900"
+
+# Navigator: a pushed screen, with its own hook state and the props it was pushed
+# with. Back (edge-swipe / Escape) pops it without the script's help.
+run_shot 61-script-nav "Script: Navigator pushed a second screen" 11 \
+    SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 916 100"
+
+# TextField: tapping the field focuses it and raises the system on-screen keyboard
+# (P21) — the app handles no keys at all.
+run_shot 62-script-textfield "Script: TextField focused, on-screen keyboard up" 12 \
+    SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 557 100"
+
+# Networking: the script awaits the `network` grant (the system consent modal runs
+# on the live loop), then fetches over the async state machine. SIM_NET=1 serves
+# the endpoint locally; the card shows the real 200 + body.
+run_shot 63-script-net "Script: fetch() after awaiting the network grant" 14 \
+    SIM_SCRIPT="$JSDEMO" SIM_NET=1 ZELTO_CONSENT_AUTO=allow \
+    ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="190 697 100"
+
+# Notifications: posted by the script through the same broker a C app uses, with an
+# action button that routes back to it. Captured as the heads-up banner.
+run_shot 64-script-notify "Script: notification posted (heads-up banner + action)" 13 \
+    SIM_SCRIPT="$JSDEMO" ZELTO_CONSENT_AUTO=allow \
+    ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="524 697 100"
+
+# Settings: the script writes sys.mute and the broker echoes the change back to its
+# observer, which recolours the row — the same live fan-out the shade gets.
+run_shot 65-script-settings "Script: wrote sys.mute, observer echoed it back live" 11 \
+    SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="527 758 100"
+
+# Packaging: the Greeter is not in the image at all. It is packaged as a signed
+# .zap and installed onto the persistent disk first (ZAP=), so the boot below knows
+# the app only from what the installer left there — a script app running from
+# /var/zelto, whose code was signature- and hash-verified before it ever ran. The
+# tap lands on its tile, which exists only because the install worked.
+ZAP="$REPO_ROOT/system/apps/greeter/zelto-greeter.app:$REPO_ROOT/system/apps/greeter/greeter.js" \
+run_shot 66-script-installed "Script: installed from a signed .zap, running from /var/zelto" 12 \
+    ZCOMP_INPUT_DELAY=5000 ZCOMP_HOLD="447 460 100"
 
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)

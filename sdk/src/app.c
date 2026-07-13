@@ -250,6 +250,12 @@ struct ZApp {
     // (a body whose tree changes shape between phases — the shade idle strip
     // vs. its pulled-open panel) reads stale memory and drops events.
     ZPanHandler pan_handler;
+    // The OnPanData variant, cached the same way and for the same reason. Its
+    // `data` is NOT arena memory (the binding points it at stable host state), but
+    // it is resolved from the arena node at the slop-cross, so it is latched here
+    // alongside the handler rather than re-read from pan_target mid-gesture.
+    ZPanDataHandler pan_handler_data;
+    void *pan_data;
 
     // Long-press recognizer. Armed on a press that lands on an OnLongPress node;
     // the app loop polls with a finite timeout so a finger held still wakes us at
@@ -462,7 +468,7 @@ static ZView find_scroll(ZView n, double x, double y) {
     return (n->kind == Z_K_SCROLL && n->scroll) ? n : NULL;
 }
 
-// Deepest custom OnPan target under (x,y).
+// Deepest custom OnPan / OnPanData target under (x,y).
 static ZView find_pan(ZView n, double x, double y) {
     if (!n || !point_in(n, x, y)) {
         return NULL;
@@ -473,7 +479,7 @@ static ZView find_pan(ZView n, double x, double y) {
             return h;
         }
     }
-    return n->on_pan ? n : NULL;
+    return (n->on_pan || n->on_pan_data) ? n : NULL;
 }
 
 // Deepest OnLongPress target under (x,y).
@@ -893,7 +899,7 @@ static void stamp_press(ZApp *app, ZView root) {
 static void dispatch_pan(ZApp *app, ZPanPhase phase) {
     // Use the cached handler, not pan_target->on_pan: pan_target is an arena view
     // a rebuild during the gesture may have freed/moved.
-    if (!app->pan_handler) {
+    if (!app->pan_handler && !app->pan_handler_data) {
         return;
     }
     ZPanEvent e = {
@@ -901,11 +907,15 @@ static void dispatch_pan(ZApp *app, ZPanPhase phase) {
         .y = (float)app->ptr_y,
         .translation_x = (float)(app->ptr_x - app->press_x),
         .translation_y = (float)(app->ptr_y - app->press_y),
-        .velocity_x = 0.0f,
+        .velocity_x = (float)app->drag_vel_x,
         .velocity_y = (float)app->drag_vel_y,
         .phase = phase,
     };
-    app->pan_handler(app, app->state, &e);
+    if (app->pan_handler_data) {
+        app->pan_handler_data(app, app->state, app->pan_data, &e);
+    } else {
+        app->pan_handler(app, app->state, &e);
+    }
 }
 
 static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
@@ -940,6 +950,9 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
         } else {
             app->pan_target = find_pan(app->root, app->press_x, app->press_y);
             app->pan_handler = app->pan_target ? app->pan_target->on_pan : NULL;
+            app->pan_handler_data =
+                app->pan_target ? app->pan_target->on_pan_data : NULL;
+            app->pan_data = app->pan_target ? app->pan_target->pan_data : NULL;
             if (!app->pan_target) {
                 ZView sv = find_scroll(app->root, app->press_x, app->press_y);
                 app->drag_scroll = sv ? sv->scroll : NULL;
@@ -1002,6 +1015,8 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         app->drag_scroll = NULL;
         app->pan_target = NULL;
         app->pan_handler = NULL;
+        app->pan_handler_data = NULL;
+        app->pan_data = NULL;
         app->drag_vel_y = 0.0;
         app->drag_vel_x = 0.0;
         app->press_x = app->last_x = app->ptr_x;

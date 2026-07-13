@@ -11,13 +11,24 @@
 # Layout produced:
 #     <app>.zap
 #     ├── zelto.toml              # the manifest (key=value; exec= -> native path)
-#     ├── native/aarch64/<bin>    # the cross-built ELF
+#     ├── native/aarch64/<bin>    # the cross-built ELF     (a NATIVE app)
+#     ├── script/<entry>.js       # the Zelto Script entry  (a SCRIPT app)
 #     ├── assets/icon.png         # optional
 #     ├── MANIFEST.sha256         # "<sha256>  <path>" per packaged file
 #     └── SIGNATURE               # raw Ed25519 signature over MANIFEST.sha256
 #
+# A SCRIPT app (a .js payload) ships no binary of its own: it runs on the shared
+# Zelto Script runtime, which is already on the device. The package therefore
+# carries `script=` instead of `exec=`, and the installer synthesises the exec
+# command (`zelto-script --id <id> <installed .js>`). Two consequences worth
+# stating: a script .zap is ARCHITECTURE-INDEPENDENT — the same file installs on
+# the aarch64 device and in the x86_64 simulator — and the .js is covered by
+# MANIFEST.sha256 like any other file, so the code is signature-verified exactly
+# as a native binary is.
+#
 # Usage:
-#   meta/mkzap.sh <manifest.app> <binary> <out.zap> [key.pem] [icon.png]
+#   meta/mkzap.sh <manifest.app> <payload> <out.zap> [key.pem] [icon.png]
+#     <payload>   the cross-built ELF, or an entry .js (-> a script package)
 #
 # Env:
 #   TAMPER=1   after signing, flip a byte in the packaged binary WITHOUT updating
@@ -31,8 +42,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 
-MANIFEST_SRC="${1:?usage: mkzap.sh <manifest.app> <binary> <out.zap> [key.pem] [icon.png]}"
-BIN_SRC="${2:?missing <binary>}"
+MANIFEST_SRC="${1:?usage: mkzap.sh <manifest.app> <payload> <out.zap> [key.pem] [icon.png]}"
+BIN_SRC="${2:?missing <payload> (a native binary, or an entry .js)}"
 OUT_ZAP="${3:?missing <out.zap>}"
 KEY="${4:-$REPO_ROOT/meta/keys/zelto-dev.pem}"
 ICON="${5:-}"
@@ -41,8 +52,14 @@ for tool in openssl zip sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not found"; exit 1; }
 done
 [ -f "$MANIFEST_SRC" ] || { echo "ERROR: manifest not found: $MANIFEST_SRC"; exit 1; }
-[ -f "$BIN_SRC" ]      || { echo "ERROR: binary not found: $BIN_SRC"; exit 1; }
+[ -f "$BIN_SRC" ]      || { echo "ERROR: payload not found: $BIN_SRC"; exit 1; }
 [ -f "$KEY" ]          || { echo "ERROR: signing key not found: $KEY (run meta/keys/gen-keys.sh)"; exit 1; }
+
+# A .js payload makes this a SCRIPT package (no binary, no ABI).
+case "$BIN_SRC" in
+    *.js) IS_SCRIPT=1 ;;
+    *)    IS_SCRIPT=0 ;;
+esac
 
 # Resolve OUT_ZAP to an absolute path: `zip` runs after `cd "$STAGE"`, so a
 # relative out path would otherwise land inside the staging dir.
@@ -53,16 +70,26 @@ BIN_NAME="$(basename "$BIN_SRC")"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/zelto-mkzap.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 
-mkdir -p "$STAGE/native/aarch64"
-cp "$BIN_SRC" "$STAGE/native/aarch64/$BIN_NAME"
-
-# zelto.toml = the manifest, with exec= rewritten to the in-package native path so
-# the installer can find the binary (it then rewrites exec= again to the installed
-# absolute path). Drop any pre-existing exec= line from the source manifest.
-{
-    grep -v '^exec=' "$MANIFEST_SRC" || true
-    echo "exec=native/aarch64/$BIN_NAME"
-} > "$STAGE/zelto.toml"
+# zelto.toml = the manifest with the payload's in-package location recorded, so
+# the installer can find it (it then writes the final exec= pointing at the
+# installed copy). Any pre-existing exec=/script= line is dropped: where the
+# payload lives in the package is this script's business, not the author's.
+if [ "$IS_SCRIPT" = "1" ]; then
+    mkdir -p "$STAGE/script"
+    cp "$BIN_SRC" "$STAGE/script/$BIN_NAME"
+    {
+        grep -vE '^(exec|script)=' "$MANIFEST_SRC" || true
+        echo "script=script/$BIN_NAME"
+    } > "$STAGE/zelto.toml"
+    echo "==> script package (no ABI): script/$BIN_NAME"
+else
+    mkdir -p "$STAGE/native/aarch64"
+    cp "$BIN_SRC" "$STAGE/native/aarch64/$BIN_NAME"
+    {
+        grep -vE '^(exec|script)=' "$MANIFEST_SRC" || true
+        echo "exec=native/aarch64/$BIN_NAME"
+    } > "$STAGE/zelto.toml"
+fi
 
 if [ -n "$ICON" ] && [ -f "$ICON" ]; then
     mkdir -p "$STAGE/assets"
@@ -95,11 +122,18 @@ fi
 rm -f "$PUB_PEM"
 
 if [ "${TAMPER:-0}" = "1" ]; then
-    # Corrupt one byte of the packaged binary AFTER signing: the manifest + sig
-    # stay valid, but the binary's hash no longer matches its MANIFEST entry, so
-    # the installer rejects the package at the per-file integrity check.
-    echo "==> TAMPER: flipping a byte in native/aarch64/$BIN_NAME (hash will mismatch)"
-    printf '\xff' | dd of="$STAGE/native/aarch64/$BIN_NAME" bs=1 seek=64 count=1 \
+    # Corrupt one byte of the packaged payload AFTER signing: the manifest + sig
+    # stay valid, but the payload's hash no longer matches its MANIFEST entry, so
+    # the installer rejects the package at the per-file integrity check. Tampering
+    # with a script's .js must be caught exactly like tampering with an ELF —
+    # code is code, whichever it is.
+    if [ "$IS_SCRIPT" = "1" ]; then
+        TAMPER_PATH="$STAGE/script/$BIN_NAME"
+    else
+        TAMPER_PATH="$STAGE/native/aarch64/$BIN_NAME"
+    fi
+    echo "==> TAMPER: flipping a byte in ${TAMPER_PATH#$STAGE/} (hash will mismatch)"
+    printf '\xff' | dd of="$TAMPER_PATH" bs=1 seek=64 count=1 \
         conv=notrunc status=none
 fi
 
@@ -108,7 +142,9 @@ rm -f "$OUT_ZAP"
 # -X drops extra file attributes for a reproducible archive; busybox unzip reads
 # a standard deflate ZIP.
 ( cd "$STAGE" && zip -X -q -r "$OUT_ZAP" \
-    zelto.toml native MANIFEST.sha256 SIGNATURE \
+    zelto.toml MANIFEST.sha256 SIGNATURE \
+    $( [ -d native ] && echo native ) \
+    $( [ -d script ] && echo script ) \
     $( [ -d assets ] && echo assets ) )
 
 echo "==> wrote $OUT_ZAP ($(du -h "$OUT_ZAP" | cut -f1))"

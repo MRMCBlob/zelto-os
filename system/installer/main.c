@@ -229,7 +229,8 @@ typedef struct Manifest {
     char perms[256];
     char share_targets[256];
     char links[128];
-    char exec[256];   // in-package native path, e.g. native/aarch64/zelto-widget
+    char exec[256];     // in-package native path, e.g. native/aarch64/zelto-widget
+    char script[256];   // in-package .js path, e.g. script/jsdemo.js (script app)
 } Manifest;
 
 static void manifest_set(Manifest *m, const char *k, const char *v) {
@@ -251,6 +252,8 @@ static void manifest_set(Manifest *m, const char *k, const char *v) {
         snprintf(m->links, sizeof(m->links), "%s", v);
     } else if (strcmp(k, "exec") == 0) {
         snprintf(m->exec, sizeof(m->exec), "%s", v);
+    } else if (strcmp(k, "script") == 0) {
+        snprintf(m->script, sizeof(m->script), "%s", v);
     }
 }
 
@@ -309,9 +312,20 @@ static int version_cmp(const char *a, const char *b) {
 
 // --- verification ----------------------------------------------------------
 
+// Where the single trusted root key lives. On the device this is a fixed path in
+// the read-only image — the whole point of the trust root is that a package
+// cannot choose it. The simulator has no image, so ZELTO_TRUSTED_KEY retargets it
+// at the repo's dev key (the ZELTO_CONSENT_BIN idiom). That override is a
+// DEVELOPMENT affordance: it is only as trustworthy as the environment the
+// installer is launched with, which on the device is the read-only init.
+static const char *trusted_key_path(void) {
+    const char *k = getenv("ZELTO_TRUSTED_KEY");
+    return (k && k[0]) ? k : TRUSTED_PUB;
+}
+
 // Verify the detached signature over MANIFEST.sha256 against the trusted root.
 static bool verify_signature(const char *workdir) {
-    char pubpath[] = TRUSTED_PUB;
+    const char *pubpath = trusted_key_path();
     unsigned char *pub = NULL, *sig = NULL, *man = NULL;
     size_t publen = 0, siglen = 0, manlen = 0;
     bool ok = false;
@@ -523,8 +537,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[zelto-install] manifest has no id=; refusing\n");
         goto cleanup;
     }
-    if (!m.exec[0]) {
-        fprintf(stderr, "[zelto-install] manifest has no exec=; refusing\n");
+    // A package carries EITHER a native binary (exec=) or a Zelto Script entry
+    // (script=). A script app ships no binary: it runs on the shared runtime
+    // already installed on the device, so what the package contributes is the
+    // .js — which the signature and the per-file hash cover exactly as they would
+    // an ELF.
+    if (!m.exec[0] && !m.script[0]) {
+        fprintf(stderr,
+                "[zelto-install] manifest has neither exec= nor script=; "
+                "refusing\n");
         goto cleanup;
     }
 
@@ -559,13 +580,34 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[zelto-install] cannot create %s\n", installed_dir);
         goto cleanup;
     }
+    // The payload: the ELF, or the script entry. A .js is data, not an image —
+    // install it 0644 (it is executed by the runtime, never exec'd itself).
+    const char *payload = m.script[0] ? m.script : m.exec;
     char bin_src[1300], bin_dst[1400];
-    snprintf(bin_src, sizeof(bin_src), "%s/%s", workdir, m.exec);
+    snprintf(bin_src, sizeof(bin_src), "%s/%s", workdir, payload);
     snprintf(bin_dst, sizeof(bin_dst), "%s/%s", installed_dir,
-             base_name(m.exec));
-    if (copy_file(bin_src, bin_dst, 0755) != 0) {
-        fprintf(stderr, "[zelto-install] cannot install binary -> %s\n", bin_dst);
+             base_name(payload));
+    if (copy_file(bin_src, bin_dst, m.script[0] ? 0644 : 0755) != 0) {
+        fprintf(stderr, "[zelto-install] cannot install payload -> %s\n", bin_dst);
         goto cleanup;
+    }
+
+    // A script app's exec= is SYNTHESISED here rather than declared: the package
+    // must not get to choose which interpreter runs it, or a manifest could point
+    // exec= at any binary on the device and the signature would faithfully attest
+    // to it. The installer names the runtime; the package only supplies the .js.
+    // (ZELTO_SCRIPT_BIN retargets it at the build tree for the simulator, the same
+    // ZELTO_CONSENT_BIN idiom zsysd uses.)
+    char exec_cmd[1600];
+    if (m.script[0]) {
+        const char *runtime = getenv("ZELTO_SCRIPT_BIN");
+        if (!runtime || !runtime[0]) {
+            runtime = "/usr/bin/zelto-script";
+        }
+        snprintf(exec_cmd, sizeof(exec_cmd), "%s --id %s %s", runtime, m.id,
+                 bin_dst);
+    } else {
+        snprintf(exec_cmd, sizeof(exec_cmd), "%s", bin_dst);
     }
 
     // Optional assets/ tree (best-effort; copied wholesale).
@@ -588,7 +630,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[zelto-install] cannot create %s\n", manifests_dir);
         goto cleanup;
     }
-    if (write_runtime_manifest(manifests_dir, &m, bin_dst) != 0) {
+    if (write_runtime_manifest(manifests_dir, &m, exec_cmd) != 0) {
         fprintf(stderr, "[zelto-install] cannot write runtime manifest\n");
         goto cleanup;
     }
@@ -596,8 +638,9 @@ int main(int argc, char **argv) {
     sync();
     zsysd_reload();
 
-    fprintf(stderr, "[zelto-install] installed %s (%s) -> %s\n", m.id,
-            m.name[0] ? m.name : "?", bin_dst);
+    fprintf(stderr, "[zelto-install] installed %s (%s, %s) -> %s\n", m.id,
+            m.name[0] ? m.name : "?", m.script[0] ? "script" : "native",
+            exec_cmd);
     rc = 0;
 
 cleanup:

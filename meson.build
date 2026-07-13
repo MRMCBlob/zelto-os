@@ -29,5 +29,8 @@ add_project_arguments(
 
 subdir('compositor')
 subdir('sdk')
+# Zelto Script: the vendored JS engine, then the runtime that binds it to the SDK.
+subdir('third_party/quickjs')
+subdir('script')
 subdir('samples')
 subdir('system')

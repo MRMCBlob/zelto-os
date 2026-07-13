@@ -440,6 +440,52 @@ ZBytes z_net_body(ZNetResponse *res) {
     return b;
 }
 
+void z_net_headers(ZNetResponse *res, ZNetHeaderCb cb, void *ud) {
+    if (!res || !res->raw || !cb) {
+        return;
+    }
+    // Same walk as z_net_header, but handing every field to the callback instead
+    // of matching one name — what a binding needs to materialise the whole header
+    // set (a script's `res.headers`) without reading the response's internals.
+    const char *end = res->hdr_end ? res->hdr_end : res->raw + res->raw_len;
+    const char *line = strchr(res->raw, '\n');   // skip the status line
+    line = line ? line + 1 : res->raw;
+    while (line < end) {
+        const char *nl = memchr(line, '\n', (size_t)(end - line));
+        size_t llen = nl ? (size_t)(nl - line) : (size_t)(end - line);
+        const char *colon = memchr(line, ':', llen);
+        if (colon) {
+            char name[128], value[512];
+            size_t nlen = (size_t)(colon - line);
+            if (nlen >= sizeof(name)) {
+                nlen = sizeof(name) - 1;
+            }
+            memcpy(name, line, nlen);
+            name[nlen] = '\0';
+
+            const char *v = colon + 1;
+            while (v < line + llen && (*v == ' ' || *v == '\t')) {
+                v++;
+            }
+            size_t vlen = (size_t)(line + llen - v);
+            while (vlen && (v[vlen - 1] == '\r' || v[vlen - 1] == ' ')) {
+                vlen--;
+            }
+            if (vlen >= sizeof(value)) {
+                vlen = sizeof(value) - 1;
+            }
+            memcpy(value, v, vlen);
+            value[vlen] = '\0';
+
+            cb(name, value, ud);
+        }
+        if (!nl) {
+            break;
+        }
+        line = nl + 1;
+    }
+}
+
 const char *z_net_header(ZNetResponse *res, const char *name) {
     if (!res || !res->raw || !name) {
         return NULL;
