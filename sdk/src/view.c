@@ -491,21 +491,37 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     ZView content =
         opts->body ? opts->body(app, z_app_state(app)) : z_spacer();
 
-    ZStackOpts col = {.spacing = 8, .align = Z_ALIGN_LEADING};
+    // The card: content FIRST, caption last. A widget is read at a glance, and the
+    // thing worth reading is its value, not its name — putting the title on top
+    // (as this did) spends the strongest position in the card on the least useful
+    // line and leaves the value floating in the middle of a labelled box. Bottom-
+    // aligning the caption also gives every widget the same baseline, so a row of
+    // them reads as a set (Law of Similarity) whatever their content is.
+    ZStackOpts col = {.spacing = 6, .align = Z_ALIGN_LEADING};
     int k = 0;
-    if (opts->title && opts->title[0]) {
-        col.children[k++] = Foreground(
-            Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, z_text("%s", opts->title)));
-    }
     col.children[k++] = content;
+    col.children[k++] = z_spacer();
+    if (opts->title && opts->title[0]) {
+        col.children[k++] = Weight(Z_WEIGHT_MEDIUM,
+            Foreground(Z_COLOR_TEXT_FAINT,
+                Font(Z_FONT_CAPTION2, z_text("%s", opts->title))));
+    }
 
-    // A translucent "glass" fill (not the near-opaque SURFACE) so a widget laid
-    // over the home wallpaper reads as an elevated card the wallpaper glows
-    // through, instead of a flat black slab. The software renderer's source-over
-    // path composites the alpha over whatever is beneath. A soft drop shadow
-    // (Z_ELEV_2) lifts the card off the wallpaper so the glass reads as floating.
+    // The MATERIAL: a translucent tint the wallpaper shows through, lifted by a
+    // soft shadow — not a flat slab. Over the home the launcher owns the wallpaper
+    // pixels, so this is the tint alone (there is nothing behind the launcher to
+    // blur).
+    //
+    // The 1px HAIRLINE around it is what stops a translucent panel dissolving into
+    // a busy wallpaper: it is drawn as an outer node filled with the edge colour
+    // whose 1px padding lets the ring show around the material inside it. (The
+    // modifiers mutate the node they are given rather than wrapping it, so the ring
+    // needs a real second node — hence the depth stack.)
+    ZView fill = Background(Z_COLOR_MATERIAL_REGULAR,
+        CornerRadius(Z_RADIUS_PANEL - 1.0f,
+            Padding(17.0f, z_stack(Z_AXIS_VERTICAL, &col))));
     return Shadow(Z_ELEV_2,
-        Background(z_rgba(0x1e, 0x26, 0x30, 0xcc),
-            CornerRadius(20.0f,
-                Padding(18.0f, z_stack(Z_AXIS_VERTICAL, &col)))));
+        Background(Z_COLOR_MATERIAL_EDGE,
+            CornerRadius(Z_RADIUS_PANEL,
+                ZStack(Fill(fill), .padding = 1.0f))));
 }

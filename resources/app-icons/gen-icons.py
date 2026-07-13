@@ -332,6 +332,18 @@ def greeter_icon():
     return buf
 
 
+def share_icon():
+    # The share demo: a tray with an arrow leaving it — the universal share mark.
+    buf = tile(hexrgb("#6FD3C8"), hexrgb("#1E8E86"))
+    capsule(buf, 146, 250, 146, 396, 24, W)      # tray, left wall
+    capsule(buf, 366, 250, 366, 396, 24, W)      # tray, right wall
+    capsule(buf, 146, 396, 366, 396, 24, W)      # tray floor
+    capsule(buf, 256, 330, 256, 140, 26, W)      # arrow shaft, rising out
+    capsule(buf, 256, 134, 186, 204, 26, W)      # arrow head, left
+    capsule(buf, 256, 134, 326, 204, 26, W)      # arrow head, right
+    return buf
+
+
 def rows_icon():
     # The "Rows" sample (id os.zelto.app): a list — a leading dot and a line, three
     # times over. It is a demo of the list primitive, so the icon IS a list.
@@ -365,6 +377,7 @@ ICONS = {
     "os.zelto.widget": widget_icon,
     "os.zelto.greeter": greeter_icon,
     "os.zelto.app": rows_icon,          # samples/hello, shown as "Rows"
+    "os.zelto.share": share_icon,
     "Placeholder": placeholder_icon,
 }
 

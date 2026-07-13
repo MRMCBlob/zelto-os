@@ -74,7 +74,12 @@
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
 #define MAX_APPS 32
-#define DEFAULT_FAVS 4   // home seeds this many apps on first run (pre-layout)
+// On first run the home seeds EVERY installed app, the way a phone does — an app
+// you installed is on the home screen, and you curate from there. Seeding only a
+// handful left the grid with one short row of icons and most of a screen of bare
+// wallpaper, which reads as an unfinished device rather than a tidy one. The dock
+// is drawn from the same list, so the first four are reachable from every page.
+#define DEFAULT_FAVS 16  // cap: the seed stops here (the carousel pages the rest)
 
 // One installed app, parsed from a .app manifest. `id` is the manifest basename
 // (minus ".app"), e.g. "os.zelto.cards" — the stable key used in the layout.
@@ -208,23 +213,56 @@ static int find_app(const char *id) {
 // callback builds, self-refreshing on a declared cadence. The launcher ships
 // three built-ins. In the bento grid each declares a cell span (cw x ch).
 
-// The clock/date card: big time over a muted date. Ticks once a second.
+// The clock/date card: the weekday, then the time as the hero, then the date.
+// Ticks once a second. A 2x2 card is a lot of screen, so it carries three lines
+// of real hierarchy rather than one number floating in a box.
 static ZView w_clock(ZApp *app, void *state) {
     (void)app;
     (void)state;
     char hhmm[8] = "--:--";
+    char day[16] = "";
     char date[32] = "";
     time_t t = time(NULL);
     struct tm tmv;
     if (gmtime_r(&t, &tmv)) {
         snprintf(hhmm, sizeof(hhmm), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-        strftime(date, sizeof(date), "%a %d %b", &tmv);
+        strftime(day, sizeof(day), "%A", &tmv);
+        strftime(date, sizeof(date), "%d %B", &tmv);
     }
     return VStack(
         Weight(Z_WEIGHT_SEMIBOLD,
+            Foreground(Z_COLOR_TEXT_MUTED,
+                Font(Z_FONT_FOOTNOTE, Text("%s", day)))),
+        Weight(Z_WEIGHT_BOLD,
             Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", hhmm)))),
-        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", date))),
-        .spacing = 2, .align = Z_ALIGN_LEADING);
+        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_SUBHEAD, Text("%s", date))),
+        .spacing = 1, .align = Z_ALIGN_LEADING);
+}
+
+// A horizontal meter: a filled run and the empty remainder, side by side. The
+// battery widget's reason to be 2 cells wide — a number alone would fit in a
+// caption.
+//
+// Built as two Rects in a row rather than a fill stacked over a track: Fill()
+// inside a ZStack expands to the PARENT's inner box, so a "track" built that way
+// does not size to the meter's Frame — it inflates the whole card's content box
+// and shoves the content out through the top. Two siblings need no overlap.
+static ZView meter(float frac, ZColor fill, float width) {
+    if (frac < 0.04f) {
+        frac = 0.04f;   // always show a sliver, so the meter reads as a meter
+    }
+    if (frac > 1.0f) {
+        frac = 1.0f;
+    }
+    float on = width * frac, off = width - on;
+    ZStackOpts row = {.spacing = 3.0f, .align = Z_ALIGN_CENTER};
+    int k = 0;
+    row.children[k++] = Frame(on, 8.0f, Rect(.color = fill, .radius = 4.0f));
+    if (off > 2.0f) {
+        row.children[k++] =
+            Frame(off, 8.0f, Rect(.color = Z_COLOR_SURFACE_3, .radius = 4.0f));
+    }
+    return z_stack(Z_AXIS_HORIZONTAL, &row);
 }
 
 // The status glance: battery % + the connectivity mode, from brokered sys.* keys.
@@ -244,12 +282,13 @@ static ZView w_battery(ZApp *app, void *state) {
               : (pct <= 20 ? Z_COLOR_DANGER : Z_COLOR_TEXT);
     const char *net = airplane ? "Airplane" : (wifi ? "Wi-Fi" : "Offline");
     return VStack(
-        Weight(Z_WEIGHT_SEMIBOLD,
+        Weight(Z_WEIGHT_BOLD,
             Foreground(pc, Font(Z_FONT_TITLE, Text("%d%%", pct)))),
+        meter((float)pct / 100.0f, pc, 132.0f),
         Foreground(Z_COLOR_TEXT_MUTED,
-            Font(Z_FONT_CAPTION,
+            Font(Z_FONT_FOOTNOTE,
                  Text("%s%s", charging ? "Charging \xc2\xb7 " : "", net))),
-        .spacing = 2, .align = Z_ALIGN_LEADING);
+        .spacing = 6, .align = Z_ALIGN_LEADING);
 }
 
 // The notifications glance: the live count of stored notifications.
@@ -257,12 +296,23 @@ static ZView w_notifs(ZApp *app, void *state) {
     (void)app;
     (void)state;
     int n = (int)z_setting_get_int("sys.notif_count", 0);
+    // Zero is the common case, and "0 notifications" is a worse thing to read than
+    // "All clear" — an empty state should say what is true, not print a zero.
+    if (n <= 0) {
+        static const float tick[] = {0.18f, 0.54f, 0.42f, 0.80f, 0.84f, 0.22f};
+        return VStack(
+            Frame(30.0f, 30.0f,
+                Stroke(.points = tick, .count = 3, .thickness = 3.5f,
+                       .color = Z_COLOR_TEXT_MUTED)),
+            Weight(Z_WEIGHT_SEMIBOLD,
+                Foreground(Z_COLOR_TEXT, Font(Z_FONT_CALLOUT, Text("All clear")))),
+            .spacing = 8, .align = Z_ALIGN_LEADING);
+    }
     return VStack(
-        Weight(Z_WEIGHT_SEMIBOLD,
-            Foreground(n > 0 ? Z_COLOR_ACCENT : Z_COLOR_TEXT_MUTED,
-                       Font(Z_FONT_LARGE_TITLE, Text("%d", n)))),
+        Weight(Z_WEIGHT_BOLD,
+            Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%d", n)))),
         Foreground(Z_COLOR_TEXT_MUTED,
-            Font(Z_FONT_CAPTION,
+            Font(Z_FONT_FOOTNOTE,
                  Text("%s", n == 1 ? "notification" : "notifications"))),
         .spacing = 2, .align = Z_ALIGN_LEADING);
 }
@@ -275,8 +325,13 @@ typedef struct WidgetDef {
     int cw, ch;            // bento cell span (columns x rows)
 } WidgetDef;
 
+// `title` names the widget in the curate menu; it is NOT drawn on the card. A
+// clock that says "Clock" over the time, a battery that says "Status" over 99%,
+// spends the card's best line telling you what you can already see — and on a 2x2
+// it leaves a hole in the middle. The content identifies the widget (this is what
+// every widget on a phone does), so the card is content-led.
 static const WidgetDef g_widget_defs[] = {
-    {"clock",   "Clock",         w_clock,   1000, 2, 2},
+    {"clock",   "Clock",         w_clock,   1000, 2, 1},
     {"battery", "Status",        w_battery, 0,    2, 1},
     {"notifs",  "Notifications", w_notifs,  0,    2, 1},
 };
@@ -434,7 +489,7 @@ static void ensure_home_layout(void) {
 #define GRID_TOP 20.0f
 #define MAX_ROWS 20              // per-page occupancy height cap
 #define MAX_PAGES 8              // carousel cap
-#define BOTTOM_RESERVE 132.0f    // px kept for the page dots + drawer handle / Done
+#define BOTTOM_RESERVE 208.0f    // px kept for the page dots + grab handle + dock
 #define ICON_SIZE 104.0f
 // The corner is a FRACTION of the icon (Z_RADIUS_ICON — Apple's icon-grid
 // proportion), not a fixed px, so the tile keeps its shape at every size it is
@@ -1142,12 +1197,21 @@ static void close_drawer(ZApp *app, void *state) {
 #define WALL_BANDS 10
 #define SCRIM_BANDS 8
 
+// A gentle vignette over the BOTTOM of the wallpaper only, so the dock's icons and
+// the nav bar's marks survive whatever picture the user chose.
+//
+// The top scrim is gone. It peaked at alpha 130 and reached a third of the way
+// down the screen — and it was buying nothing, because the status bar is its own
+// opaque surface and needs no help. What it actually did was darken the wallpaper
+// exactly where the widgets sit, so a dark translucent widget card had a dark
+// ground behind it and could not read as a card at all. A material needs
+// something behind it to be a material AGAINST.
 static ZView wallpaper_scrim(void) {
     ZStackOpts col = {0};
     for (int i = 0; i < SCRIM_BANDS; i++) {
         float t = (float)i / (float)(SCRIM_BANDS - 1);
-        float edge = t < 0.5f ? (1.0f - t * 2.0f) : ((t - 0.5f) * 2.0f);
-        uint8_t a = (uint8_t)(edge * edge * 130.0f);
+        float e = t < 0.62f ? 0.0f : (t - 0.62f) / 0.38f;   // bottom third only
+        uint8_t a = (uint8_t)(e * e * 104.0f);
         col.children[i] = Rect(.color = z_rgba(0, 0, 0, a), .grow = 1.0f);
     }
     return Fill(z_stack(Z_AXIS_VERTICAL, &col));
@@ -1212,34 +1276,120 @@ static ZView app_monogram(const AppEntry *e) {
 // An app with NO icon still gets the coloured tile + monogram, which is now what
 // that fallback is FOR (an app the system has never seen — a side-loaded package
 // mid-install), so it is visibly not a designed icon.
-static ZView app_icon_tile(const AppEntry *e) {
+static ZView app_icon_sized(const AppEntry *e, float size) {
     bool own = e->icon_path[0] && z_image_loads(e->icon_path);
     // The corner is a FRACTION of the tile (Apple's icon grid), so the shape holds
-    // whether this is a 56px home tile or a 96px drawer tile.
-    float radius = ICON_SIZE * Z_RADIUS_ICON;
+    // whether this is a 104px home tile or an 88px dock tile.
+    float radius = size * Z_RADIUS_ICON;
     if (own) {
         return Shadow(Z_ELEV_1,
-            Frame(ICON_SIZE, ICON_SIZE,
-                CornerRadius(radius, Image(e->icon_path))));
+            Frame(size, size, CornerRadius(radius, Image(e->icon_path))));
     }
-    return Shadow(Z_ELEV_1, Frame(ICON_SIZE, ICON_SIZE,
+    return Shadow(Z_ELEV_1, Frame(size, size,
         Background(e->color,
             CornerRadius(radius,
                 ZStack(app_monogram(e), .align = Z_ALIGN_CENTER)))));
 }
 
+static ZView app_icon_tile(const AppEntry *e) {
+    return app_icon_sized(e, ICON_SIZE);
+}
+
 static ZView app_cell_content(const AppEntry *e) {
+    // The caption is 11pt Medium — the smallest step in the scale, because an app
+    // label is recognised, not read: the icon is what identifies the app and the
+    // word only disambiguates it. A shadow keeps it legible over a bright
+    // wallpaper without a plate behind it.
     return VStack(
         app_icon_tile(e),
-        TextShadow(Foreground(Z_COLOR_TEXT_INV,
-            Font(Z_FONT_CAPTION, Text("%s", e->name)))),
-        .spacing = 8, .align = Z_ALIGN_CENTER);
+        TextShadow(Weight(Z_WEIGHT_MEDIUM,
+            Foreground(Z_COLOR_TEXT,
+                Font(Z_FONT_CAPTION2, Text("%s", e->name))))),
+        .spacing = 7, .align = Z_ALIGN_CENTER);
+}
+
+// --- the dock -------------------------------------------------------------
+// The four apps that are always one tap away, pinned across every page. This is
+// the single strongest piece of phone-shaped muscle memory there is (Jakob's
+// Law), and it is also the best real estate on the device — the bottom of the
+// screen is where the thumb already is (Fitts). Icons only: a dock is recognised
+// by shape and position, and captions here would just add noise at the busiest
+// edge of the screen.
+//
+// The dock rides on its own MATERIAL — a translucent, rounded plate the wallpaper
+// shows through — which is what separates it from the grid above without drawing
+// a line.
+#define DOCK_ICON 88.0f
+#define DOCK_MAX 4
+
+// Which apps are in the dock. Persisted as a CSV of app ids (home.dock); with no
+// stored preference the first DOCK_MAX apps (the list is name-sorted) are used, so
+// a fresh device still has a populated dock rather than an empty plate.
+static int g_dock[DOCK_MAX];
+static int g_n_dock;
+static bool g_dock_loaded;
+
+static void load_dock(void) {
+    if (g_dock_loaded) {
+        return;
+    }
+    g_dock_loaded = true;
+    g_n_dock = 0;
+    const char *pref = z_prefs_get_str("home.dock", NULL);
+    if (pref && pref[0]) {
+        char csv[512];
+        snprintf(csv, sizeof(csv), "%s", pref);   // strtok_r writes into it
+        char *save = NULL;
+        for (char *tok = strtok_r(csv, ",", &save);
+             tok && g_n_dock < DOCK_MAX; tok = strtok_r(NULL, ",", &save)) {
+            int ai = find_app(tok);
+            if (ai >= 0) {
+                g_dock[g_n_dock++] = ai;
+            }
+        }
+    }
+    if (g_n_dock == 0) {
+        for (int i = 0; i < g_n_apps && g_n_dock < DOCK_MAX; i++) {
+            g_dock[g_n_dock++] = i;
+        }
+    }
+}
+
+static ZView dock_view(void) {
+    load_dock();
+    if (g_n_dock <= 0) {
+        return Spacer();
+    }
+    const float pad = 14.0f, gap = 18.0f;
+    ZStackOpts row = {.spacing = gap, .align = Z_ALIGN_CENTER, .padding = pad};
+    int k = 0;
+    for (int i = 0; i < g_n_dock && k < Z_MAX_CHILDREN - 1; i++) {
+        const AppEntry *e = &g_apps[g_dock[i]];
+        row.children[k++] = OnTapData(launch_app, (void *)e,
+                                      app_icon_sized(e, DOCK_ICON));
+    }
+    // The plate hugs its icons: an HStack fills the width it is given, so without
+    // an explicit Frame the material stretches edge to edge and stops reading as a
+    // dock. Flanking Spacers then centre the plate in the bottom bar.
+    float plate_w = (float)g_n_dock * DOCK_ICON +
+                    (float)(g_n_dock - 1) * gap + 2.0f * pad;
+    float plate_h = DOCK_ICON + 2.0f * pad;
+    // Same material + hairline construction as a widget card (see z_widget), so the
+    // dock and the widgets are visibly the same kind of object.
+    ZView fill = Background(Z_COLOR_MATERIAL_THIN,
+        CornerRadius(Z_RADIUS_SHEET - 1.0f,
+            z_stack(Z_AXIS_HORIZONTAL, &row)));
+    ZView plate = Shadow(Z_ELEV_2,
+        Frame(plate_w, plate_h,
+            Background(Z_COLOR_MATERIAL_EDGE,
+                CornerRadius(Z_RADIUS_SHEET,
+                    ZStack(Fill(fill), .padding = 1.0f)))));
+    return HStack(Spacer(), plate, Spacer(), .align = Z_ALIGN_CENTER);
 }
 
 static ZView widget_cell_content(ZApp *app, int di) {
     const WidgetDef *d = &g_widget_defs[di];
-    return Widget(app, .title = d->title, .body = d->build,
-                  .refresh_ms = d->refresh_ms);
+    return Widget(app, .body = d->build, .refresh_ms = d->refresh_ms);
 }
 
 // A small round remove badge pinned to a cell's top-left corner.
@@ -1731,32 +1881,35 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     }
     ZView cells_layer = Fill(z_stack(Z_AXIS_DEPTH, &pages_root));
 
-    // The bottom bar: the page dots (when there is more than one page) over a
-    // drawer handle normally, or a Done bar in rearrange mode.
-    ZView handle_or_done = state->rearrange
+    // The bottom bar: page dots over the DOCK — or a Done bar while rearranging.
+    // The drawer is opened by the up-swipe (on_home_pan) or by tapping the grab
+    // handle above the dock; the old "^ / All apps" text label is gone, because a
+    // dock plus a grabber is the arrangement every phone user already knows and it
+    // needs no instructions (Jakob's Law, Paradox of the Active User).
+    ZView bottom_content = state->rearrange
         ? OnTap(exit_rearrange,
             Background(Z_COLOR_PRIMARY,
-                CornerRadius(22.0f,
+                CornerRadius(Z_RADIUS_PANEL,
                     Padding(14.0f,
                         Foreground(Z_COLOR_ON_PRIMARY,
-                            Font(Z_FONT_CALLOUT, Text("Done")))))))
-        : OnTap(open_drawer,
-            VStack(
-                Rect(.color = Z_COLOR_TEXT_MUTED,
-                     .width = 56, .height = 5, .radius = 3),
-                TextShadow(Foreground(Z_COLOR_TEXT_INV,
-                    Font(Z_FONT_CALLOUT, Text("^")))),
-                TextShadow(Foreground(Z_COLOR_TEXT_MUTED,
-                    Font(Z_FONT_CAPTION, Text("All apps")))),
-                .spacing = 4, .align = Z_ALIGN_CENTER));
+                            Weight(Z_WEIGHT_SEMIBOLD,
+                                Font(Z_FONT_CALLOUT, Text("Done"))))))))
+        : VStack(
+            OnTap(open_drawer,
+                Padding(6.0f,
+                    Rect(.color = Z_COLOR_TEXT_MUTED,
+                         .width = 44, .height = 5, .radius = 2.5f))),
+            dock_view(),
+            .spacing = 4, .align = Z_ALIGN_CENTER);
+
     ZStackOpts bstack = {.spacing = 12, .align = Z_ALIGN_CENTER,
-                         .padding = state->rearrange ? 28.0f : 20.0f};
+                         .padding = state->rearrange ? 28.0f : 14.0f};
     int bk = 0;
     bstack.children[bk++] = Spacer();
     if (npages > 1) {
         bstack.children[bk++] = page_dots(npages, page_v);
     }
-    bstack.children[bk++] = handle_or_done;
+    bstack.children[bk++] = bottom_content;
     ZView bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
 
     // The lifted ghost: the held item's content, drawn on top via its shared
@@ -1817,16 +1970,31 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // rubber-banded DISPLAY position, so an over-pull past fully-open resists (P33).
     float drawer_v = z_animated_get(state->drawer_anim);
     float slide = (1.0f - drawer_display(drawer_v)) * state->surface_h;
+    // A real vector cross, not the letter "X" — a glyph borrowed from the alphabet
+    // is the tell of an unfinished UI, and it sits on the text baseline instead of
+    // optically centred in its tap target.
+    static const float cross[] = {0.25f, 0.25f, 0.75f, 0.75f};
+    static const float cross2[] = {0.75f, 0.25f, 0.25f, 0.75f};
+    ZView close_mark = OnTap(close_drawer,
+        Frame(44.0f, 44.0f,          // a 44pt hit target, the accessibility floor
+            ZStack(
+                Frame(18.0f, 18.0f,
+                    Stroke(.points = cross, .count = 2, .thickness = 2.5f,
+                           .color = Z_COLOR_TEXT)),
+                Frame(18.0f, 18.0f,
+                    Stroke(.points = cross2, .count = 2, .thickness = 2.5f,
+                           .color = Z_COLOR_TEXT)),
+                .align = Z_ALIGN_CENTER)));
+
     ZView grabber = OnPan(on_drawer_pan,
         VStack(
-            Rect(.color = Z_COLOR_TEXT_MUTED, .width = 56, .height = 5,
-                 .radius = 3),
+            Rect(.color = Z_COLOR_TEXT_MUTED, .width = 44, .height = 5,
+                 .radius = 2.5f),
             HStack(
-                Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT_INV,
+                Weight(Z_WEIGHT_BOLD, Foreground(Z_COLOR_TEXT,
                     Font(Z_FONT_TITLE, Text("All apps")))),
                 Spacer(),
-                OnTap(close_drawer,
-                    Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("X")))),
+                close_mark,
                 .align = Z_ALIGN_CENTER),
             .spacing = 10, .align = Z_ALIGN_CENTER));
 
@@ -1849,13 +2017,26 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         }
         dgrid.children[gk++] = z_stack(Z_AXIS_HORIZONTAL, &row);
     }
-    ZView drawer = Offset(NULL, slide, Fill(
-        Background(Z_COLOR_BG,
-            VStack(
-                grabber,
-                Grow(1.0f, Scroll(app, z_stack(Z_AXIS_VERTICAL, &dgrid),
-                                  .axis = Z_AXIS_VERTICAL)),
-                .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING))));
+    // The drawer is a MATERIAL over the WALLPAPER — not over the home.
+    //
+    // It slides up across the home grid, and the home is a field of bright icons.
+    // A translucent tint laid straight over that lets those icons read through the
+    // drawer's OWN icons: two overlapping app grids, which is worse than either
+    // surface alone. So the drawer repaints the wallpaper itself (opaque, so the
+    // home beneath is fully occluded) and frosts THAT. What shows through is the
+    // picture, which is what a phone's app library shows through to — never the
+    // screen it covered.
+    ZView drawer_content = VStack(
+        grabber,
+        Grow(1.0f, Scroll(app, z_stack(Z_AXIS_VERTICAL, &dgrid),
+                          .axis = Z_AXIS_VERTICAL)),
+        .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING);
+    ZView drawer = Offset(NULL, slide,
+        Fill(ZStack(
+            Fill(wallpaper(state)),
+            Fill(Rect(.color = Z_COLOR_MATERIAL_SHEET)),
+            Fill(drawer_content),
+            .align = Z_ALIGN_CENTER)));
 
     // Toast (P32): a spring-driven slide-up + fade on the SNAPPY token. The enter
     // spring is IDENTITY-keyed (not call-order) so it never disturbs the launcher's

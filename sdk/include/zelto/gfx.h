@@ -118,9 +118,15 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 //            the scene below (a modal, the lock screen's plate)
 // Without a compositor that implements the blur these degrade gracefully — the
 // tint alone still reads as a translucent panel, only without the defocus.
+//   SHEET    a full-screen surface that REPLACES what is under it (the app
+//            drawer): heavy, so its own content is what you read. Note what a
+//            sheet must be laid over — frost it over the WALLPAPER, not over the
+//            screen it covered, or the content underneath reads through the
+//            content on top (two sets of app icons at once).
 #define Z_COLOR_MATERIAL_THIN    z_rgba(0x1c, 0x1c, 0x1e, 0x8c)   // ~55%
 #define Z_COLOR_MATERIAL_REGULAR z_rgba(0x14, 0x14, 0x16, 0xb8)   // ~72%
 #define Z_COLOR_MATERIAL_THICK   z_rgba(0x0e, 0x0e, 0x10, 0xdb)   // ~86%
+#define Z_COLOR_MATERIAL_SHEET   z_rgba(0x08, 0x08, 0x0a, 0xe6)   // ~90%
 
 // The hairline that edges a material (a 1px inner border catching the "light" at
 // its rim). It is what stops a translucent panel dissolving into a busy backdrop.
