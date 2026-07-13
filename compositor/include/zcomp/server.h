@@ -114,6 +114,16 @@ typedef struct ZcompServer {
     struct wlr_input_method_manager_v2 *input_method_manager;
     struct ZcompTextInputRelay *text_relay;
 
+    // zelto-backdrop-v1: the blurred material behind a System-UI surface (the
+    // shade panel, the dock, the keyboard). A client cannot read the pixels below
+    // itself, so the compositor renders the scene under each of these surfaces
+    // off-screen, blurs the rectangle the client asked for, and parks the result
+    // in a scene buffer beneath it. `backdrops` holds one entry per live
+    // zelto_backdrop_v1; `blur_last_ms` rate-limits that second composite (a blur
+    // of near-static content does not need to be redone at vsync). See backdrop.c.
+    struct wl_list backdrops;                   // ZcompBackdrop.link
+    uint32_t blur_last_ms;
+
     // Area left for app windows after subtracting layer exclusive zones.
     // Recomputed by zcomp_arrange().
     struct wlr_box usable;

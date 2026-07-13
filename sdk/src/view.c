@@ -182,8 +182,10 @@ ZView z_button(ZAction on_tap, const char *fmt, ...) {
     // it from primitives keeps layout/paint/hit-test uniform (no new kind).
     ZView label = node_new(Z_K_TEXT);
     label->text = z_arena_strdup(z_build_arena, buf);
-    label->fg = Z_COLOR_TEXT_INV;
-    label->weight = Z_WEIGHT_MEDIUM;   // a control label carries a little weight
+    // The filled action is a LIGHT surface (Z_COLOR_PRIMARY is near-white, not a
+    // hue), so its label is dark ink — ON_PRIMARY, never TEXT_INV.
+    label->fg = Z_COLOR_ON_PRIMARY;
+    label->weight = Z_WEIGHT_SEMIBOLD;   // a control label carries its own weight
 
     ZView n = node_new(Z_K_STACK);
     n->axis = Z_AXIS_HORIZONTAL;
@@ -191,7 +193,7 @@ ZView z_button(ZAction on_tap, const char *fmt, ...) {
     n->padding = 14.0f;                 // ~14px inset -> >=44px tall at body size
     n->has_bg = true;
     n->bg = Z_COLOR_PRIMARY;
-    n->radius = 12.0f;
+    n->radius = Z_RADIUS_CARD;
     n->on_tap = on_tap;
     n->focusable = true;
     n->children[n->n_children++] = label;

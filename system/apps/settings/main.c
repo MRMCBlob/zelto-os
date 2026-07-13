@@ -348,7 +348,7 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
         Background(Z_COLOR_PRIMARY,
             CornerRadius(14.0f,
                 Padding(14.0f,
-                    Foreground(Z_COLOR_TEXT_INV,
+                    Foreground(Z_COLOR_ON_PRIMARY,
                         Font(Z_FONT_CALLOUT, Text("Lock now")))))));
     col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION,

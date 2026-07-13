@@ -8,3 +8,4 @@ name=Notepad
 subtitle=Persistent prefs + SQLite
 exec=/usr/bin/zelto-notepad
 color=2e9bff
+icon=/usr/share/zelto/apps/icons/os.zelto.notepad.png

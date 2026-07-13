@@ -42,7 +42,28 @@ foreign_toplevel_h = custom_target(
   command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+# zelto-backdrop-v1 — OUR protocol (the blurred material behind a System-UI
+# surface). Unlike the protocols above, wlroots obviously ships no marshalling for
+# it, so the compositor needs BOTH the server header and the private code compiled
+# in (the same pair the SDK generates on the client side).
+backdrop_xml = meson.project_source_root() / 'protocols/zelto-backdrop-v1.xml'
+
+backdrop_h = custom_target(
+  'zelto-backdrop-v1-protocol.h',
+  input : backdrop_xml,
+  output : 'zelto-backdrop-v1-protocol.h',
+  command : [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+
+backdrop_c = custom_target(
+  'zelto-backdrop-v1-protocol.c',
+  input : backdrop_xml,
+  output : 'zelto-backdrop-v1-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 # Listed in the executable's sources so Ninja generates it before compiling.
 # include_directories('protocols') (in the parent build file) puts the build-tree
 # copy on the include path.
-protocol_src = [xdg_shell_h, layer_shell_h, foreign_toplevel_h]
+protocol_src = [xdg_shell_h, layer_shell_h, foreign_toplevel_h, backdrop_h,
+                backdrop_c]

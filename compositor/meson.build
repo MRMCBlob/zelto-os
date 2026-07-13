@@ -50,6 +50,7 @@ if have_graphics
     'src/layer.c',
     'src/seat.c',
     'src/text_input.c',
+    'src/backdrop.c',
   )
 
   executable(

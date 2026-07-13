@@ -8,4 +8,4 @@ name=Store
 subtitle=Install signed .zap packages
 exec=/usr/bin/zelto-store
 color=2e9bff
-icon=/usr/share/zelto/icons/store.svg
+icon=/usr/share/zelto/apps/icons/os.zelto.store.png

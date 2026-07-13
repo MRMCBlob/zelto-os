@@ -5,4 +5,4 @@ name=Rows
 subtitle=Scrollable list + navigation
 exec=/usr/bin/zelto-hello
 color=fa6626
-icon=/usr/share/zelto/icons/rows.svg
+icon=/usr/share/zelto/apps/icons/os.zelto.app.png

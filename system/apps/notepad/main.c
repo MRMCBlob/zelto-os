@@ -150,7 +150,7 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     col.children[k++] = Frame(140.0f, 72.0f,
         Background(Z_COLOR_PRIMARY,
             CornerRadius(20,
-                Foreground(Z_COLOR_TEXT_INV,
+                Foreground(Z_COLOR_ON_PRIMARY,
                     Font(Z_FONT_TITLE,
                         Text("%lld", (long long)state->count))))));
     col.children[k++] = Background(Z_COLOR_PRIMARY,

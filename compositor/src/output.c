@@ -11,11 +11,17 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 
+#include "zcomp/backdrop.h"
 #include "zcomp/server.h"
 
 static void handle_frame(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompOutput *output = wl_container_of(listener, output, frame);
+
+    // Refresh the blurred material under any System-UI surface that asked for one
+    // (a second, off-screen composite of everything BELOW those surfaces). No-op
+    // when nothing wants a backdrop, and internally rate-limited otherwise.
+    zcomp_backdrop_frame(output->server, output);
 
     // Render and present the scene graph for this output, then tell clients
     // their buffers were shown so they can draw the next frame.

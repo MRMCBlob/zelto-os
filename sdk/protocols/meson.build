@@ -147,6 +147,27 @@ data_control_client_code = custom_target(
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# zelto-backdrop-v1 client bindings — the blurred system material (P37). A client
+# cannot read the pixels behind its own surface, so a System-UI surface asks the
+# compositor to blur the scene under a rectangle of it (the shade's panel, the
+# dock, the keyboard) and paints its translucent tint over the result. Our own
+# protocol, vendored in protocols/ like the wlr-* ones; both the header and the
+# marshalling are generated (nothing ships it).
+backdrop_xml = meson.project_source_root() / 'protocols/zelto-backdrop-v1.xml'
+
+backdrop_client_header = custom_target(
+  'zelto-backdrop-v1-client-protocol.h',
+  input : backdrop_xml,
+  output : 'zelto-backdrop-v1-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+backdrop_client_code = custom_target(
+  'zelto-backdrop-v1-protocol.c',
+  input : backdrop_xml,
+  output : 'zelto-backdrop-v1-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 sdk_protocol_src = [
   xdg_client_header, xdg_client_code,
   layer_client_header, layer_client_code,
@@ -155,4 +176,5 @@ sdk_protocol_src = [
   text_input_client_header, text_input_client_code,
   input_method_client_header, input_method_client_code,
   data_control_client_header, data_control_client_code,
+  backdrop_client_header, backdrop_client_code,
 ]

@@ -318,7 +318,7 @@ static ZView notif_card(Banner *b, bool interactive) {
             Background(Z_COLOR_PRIMARY,
                 CornerRadius(12,
                     Padding(14,
-                        Foreground(Z_COLOR_TEXT_INV,
+                        Foreground(Z_COLOR_ON_PRIMARY,
                             Font(Z_FONT_CALLOUT,
                                 Text("%s", b->action_title)))))));
     }
@@ -597,6 +597,10 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         // the region narrowing here never interrupts a drag.)
         int strip_h = !show_heads_up ? GRAB_H : BANNER_STRIP_H;
         z_layer_set_input_region(app, 0, 0, w, strip_h);
+        // Closed: no material. (The surface stays full-height and transparent, so
+        // without this the compositor would keep blurring the whole screen behind
+        // a panel that is no longer there.)
+        z_backdrop(app, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
         if (!show_heads_up) {
             // Idle: a thin top strip with a faint centred grab handle, the rest
             // transparent. The OnPan strip catches the down-swipe.
@@ -667,19 +671,27 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         Rect(.color = Z_COLOR_TEXT_MUTED,
              .width = 64, .height = 5, .radius = 3));
 
-    // The opaque panel, fixed to (full width x panel_h). Frame sizes the depth
-    // wrapper (no padding -> no inflation); the inner VStack fills it and insets
-    // its own content. absorb_tap keeps a panel-background tap from closing.
-    ZView panel = Frame((float)w, (float)panel_h,
-        OnTap(absorb_tap,
-            Background(Z_COLOR_BG,
-                ZStack(
-                    Fill(z_stack(Z_AXIS_VERTICAL, &list)),
-                    .align = Z_ALIGN_CENTER))));
-
     // Rubber-band the over-pull: past fully-open the panel resists instead of
     // sliding off the bottom, and snaps back on release (raw pull -> display pull).
     float slide = (shade_display_pull(pull_v) - 1.0f) * (float)panel_h;
+
+    // The panel is a MATERIAL, not an opaque box: ask the compositor to blur the
+    // scene beneath the rectangle the panel occupies (it moves with the pull, so
+    // this is re-declared every frame of the drag — z_backdrop dedups a still one),
+    // then paint the translucent tint over that blur. Without a compositor that
+    // implements it, the tint alone still reads as a panel.
+    z_backdrop(app, 0.0f, slide, (float)w, (float)panel_h, Z_RADIUS_SHEET);
+
+    // The panel, fixed to (full width x panel_h). Frame sizes the depth wrapper (no
+    // padding -> no inflation); the inner VStack fills it and insets its own
+    // content. absorb_tap keeps a panel-background tap from closing.
+    ZView panel = Frame((float)w, (float)panel_h,
+        OnTap(absorb_tap,
+            CornerRadius(Z_RADIUS_SHEET,
+                Background(Z_COLOR_MATERIAL_REGULAR,
+                    ZStack(
+                        Fill(z_stack(Z_AXIS_VERTICAL, &list)),
+                        .align = Z_ALIGN_CENTER)))));
 
     // Back: a bg-less full-surface scrim — drag controls the pull, tap closes,
     // and it paints nothing so the app shows through where the panel isn't.

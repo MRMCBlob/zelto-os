@@ -436,8 +436,10 @@ static void ensure_home_layout(void) {
 #define MAX_PAGES 8              // carousel cap
 #define BOTTOM_RESERVE 132.0f    // px kept for the page dots + drawer handle / Done
 #define ICON_SIZE 104.0f
-#define ICON_RADIUS 24.0f
-#define ICON_INSET 20.0f
+// The corner is a FRACTION of the icon (Z_RADIUS_ICON — Apple's icon-grid
+// proportion), not a fixed px, so the tile keeps its shape at every size it is
+// drawn: the home grid, the drawer, the task switcher, an empty slot's raster.
+#define ICON_RADIUS (ICON_SIZE * Z_RADIUS_ICON)
 
 static float cell_side(float surface_w) {
     float w = surface_w > 1.0f ? surface_w : 720.0f;
@@ -1201,18 +1203,29 @@ static ZView app_monogram(const AppEntry *e) {
         Font(Z_FONT_LARGE_TITLE, Text("%c", c)));
 }
 
-// An app icon over its rounded tile with the app name below. Apps with their own
-// icon draw it inset; icon-less apps get a monogram on the coloured tile.
+// An app icon: the icon asset IS the tile (P37 — each app ships a full-bleed
+// 512x512 squircle with its own gradient and mark), so the launcher draws it
+// edge-to-edge under the squircle mask and casts the shadow that lifts it off the
+// wallpaper. It no longer paints a coloured square behind the art: doing that on
+// top of an icon that already has a tile produced the letter-on-a-swatch look.
+//
+// An app with NO icon still gets the coloured tile + monogram, which is now what
+// that fallback is FOR (an app the system has never seen — a side-loaded package
+// mid-install), so it is visibly not a designed icon.
 static ZView app_icon_tile(const AppEntry *e) {
     bool own = e->icon_path[0] && z_image_loads(e->icon_path);
-    ZView art = own
-        ? Frame(ICON_SIZE - 2.0f * ICON_INSET, ICON_SIZE - 2.0f * ICON_INSET,
-                Image(e->icon_path))
-        : app_monogram(e);
+    // The corner is a FRACTION of the tile (Apple's icon grid), so the shape holds
+    // whether this is a 56px home tile or a 96px drawer tile.
+    float radius = ICON_SIZE * Z_RADIUS_ICON;
+    if (own) {
+        return Shadow(Z_ELEV_1,
+            Frame(ICON_SIZE, ICON_SIZE,
+                CornerRadius(radius, Image(e->icon_path))));
+    }
     return Shadow(Z_ELEV_1, Frame(ICON_SIZE, ICON_SIZE,
         Background(e->color,
-            CornerRadius(ICON_RADIUS,
-                ZStack(art, .align = Z_ALIGN_CENTER)))));
+            CornerRadius(radius,
+                ZStack(app_monogram(e), .align = Z_ALIGN_CENTER)))));
 }
 
 static ZView app_cell_content(const AppEntry *e) {
@@ -1725,7 +1738,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             Background(Z_COLOR_PRIMARY,
                 CornerRadius(22.0f,
                     Padding(14.0f,
-                        Foreground(Z_COLOR_TEXT_INV,
+                        Foreground(Z_COLOR_ON_PRIMARY,
                             Font(Z_FONT_CALLOUT, Text("Done")))))))
         : OnTap(open_drawer,
             VStack(

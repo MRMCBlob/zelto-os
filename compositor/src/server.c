@@ -23,6 +23,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
+#include "zcomp/backdrop.h"
 #include "zcomp/layer.h"
 #include "zcomp/output.h"
 #include "zcomp/seat.h"
@@ -125,6 +126,13 @@ bool zcomp_server_init(ZcompServer *server) {
     // toplevel it shadows (see toplevel.c).
     server->foreign_toplevel_manager =
         wlr_foreign_toplevel_manager_v1_create(server->display);
+
+    // --- zelto-backdrop-v1 (the blurred system material) --------------------
+    // A System-UI client (the shade, the dock, the keyboard) asks for the scene
+    // below a rectangle of its surface to be blurred, then paints its translucent
+    // tint over the result. Only the compositor can see through a surface, so the
+    // blur has to live here (backdrop.c).
+    zcomp_backdrop_init(server);
 
     // --- ext-idle-notify-v1 (idle/lock lifecycle) --------------------------
     // Advertise the idle-notifier global. The seat pumps activity into it on

@@ -740,6 +740,29 @@ void z_layer_set_input_region(ZApp *app, int x, int y, int w, int h);
 // request; applied on the next commit.
 void z_layer_set_input_none(ZApp *app);
 
+// ---------------------------------------------------------------------------
+// Material — the blurred backdrop under a system surface (P37).
+//
+// A phone's system surfaces are not opaque panels: the shade, the dock, the
+// keyboard and a modal sheet are MATERIALS — a translucent tint through which
+// whatever is behind shows softly out of focus. A Wayland client cannot read the
+// pixels behind its own surface, so it cannot blur them; z_backdrop asks the
+// COMPOSITOR to do it (zelto-backdrop-v1). Declare the rectangle of your surface
+// that is a material — surface-local, with the corner radius it is drawn at — and
+// zcomp blurs the scene below it and composites the result directly beneath you.
+// Then paint your own translucent tint (Z_COLOR_MATERIAL_*) and content over it,
+// as usual. The blur strength and corner geometry are the compositor's, so every
+// material in the OS matches; the client contributes only the region and the tint.
+//
+// Re-declare it from body() whenever the region moves (a shade panel being
+// dragged); the call dedups, so an unchanged region costs nothing. Pass a width or
+// height of 0 to remove the material (a closed shade, a hidden keyboard). A
+// compositor that does not implement the protocol simply shows the tint alone, so
+// the call is always safe.
+//
+//   z_backdrop(app, 0, panel_y, z_screen_width(app), panel_h, Z_RADIUS_SHEET);
+void z_backdrop(ZApp *app, float x, float y, float w, float h, float radius);
+
 // Toggle EXCLUSIVE keyboard interactivity on a layer surface at runtime. A layer
 // app is normally created with a fixed keyboard mode (the Z_LAYER_APP `keyboard`
 // opt), but a surface that becomes modal only some of the time — the lock screen,

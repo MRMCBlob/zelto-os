@@ -68,7 +68,20 @@ run_shot() {
     rm -rf "$dir"; mkdir -p "$data/apps" "$xdg"
     # A fresh data dir per shot => a clean home layout + prefs (no cross-shot
     # bleed). Seed the settings store before boot when the state needs it.
-    if [ -n "$SEED" ]; then printf '%b' "$SEED" > "$data/settings.conf"; fi
+    #
+    # BRIGHTNESS. sys.brightness defaults to 3 of 5, and zelto-dim then paints a
+    # 96/255 BLACK scrim over everything below the status bar — so an unseeded shot
+    # photographs the whole OS at 62% brightness and every colour in the catalogue
+    # comes out muddy (this silently applied to every shot ever taken here). The
+    # catalogue is a DESIGN review, so shoot at full brightness by default; a shot
+    # that is specifically about dimming seeds sys.brightness itself, and its own
+    # SEED wins (this only fills in the key when the caller did not set it).
+    if [ -n "$SEED" ] && [[ "$SEED" != *"sys.brightness"* ]]; then
+        SEED="$SEED\nsys.brightness\t5"
+    elif [ -z "$SEED" ]; then
+        SEED="sys.brightness\t5"
+    fi
+    printf '%b\n' "$SEED" > "$data/settings.conf"
 
     # ZAP=<manifest>:<entry.js> — package and INSTALL a script app into this
     # shot's data dir before booting it, so the boot that gets photographed knows

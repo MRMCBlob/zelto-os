@@ -9,4 +9,4 @@ subtitle=Post a heads-up notification
 exec=/usr/bin/zelto-pinger
 color=b53d6a
 permissions=notifications
-icon=/usr/share/zelto/icons/pinger.svg
+icon=/usr/share/zelto/apps/icons/os.zelto.pinger.png

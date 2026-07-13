@@ -39,6 +39,58 @@ static ZColor apply_alpha(ZColor col, float a) {
     return col;
 }
 
+// --- The corner ------------------------------------------------------------
+// Every rounded surface in the OS is cut with a CONTINUOUS corner (a squircle),
+// not a circular arc: |u|^4 + |v|^4 <= 1 across the corner box rather than
+// u^2 + v^2 <= 1. A circular corner meets the straight edge with an abrupt jump in
+// curvature, which the eye reads as a "stuck-on" quarter-circle; the superellipse
+// ramps the curvature in, which is why an iOS icon at the same radius looks
+// rounder and calmer. Apple's icon grid is the canonical example (Z_RADIUS_ICON).
+//
+// Returns COVERAGE (0..1) at the pixel centre, antialiased across the edge — the
+// old test was a hard in/out `continue`, which left every rounded corner in the
+// system visibly jagged. One function serves the fill, the image mask and the
+// compositor's backdrop plate (backdrop.c mirrors it), so a card, an icon and a
+// blurred panel all round identically.
+static float corner_coverage(int x, int y, int rx0, int ry0, int rx1, int ry1,
+                             float r) {
+    if (r <= 0.5f) {
+        return 1.0f;
+    }
+    float px = (float)x + 0.5f, py = (float)y + 0.5f;
+    // Depth INTO the corner box on each axis (0 = we are on a straight edge band).
+    float dx = 0.0f, dy = 0.0f;
+    if (px < (float)rx0 + r) {
+        dx = (float)rx0 + r - px;
+    } else if (px > (float)rx1 - r) {
+        dx = px - ((float)rx1 - r);
+    }
+    if (py < (float)ry0 + r) {
+        dy = (float)ry0 + r - py;
+    } else if (py > (float)ry1 - r) {
+        dy = py - ((float)ry1 - r);
+    }
+    if (dx <= 0.0f || dy <= 0.0f) {
+        return 1.0f;
+    }
+    float u = dx / r, v = dy / r;
+    float u2 = u * u, v2 = v * v;
+    float e = u2 * u2 + v2 * v2;          // the superellipse: 1 on the edge
+    // Distance to that edge in PIXELS: |grad e| = (4/r) * sqrt(u^6 + v^6).
+    float g = 4.0f * sqrtf(u2 * u2 * u2 + v2 * v2 * v2) / r;
+    if (g < 1e-6f) {
+        return e <= 1.0f ? 1.0f : 0.0f;
+    }
+    float d = (1.0f - e) / g;
+    if (d >= 0.5f) {
+        return 1.0f;
+    }
+    if (d <= -0.5f) {
+        return 0.0f;
+    }
+    return d + 0.5f;
+}
+
 static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
                             float radius, ZColor col) {
     // Rect geometry (used for the rounded-corner test) — independent of the clip.
@@ -62,30 +114,21 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
 
     uint32_t src = 0xff000000u | ((uint32_t)col.r << 16) |
                    ((uint32_t)col.g << 8) | col.b;
-    uint32_t sa = col.a;
+    uint32_t base_a = col.a;
 
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
+            uint32_t sa = base_a;
             if (r > 0.5f) {
-                // Skip pixels outside the rounded corners (rect-relative).
-                float cx = -1.0f, cy = -1.0f;
-                if (x - rx0 < r && y - ry0 < r) {
-                    cx = (float)rx0 + r;
-                    cy = (float)ry0 + r;
-                } else if (x - rx0 < r && ry1 - 1 - y < r) {
-                    cx = (float)rx0 + r;
-                    cy = (float)ry1 - r;
-                } else if (rx1 - 1 - x < r && y - ry0 < r) {
-                    cx = (float)rx1 - r;
-                    cy = (float)ry0 + r;
-                } else if (rx1 - 1 - x < r && ry1 - 1 - y < r) {
-                    cx = (float)rx1 - r;
-                    cy = (float)ry1 - r;
+                float cov = corner_coverage(x, y, rx0, ry0, rx1, ry1, r);
+                if (cov <= 0.0f) {
+                    continue;
                 }
-                if (cx >= 0.0f) {
-                    float dx = (float)x + 0.5f - cx;
-                    float dy = (float)y + 0.5f - cy;
-                    if (dx * dx + dy * dy > r * r) {
+                if (cov < 1.0f) {
+                    // The corner feathers the fill's own alpha, so a rounded
+                    // surface's edge is smooth rather than stepped.
+                    sa = (uint32_t)((float)base_a * cov + 0.5f);
+                    if (sa == 0) {
                         continue;
                     }
                 }
@@ -122,31 +165,6 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
             }
         }
     }
-}
-
-// True if pixel center (x+0.5, y+0.5) lies inside the rounded rectangle
-// [rx0,rx1) x [ry0,ry1) with corner radius r. Shared by the image blit's
-// rounded-corner mask (fill_round_rect inlines the same test for speed).
-static bool rrect_inside(int x, int y, int rx0, int ry0, int rx1, int ry1,
-                         float r) {
-    if (r <= 0.5f) {
-        return true;
-    }
-    float cx = -1.0f, cy = -1.0f;
-    if (x - rx0 < r && y - ry0 < r) {
-        cx = (float)rx0 + r; cy = (float)ry0 + r;
-    } else if (x - rx0 < r && ry1 - 1 - y < r) {
-        cx = (float)rx0 + r; cy = (float)ry1 - r;
-    } else if (rx1 - 1 - x < r && y - ry0 < r) {
-        cx = (float)rx1 - r; cy = (float)ry0 + r;
-    } else if (rx1 - 1 - x < r && ry1 - 1 - y < r) {
-        cx = (float)rx1 - r; cy = (float)ry1 - r;
-    }
-    if (cx < 0.0f) {
-        return true;
-    }
-    float dx = (float)x + 0.5f - cx, dy = (float)y + 0.5f - cy;
-    return dx * dx + dy * dy <= r * r;
 }
 
 // Bilinearly sample a premultiplied-ARGB bitmap at (u,v) in pixel coordinates.
@@ -226,21 +244,25 @@ static void blit_image(ZCanvas *c, ZView n, float alpha) {
 
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
-            if (!rrect_inside(x, y, rx0, ry0, rx1, ry1, rr)) {
+            // The same continuous corner the fills use — an app icon masked to its
+            // squircle here reads as the same object as a card drawn beside it.
+            float cov = corner_coverage(x, y, rx0, ry0, rx1, ry1, rr);
+            if (cov <= 0.0f) {
                 continue;
             }
+            float a = alpha * cov;
             float u = ((float)x + 0.5f - ox) / scale;
             float v = ((float)y + 0.5f - oy) / scale;
             uint32_t s = sample_bilinear(img->px, img->w, img->h, u, v);
             uint32_t sa = (s >> 24) & 0xff;
             uint32_t sr = (s >> 16) & 0xff, sg = (s >> 8) & 0xff, sb = s & 0xff;
-            // Subtree opacity: scale the whole PREMULTIPLIED pixel (all four
-            // channels) so it stays valid premultiplied as it fades.
-            if (alpha < 0.999f) {
-                sa = (uint32_t)((float)sa * alpha + 0.5f);
-                sr = (uint32_t)((float)sr * alpha + 0.5f);
-                sg = (uint32_t)((float)sg * alpha + 0.5f);
-                sb = (uint32_t)((float)sb * alpha + 0.5f);
+            // Subtree opacity (and the corner mask): scale the whole PREMULTIPLIED
+            // pixel (all four channels) so it stays valid premultiplied as it fades.
+            if (a < 0.999f) {
+                sa = (uint32_t)((float)sa * a + 0.5f);
+                sr = (uint32_t)((float)sr * a + 0.5f);
+                sg = (uint32_t)((float)sg * a + 0.5f);
+                sb = (uint32_t)((float)sb * a + 0.5f);
             }
             if (sa == 0) {
                 continue;
@@ -323,8 +345,8 @@ static void paint_shadow(ZCanvas *c, ZView n, float alpha) {
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
             if (x >= frx0 && x < frx1 && y >= fry0 && y < fry1 &&
-                rrect_inside(x, y, frx0, fry0, frx1, fry1, r)) {
-                continue;
+                corner_coverage(x, y, frx0, fry0, frx1, fry1, r) >= 0.999f) {
+                continue;   // the fill will cover this pixel completely
             }
             float d = sdf_round_rect((float)x + 0.5f, (float)y + 0.5f, sx0, sy0,
                                      sx1, sy1, sr);

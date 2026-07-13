@@ -9,4 +9,4 @@ name=Settings
 subtitle=System toggles, shared with the shade
 exec=/usr/bin/zelto-settings
 color=5b8def
-icon=/usr/share/zelto/icons/settings.svg
+icon=/usr/share/zelto/apps/icons/os.zelto.settings.png

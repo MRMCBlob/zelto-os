@@ -27,6 +27,7 @@
 #include "text-input-unstable-v3-client-protocol.h"
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "zelto-backdrop-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #define Z_DEFAULT_FONT "/usr/share/zelto/fonts/Satoshi-Variable.ttf"
@@ -94,6 +95,19 @@ struct ZApp {
     // Cached EXCLUSIVE-keyboard state (z_layer_set_keyboard), to dedup commits.
     // A lock screen flips this true while locked, false on unlock.
     bool kbd_valid, kbd_exclusive;
+
+    // zelto-backdrop-v1: the blurred material under this surface (z_backdrop).
+    // A client cannot see through itself, so the compositor blurs the scene under
+    // the rectangle we declare and parks it beneath us; we paint our translucent
+    // material tint over the result. Bound only if the compositor advertises it
+    // (a plain Wayland server does not — the material then degrades to its tint).
+    // The last declared region is cached so a body() that re-declares it every
+    // frame (a shade whose panel is being dragged) only sends a request when it
+    // actually moves.
+    struct zelto_backdrop_manager_v1 *backdrop_manager;
+    struct zelto_backdrop_v1 *backdrop;
+    bool bd_valid;
+    int bd_x, bd_y, bd_w, bd_h, bd_radius;
 
     // ext-idle-notify: the notifier global (bound when advertised) plus the list
     // of live idle notifications this app registered (z_idle_notify). Each fires
@@ -2047,6 +2061,11 @@ static void registry_global(void *data, struct wl_registry *registry,
         app->dc_manager = wl_registry_bind(
             registry, name, &zwlr_data_control_manager_v1_interface,
             version < 2 ? version : 2);
+    } else if (strcmp(interface,
+                      zelto_backdrop_manager_v1_interface.name) == 0) {
+        // The blurred system material (P37). Only zcomp advertises it.
+        app->backdrop_manager = wl_registry_bind(
+            registry, name, &zelto_backdrop_manager_v1_interface, 1);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (!app->output) {
             app->output = wl_registry_bind(registry, name, &wl_output_interface,
@@ -2540,6 +2559,39 @@ void z_layer_set_input_none(ZApp *app) {
     struct wl_region *region = wl_compositor_create_region(app->compositor);
     wl_surface_set_input_region(app->surface, region);
     wl_region_destroy(region);
+    wl_surface_commit(app->surface);
+}
+
+void z_backdrop(ZApp *app, float x, float y, float w, float h, float radius) {
+    if (!app || !app->surface || !app->backdrop_manager) {
+        return;   // no compositor support: the material is its tint alone
+    }
+    int nx = (int)(x + 0.5f), ny = (int)(y + 0.5f);
+    int nw = (int)(w + 0.5f), nh = (int)(h + 0.5f);
+    int nr = (int)(radius + 0.5f);
+    if (nw < 0) { nw = 0; }
+    if (nh < 0) { nh = 0; }
+    // Dedup: a material is re-declared on every rebuild (it is part of the body),
+    // and a settled surface rebuilds without moving. Only send on a real change —
+    // each set_region wakes the compositor's blur pass.
+    if (app->bd_valid && app->bd_x == nx && app->bd_y == ny && app->bd_w == nw &&
+        app->bd_h == nh && app->bd_radius == nr) {
+        return;
+    }
+    if (!app->backdrop) {
+        app->backdrop = zelto_backdrop_manager_v1_get_backdrop(
+            app->backdrop_manager, app->surface);
+        if (!app->backdrop) {
+            return;
+        }
+    }
+    app->bd_valid = true;
+    app->bd_x = nx;
+    app->bd_y = ny;
+    app->bd_w = nw;
+    app->bd_h = nh;
+    app->bd_radius = nr;
+    zelto_backdrop_v1_set_region(app->backdrop, nx, ny, nw, nh, nr);
     wl_surface_commit(app->surface);
 }
 

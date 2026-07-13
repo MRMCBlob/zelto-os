@@ -13,3 +13,4 @@ name=Greeter
 subtitle=Installed from a signed .zap
 version=1.0.0
 color=3ca370
+icon=/usr/share/zelto/apps/icons/os.zelto.greeter.png

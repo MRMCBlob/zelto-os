@@ -15,3 +15,4 @@ name=Widget
 subtitle=Installed from a .zap
 color=2eb66e
 version=1.0.0
+icon=/usr/share/zelto/apps/icons/os.zelto.widget.png

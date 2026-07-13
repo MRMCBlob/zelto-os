@@ -93,7 +93,7 @@ static ZView cards_body(ZApp *app, CardsState *state) {
             Frame(140.0f, 140.0f,
                 Background(Z_COLOR_PRIMARY,
                     CornerRadius(24,
-                        Foreground(Z_COLOR_TEXT_INV,
+                        Foreground(Z_COLOR_ON_PRIMARY,
                             Font(Z_FONT_LARGE_TITLE,
                                 Text("%d", state->count)))))),
             Button(bump, "Tap me"),

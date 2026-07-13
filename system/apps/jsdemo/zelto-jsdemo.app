@@ -17,3 +17,4 @@ permissions=network,notifications
 share_targets=text/plain
 links=jsdemo
 color=e0a53a
+icon=/usr/share/zelto/apps/icons/os.zelto.jsdemo.png

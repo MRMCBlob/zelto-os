@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="zelto_backdrop_v1">
+
+  <copyright>
+    Zelto OS. Public domain.
+  </copyright>
+
+  <description summary="blurred backdrop material behind a surface">
+    A client cannot read the pixels behind its own surface, so it cannot
+    implement the blurred "material" that a phone's system surfaces (the
+    notification shade, the dock, the on-screen keyboard, a modal sheet) are
+    made of: a translucent panel through which the content underneath shows
+    softly out of focus.
+
+    This protocol asks the compositor to do it. A client attaches a backdrop to
+    one of its surfaces and declares a RECTANGLE, in surface-local coordinates,
+    over which it wants the scene BELOW that surface blurred. The compositor
+    composites the blurred content directly beneath the surface, masked to the
+    rectangle (with an optional rounded/squircle corner), and the client then
+    paints its own translucent tint, hairline and content over it as usual.
+
+    The blur radius and corner geometry are the compositor's, so every material
+    in the system matches. The client contributes only the region and the tint.
+
+    Only the declared rectangle is blurred: a surface that is visually
+    full-screen but whose material occupies only part of it (an idle shade that
+    is transparent except for its panel) blurs only its panel.
+  </description>
+
+  <interface name="zelto_backdrop_manager_v1" version="1">
+    <description summary="request backdrops for surfaces">
+      A global whose only job is to hand out a backdrop object per surface.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroying the manager does not affect backdrops already created.
+      </description>
+    </request>
+
+    <request name="get_backdrop">
+      <description summary="attach a backdrop to a surface">
+        Create a backdrop for `surface`. The backdrop is inert until the client
+        declares a region with set_region.
+
+        The compositor may refuse to blur behind surfaces whose stacking it does
+        not control; in that case the backdrop simply never appears. Creating a
+        second backdrop for the same surface replaces the first.
+      </description>
+      <arg name="id" type="new_id" interface="zelto_backdrop_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="zelto_backdrop_v1" version="1">
+    <description summary="a blurred region beneath one surface">
+      The blurred material behind a rectangle of one surface.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="remove the backdrop"/>
+    </request>
+
+    <request name="set_region">
+      <description summary="declare the blurred rectangle">
+        Blur the scene below this surface within the given surface-local
+        rectangle, masking the result to a rounded rectangle of `corner_radius`
+        (0 = square corners; the compositor uses the system's continuous-corner
+        geometry).
+
+        A width or height of zero or less removes the backdrop, which is how a
+        surface whose material is only sometimes present (a shade that is closed,
+        a keyboard that is hidden) turns it off without destroying the object.
+
+        The region takes effect on the surface's next commit and persists until
+        changed, so a client that animates its panel (a shade being dragged down)
+        re-declares the region as the panel moves.
+      </description>
+      <arg name="x" type="int" summary="surface-local x"/>
+      <arg name="y" type="int" summary="surface-local y"/>
+      <arg name="width" type="int" summary="0 or less removes the backdrop"/>
+      <arg name="height" type="int" summary="0 or less removes the backdrop"/>
+      <arg name="corner_radius" type="int" summary="corner radius in px"/>
+    </request>
+  </interface>
+
+</protocol>
