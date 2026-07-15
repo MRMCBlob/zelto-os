@@ -483,13 +483,30 @@ static void ensure_home_layout(void) {
 // rows_per_page()-tall bento grid; the ordered sequence flow-packs across pages
 // (overflow spills to the next page). Pages are a PURE FUNCTION of the pack —
 // never persisted — so the one home.layout CSV still owns the whole arrangement.
+// SAFE AREAS. The home window is the full output (zcomp gives the launcher the
+// whole screen, not the usable area) so the wallpaper runs edge to edge under the
+// transparent status bar and behind the nav bar — as it does on a phone. Nothing
+// the launcher draws may land under either bar, so the grid starts below BAR_H and
+// the bottom reserve covers the dock AND the nav bar's height.
+#define BAR_H 40.0f              // status bar (zcomp exclusive zone)
+#define NAV_H 64.0f              // Back/Home/Recents bar (must match system/nav)
+
+// A FIXED vertical gap. Note it cannot be Frame(w, h, Spacer()): a Spacer carries
+// grow, and Frame only sets a size — the node keeps eating every spare pixel in
+// the stack, so a "72px" gap built that way pushes everything above it off-centre.
+// An empty (fully transparent) Rect has no grow, so it stays the size it is given.
+static ZView vgap(float h) {
+    return Frame(1.0f, h, Rect(.color = z_rgba(0, 0, 0, 0)));
+}
+
 #define GRID_COLS 4
 #define GRID_GAP 16.0f
 #define GRID_PAD 20.0f
-#define GRID_TOP 20.0f
+#define GRID_TOP (BAR_H + 20.0f)
 #define MAX_ROWS 20              // per-page occupancy height cap
 #define MAX_PAGES 8              // carousel cap
-#define BOTTOM_RESERVE 208.0f    // px kept for the page dots + grab handle + dock
+// page dots + grab handle + dock, then the nav bar under all of it.
+#define BOTTOM_RESERVE (208.0f + NAV_H)
 #define ICON_SIZE 104.0f
 // The corner is a FRACTION of the icon (Z_RADIUS_ICON — Apple's icon-grid
 // proportion), not a fixed px, so the tile keeps its shape at every size it is
@@ -1910,6 +1927,8 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         bstack.children[bk++] = page_dots(npages, page_v);
     }
     bstack.children[bk++] = bottom_content;
+    // The surface now runs under the nav bar, so hold the dock clear of it.
+    bstack.children[bk++] = vgap(NAV_H);
     ZView bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
 
     // The lifted ghost: the held item's content, drawn on top via its shared
@@ -2026,10 +2045,13 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // home beneath is fully occluded) and frosts THAT. What shows through is the
     // picture, which is what a phone's app library shows through to — never the
     // screen it covered.
+    // Inset for the system bars: the drawer fills the whole screen too.
     ZView drawer_content = VStack(
+        vgap(BAR_H - 12.0f),
         grabber,
         Grow(1.0f, Scroll(app, z_stack(Z_AXIS_VERTICAL, &dgrid),
                           .axis = Z_AXIS_VERTICAL)),
+        vgap(NAV_H),
         .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING);
     ZView drawer = Offset(NULL, slide,
         Fill(ZStack(

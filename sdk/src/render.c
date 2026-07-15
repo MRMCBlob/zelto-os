@@ -75,9 +75,23 @@ static float corner_coverage(int x, int y, int rx0, int ry0, int rx1, int ry1,
     }
     float u = dx / r, v = dy / r;
     float u2 = u * u, v2 = v * v;
-    float e = u2 * u2 + v2 * v2;          // the superellipse: 1 on the edge
-    // Distance to that edge in PIXELS: |grad e| = (4/r) * sqrt(u^6 + v^6).
-    float g = 4.0f * sqrtf(u2 * u2 * u2 + v2 * v2 * v2) / r;
+
+    // A shape rounded ALL the way (a knob, a dot, a pill's cap) must be a true
+    // CIRCLE, not a squircle: at r = w/2 the superellipse is a rounded square, and
+    // a switch knob or a status dot drawn that way looks subtly, wrongly boxy. The
+    // continuous corner is for a corner — something with straight edges leading
+    // into it. Below, n = 2 (circular) once the radius has eaten both half-extents.
+    float w = (float)(rx1 - rx0), h = (float)(ry1 - ry0);
+    bool round_all = (r * 2.0f >= w - 0.5f) && (r * 2.0f >= h - 0.5f);
+
+    float e, g;
+    if (round_all) {
+        e = u2 + v2;                              // circle: 1 on the edge
+        g = 2.0f * sqrtf(u2 + v2) / r;            // |grad e|
+    } else {
+        e = u2 * u2 + v2 * v2;                    // the superellipse (n = 4)
+        g = 4.0f * sqrtf(u2 * u2 * u2 + v2 * v2 * v2) / r;
+    }
     if (g < 1e-6f) {
         return e <= 1.0f ? 1.0f : 0.0f;
     }
@@ -376,8 +390,15 @@ static void paint_shadow(ZCanvas *c, ZView n, float alpha) {
 // Draw a rounded plate just outside a node's frame; the node's own fill paints
 // over the interior immediately after, leaving a thin border = the focus ring.
 static void stroke_focus_ring(ZCanvas *c, ZView n, float alpha) {
-    const ZColor ring = apply_alpha((ZColor){0x2e, 0x9b, 0xff, 0xff}, alpha);  // accent
-    const float t = 3.0f;     // ring thickness
+    // The last raw hex in the renderer: a hard azure ring, left over from the old
+    // accent, which survived the palette migration because it lives in the painter
+    // rather than at a call site. The ring is now the system's own accent (white)
+    // at a low alpha, so it reads as a soft halo around the focused control instead
+    // of a saturated outline stuck to it.
+    ZColor ring = Z_COLOR_ACCENT;
+    ring.a = 0x66;
+    ring = apply_alpha(ring, alpha);
+    const float t = 2.0f;     // ring thickness
     const float g = 2.0f;     // gap from the frame
     float x = n->x - g - t, y = n->y - g - t;
     float w = n->w + 2.0f * (g + t), h = n->h + 2.0f * (g + t);

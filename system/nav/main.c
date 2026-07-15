@@ -99,14 +99,14 @@ static void on_back(ZApp *app, void *state) {
 // The three Android-style nav marks, drawn as crisp vector strokes (a chevron, a
 // circle, a square) via the toolkit's Stroke primitive rather than ASCII glyphs —
 // proper marks that rectangles/text can't render. Points are in the unit box.
-#define NAV_GLYPH 26.0f
+#define NAV_GLYPH 30.0f
 #define NAV_STROKE 3.0f
 
 static ZView icon_back(void) {
     static const float pts[] = {0.60f, 0.16f, 0.30f, 0.50f, 0.60f, 0.84f};
     return Frame(NAV_GLYPH, NAV_GLYPH,
         Stroke(.points = pts, .count = 3, .thickness = NAV_STROKE,
-               .color = Z_COLOR_TEXT_INV));
+               .color = Z_COLOR_TEXT));
 }
 static ZView icon_home(void) {
     // A 12-gon approximating a circle (r=0.40 about the centre), closed.
@@ -116,36 +116,44 @@ static ZView icon_home(void) {
         0.30f, 0.15f, 0.50f, 0.10f, 0.70f, 0.15f, 0.85f, 0.30f};
     return Frame(NAV_GLYPH, NAV_GLYPH,
         Stroke(.points = pts, .count = 12, .thickness = NAV_STROKE,
-               .color = Z_COLOR_TEXT_INV, .closed = true));
+               .color = Z_COLOR_TEXT, .closed = true));
 }
 static ZView icon_recents(void) {
     static const float pts[] = {0.24f, 0.24f, 0.76f, 0.24f, 0.76f, 0.76f,
                                 0.24f, 0.76f};
     return Frame(NAV_GLYPH, NAV_GLYPH,
         Stroke(.points = pts, .count = 4, .thickness = NAV_STROKE,
-               .color = Z_COLOR_TEXT_INV, .closed = true));
+               .color = Z_COLOR_TEXT, .closed = true));
 }
 
-// One nav button: a vector mark over a caption, the whole grown column tappable.
-// Grow(1) so the three buttons split the bar width into even thirds.
-static ZView nav_button(ZView icon, const char *label, ZAction act) {
+// One nav button: a vector mark, the whole grown column tappable. Grow(1) so the
+// three buttons split the bar width into even thirds — each is a third of the
+// screen wide and the full bar tall, which is an enormous, thumb-sized target.
+//
+// The captions are gone. A back chevron, a circle and a square are the three most
+// over-learned marks on any phone, and printing "Back" under an arrow is the kind
+// of belt-and-braces labelling that makes a system look unsure of itself. Losing
+// them also lets the marks grow and the bar breathe.
+static ZView nav_button(ZView icon, ZAction act) {
     return Grow(1.0f,
         OnTap(act,
-            VStack(
-                icon,
-                Foreground(Z_COLOR_TEXT_MUTED,
-                    Font(Z_FONT_CAPTION, Text("%s", label))),
-                .spacing = 6, .align = Z_ALIGN_CENTER)));
+            VStack(icon, .spacing = 0, .align = Z_ALIGN_CENTER)));
 }
 
 static ZView nav_body(ZApp *app, NavState *s) {
-    (void)app;
     (void)s;
-    return Background(Z_COLOR_BG,
+    // The nav bar is a MATERIAL: the compositor blurs whatever the bar sits over
+    // (the home's wallpaper, or the app you are in) and hands it back to us, and we
+    // tint it. Square corners — it is flush to the bottom edge of the screen.
+    int w = z_app_width(app);
+    z_backdrop(app, 0.0f, 0.0f, (float)w, (float)NAV_H, 0.0f);
+    z_full_repaint(app);   // translucent surface: nothing erases stale pixels
+
+    return Background(Z_COLOR_MATERIAL_THIN,
         HStack(
-            nav_button(icon_back(), "Back", on_back),
-            nav_button(icon_home(), "Home", on_home),
-            nav_button(icon_recents(), "Recents", on_recents),
+            nav_button(icon_back(), on_back),
+            nav_button(icon_home(), on_home),
+            nav_button(icon_recents(), on_recents),
             .padding = 6, .spacing = 0, .align = Z_ALIGN_CENTER));
 }
 

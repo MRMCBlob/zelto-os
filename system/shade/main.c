@@ -302,29 +302,40 @@ static ZView notif_card(Banner *b, bool interactive) {
             ? ipath
             : zelto_placeholder_icon();
 
-    ZStackOpts row = {.padding = 16, .spacing = 16, .align = Z_ALIGN_CENTER};
+    // The app's own name, not its reverse-DNS id: "os.zelto.pinger" is a database
+    // key, and printing it on the card is the surest sign a notification was laid
+    // out by an engineer. The manifest has the display name.
+    char name[96];
+    const char *who = zelto_name_for_app_id(b->app_id, name, sizeof(name))
+                          ? name
+                          : b->app_id;
+
+    ZStackOpts row = {.padding = 14, .spacing = 14, .align = Z_ALIGN_CENTER};
     int k = 0;
-    row.children[k++] = Frame(40.0f, 40.0f, CornerRadius(10.0f, Image(icon)));
-    row.children[k++] =
+    row.children[k++] = Frame(38.0f, 38.0f,
+        CornerRadius(38.0f * Z_RADIUS_ICON, Image(icon)));
+    row.children[k++] = Grow(1.0f,
         VStack(
-            Foreground(cap, Font(Z_FONT_CAPTION, Text("%s", b->app_id))),
-            Foreground(Z_COLOR_TEXT_INV,
-                Font(Z_FONT_CALLOUT, Text("%s", b->title))),
-            Foreground(bodyc, Text("%s", b->body)),
-            .spacing = 4, .align = Z_ALIGN_LEADING);
-    row.children[k++] = Spacer();
+            Foreground(cap, Weight(Z_WEIGHT_MEDIUM,
+                Font(Z_FONT_CAPTION2, Text("%s", who)))),
+            Foreground(interactive ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED,
+                Weight(Z_WEIGHT_SEMIBOLD,
+                    Font(Z_FONT_HEADLINE, Text("%s", b->title)))),
+            Foreground(bodyc, Font(Z_FONT_SUBHEAD, Text("%s", b->body))),
+            .spacing = 2, .align = Z_ALIGN_LEADING));
     if (interactive && b->action_id[0]) {
         row.children[k++] = OnTapData(tap_action, b,
             Background(Z_COLOR_PRIMARY,
-                CornerRadius(12,
-                    Padding(14,
+                CornerRadius(Z_RADIUS_CHIP,
+                    Padding(12,
                         Foreground(Z_COLOR_ON_PRIMARY,
-                            Font(Z_FONT_CALLOUT,
-                                Text("%s", b->action_title)))))));
+                            Weight(Z_WEIGHT_SEMIBOLD,
+                                Font(Z_FONT_SUBHEAD,
+                                    Text("%s", b->action_title))))))));
     }
 
     ZView card = Shadow(interactive ? Z_ELEV_2 : Z_ELEV_1, Background(bg,
-        CornerRadius(16, z_stack(Z_AXIS_HORIZONTAL, &row))));
+        CornerRadius(Z_RADIUS_CARD, z_stack(Z_AXIS_HORIZONTAL, &row))));
     return interactive ? OnTapData(tap_body, b, card) : card;
 }
 
@@ -365,35 +376,60 @@ static ZView qs_chip(ZApp *app, uint64_t key, ZAction on_tap, const char *label,
     if (qa && qa[0]) {
         z_animated_pin(t, (float)atof(qa));
     }
-    ZColor bg = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY,
-                             z_animated_get(t));
+    float v = z_animated_get(t);
+    // The fill AND the ink cross-fade together: an "on" chip is a LIGHT surface
+    // (Z_COLOR_PRIMARY is near-white now, not a hue), so its label has to travel
+    // from light ink on a dark chip to DARK ink on a light one. Fading only the
+    // fill leaves white-on-white the moment the chip lights up.
+    ZColor bg = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY, v);
+    ZColor ink = z_color_lerp(Z_COLOR_TEXT, Z_COLOR_ON_PRIMARY, v);
     return Grow(1.0f,
         OnTap(on_tap,
             Background(bg,
-                CornerRadius(16.0f,
+                CornerRadius(Z_RADIUS_CARD,
                     Padding(16.0f,
-                        Foreground(Z_COLOR_TEXT_INV,
-                            Font(Z_FONT_CALLOUT,
-                                Text("%s %s", label, on ? "On" : "Off"))))))));
+                        Foreground(ink,
+                            Weight(Z_WEIGHT_SEMIBOLD,
+                                Font(Z_FONT_SUBHEAD,
+                                    Text("%s %s", label,
+                                         on ? "On" : "Off")))))))));
 }
 
-// The quick-settings block: a big clock + a row of toggle chips.
+// The label above a group of controls. Small, heavy, muted, letter-spaced by
+// convention — the same "section header" every phone settings screen uses.
+static ZView section_header(const char *text) {
+    return Weight(Z_WEIGHT_SEMIBOLD,
+        Foreground(Z_COLOR_TEXT_MUTED,
+            Font(Z_FONT_FOOTNOTE, Text("%s", text))));
+}
+
+// The quick-settings block: the time and date, then a row of toggle chips.
 static ZView qs_block(ZApp *app, ShadeState *s) {
     char clock[16] = "--:--";
+    char date[32] = "";
     time_t t = time(NULL);
     struct tm tmv;
     if (localtime_r(&t, &tmv)) {
         strftime(clock, sizeof(clock), "%H:%M", &tmv);
+        strftime(date, sizeof(date), "%A %d %B", &tmv);
     }
+    // Leading-aligned, like every other block in the panel: the clock was centred,
+    // which made it the odd element out and gave the panel two competing axes.
     return VStack(
-        Foreground(Z_COLOR_TEXT_INV,
-            Font(Z_FONT_LARGE_TITLE, Text("%s", clock))),
+        Weight(Z_WEIGHT_BOLD,
+            Foreground(Z_COLOR_TEXT,
+                Font(Z_FONT_LARGE_TITLE, Text("%s", clock)))),
+        Foreground(Z_COLOR_TEXT_MUTED,
+            Font(Z_FONT_SUBHEAD, Text("%s", date))),
+        // A fixed gap, NOT Frame(w, h, Spacer()): a Spacer keeps its grow flag
+        // through Frame and would eat the panel's free space.
+        Frame(1.0f, 8.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
         HStack(
             qs_chip(app, 0x7135F1u, toggle_wifi, "Wi-Fi", s->qs_wifi),
             qs_chip(app, 0x7135F2u, toggle_mute, "Mute", s->qs_mute),
             qs_chip(app, 0x7135F3u, toggle_bright, "Bright", s->qs_bright),
-            .spacing = 12, .align = Z_ALIGN_CENTER),
-        .spacing = 16, .align = Z_ALIGN_CENTER);
+            .spacing = 10, .align = Z_ALIGN_CENTER),
+        .spacing = 2, .align = Z_ALIGN_LEADING);
 }
 
 // --- pull gesture -----------------------------------------------------------
@@ -649,8 +685,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     ZStackOpts list = {.spacing = 10, .padding = 22, .align = Z_ALIGN_LEADING};
     int li = 0;
     list.children[li++] = qs_block(app, s);
-    list.children[li++] = Foreground(Z_COLOR_TEXT_MUTED,
-        Font(Z_FONT_CAPTION, Text("NOTIFICATIONS")));
+    list.children[li++] = section_header("Notifications");
     bool any = false;
     for (int i = 0; i < MAX_BANNERS && li < Z_MAX_CHILDREN - 4; i++) {
         if (s->banners[i].used) {

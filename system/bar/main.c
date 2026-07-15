@@ -38,6 +38,29 @@ static ZView dot(ZColor c) {
     return Frame(10.0f, 10.0f, Rect(.color = c, .radius = 5));
 }
 
+// The Wi-Fi mark: two arcs over a dot, drawn as polylines in the unit box. Every
+// phone draws connectivity this way, and a coloured DOT (what the bar used) says
+// only "something is on" — it does not say what, and a green dot in a status bar
+// reads as a recording indicator.
+static ZView wifi_glyph(bool on) {
+    ZColor c = on ? Z_COLOR_TEXT : Z_COLOR_TEXT_FAINT;
+    static const float outer[] = {0.06f, 0.42f, 0.20f, 0.28f, 0.38f, 0.21f,
+                                  0.62f, 0.21f, 0.80f, 0.28f, 0.94f, 0.42f};
+    static const float inner[] = {0.26f, 0.58f, 0.38f, 0.47f, 0.50f, 0.44f,
+                                  0.62f, 0.47f, 0.74f, 0.58f};
+    return Frame(18.0f, 14.0f,
+        ZStack(
+            Frame(18.0f, 14.0f,
+                Stroke(.points = outer, .count = 6, .thickness = 2.0f,
+                       .color = c)),
+            Frame(18.0f, 14.0f,
+                Stroke(.points = inner, .count = 5, .thickness = 2.0f,
+                       .color = c)),
+            OffsetXY(0.0f, 4.5f, Frame(3.5f, 3.5f,
+                Rect(.color = c, .radius = 1.75f))),
+            .align = Z_ALIGN_CENTER));
+}
+
 // A tiny padlock glyph (shackle over a body). Shown when the lock screen is
 // enabled — the bar's 4th brokered indicator (P20), alongside Wi-Fi/airplane/pip.
 static ZView lock_glyph(ZColor c) {
@@ -126,6 +149,12 @@ static ZView bar_body(ZApp *app, BarState *state) {
         z_settings_observe(app, on_changed, state);
     }
 
+    // The bar paints NO background, so its surface is transparent everywhere it
+    // does not draw — and the partial-damage path has nothing to erase stale pixels
+    // WITH: a repainted clock composites on top of the previous minute's glyphs.
+    // A surface this small repaints in full for a pittance.
+    z_full_repaint(app);
+
     // Clock from wall time (updates whenever the bar rebuilds).
     char clock[8] = "--:--";
     time_t t = time(NULL);
@@ -137,40 +166,41 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // Wi-Fi reads as connected only when it is on AND not overridden by airplane
     // mode (airplane forces the radios off — the actuation the bar surfaces).
     bool wifi_live = state->wifi && !state->airplane;
-    ZColor wifi_col = wifi_live ? Z_COLOR_SUCCESS   // green: on
-                                : Z_COLOR_BORDER;   // grey: off
-    // Brightness pip: a little bar whose width grows with the level (1..5), so a
-    // step in Settings visibly changes the bar too.
-    int64_t lvl = state->brightness < 1 ? 1 : (state->brightness > 5 ? 5
-                                                                      : state->brightness);
-    float pip_w = 6.0f + (float)lvl * 4.0f;   // level 1 -> 10px, level 5 -> 26px
 
-    // Build the right cluster dynamically so the airplane dot only appears when
-    // airplane mode is on.
-    ZStackOpts cluster = {.spacing = 10, .align = Z_ALIGN_CENTER};
+    // The right cluster: connectivity, then charge. The brightness pip is gone —
+    // brightness is not a STATUS you monitor, it is a setting you already see the
+    // result of (the screen is dimmer), and a bar that grows and shrinks as you
+    // drag a slider is just noise at the top of every screen. The "Zelto" wordmark
+    // is gone too: a phone does not print its own brand across the status bar.
+    ZStackOpts cluster = {.spacing = 8, .align = Z_ALIGN_CENTER};
     int k = 0;
-    cluster.children[k++] = dot(wifi_col);                       // Wi-Fi
     if (state->airplane) {
-        cluster.children[k++] = dot(Z_COLOR_WARN);  // airplane
+        cluster.children[k++] = dot(Z_COLOR_WARN);
     }
     if (state->lock_enabled) {
-        cluster.children[k++] = lock_glyph(Z_COLOR_TEXT); // lock
+        cluster.children[k++] = lock_glyph(Z_COLOR_TEXT);
     }
-    cluster.children[k++] = Frame(pip_w, 10.0f,
-        Rect(.color = Z_COLOR_TEXT, .radius = 3));  // brightness
+    cluster.children[k++] = wifi_glyph(wifi_live);
     cluster.children[k++] = battery_glyph(state->battery_pct, state->charging);
-    cluster.children[k++] = Weight(Z_WEIGHT_MEDIUM,
-        Foreground(Z_COLOR_TEXT_INV, Text("%s", clock)));
 
+    // TRANSPARENT. The bar paints no background, so on the home the wallpaper runs
+    // right up under the clock (the way it does on a phone) instead of being cut
+    // off by a black band across the top of every screen. Its exclusive zone still
+    // keeps app windows clear of it, and app backgrounds are dark, so the ink stays
+    // legible over both; the text shadow covers a bright wallpaper.
+    //
     // A long-press on the bar manually locks now (bumps sys.lock_now).
     return OnLongPress(bar_longpress, NULL,
-        Background(Z_COLOR_BG,
-            HStack(
-                Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT_INV,
-                    Font(Z_FONT_BODY, Text("Zelto")))),
-                Spacer(),
-                z_stack(Z_AXIS_HORIZONTAL, &cluster),
-                .padding = 12, .spacing = 10, .align = Z_ALIGN_CENTER)));
+        HStack(
+            // No TextShadow: at 15px the dropped copy lands a pixel or two off the
+            // ink and just reads as a smeared double-strike, not as depth. Small
+            // text wants contrast, not a shadow.
+            Weight(Z_WEIGHT_SEMIBOLD,
+                Foreground(Z_COLOR_TEXT, Font(Z_FONT_SUBHEAD,
+                    Text("%s", clock)))),
+            Spacer(),
+            z_stack(Z_AXIS_HORIZONTAL, &cluster),
+            .padding = 14, .spacing = 10, .align = Z_ALIGN_CENTER));
 }
 
 Z_LAYER_APP(BarState, bar_body,

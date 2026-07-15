@@ -235,27 +235,84 @@ static ZView toggle_row(ZApp *app, uint64_t key, const char *label, bool on,
     if (qa && qa[0]) {
         z_animated_pin(t, (float)atof(qa));
     }
-    ZColor bg = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY,
-                             z_animated_get(t));
+    float v = z_animated_get(t);
+
+    // A real SWITCH, not a box that says "On".
+    //
+    // The old control was a chip whose fill cross-faded to PRIMARY with a TEXT_INV
+    // label — and PRIMARY is now near-white, so an "On" toggle rendered as white
+    // text on a white plate: a blank box. But the deeper problem is that a word is
+    // the wrong control. A switch shows its state by POSITION (the knob is left or
+    // right) as well as by fill, so it reads at a glance and while it animates,
+    // and it is the single most recognisable control on a phone.
+    const float TRACK_W = 52.0f, TRACK_H = 32.0f, KNOB = 26.0f;
+    ZColor track = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY, v);
+    float travel = (TRACK_W - KNOB - 6.0f);      // 3px inset at each end
+    float knob_x = -travel * 0.5f + travel * v;  // slides left -> right with `v`
+    ZView sw = Frame(TRACK_W, TRACK_H,
+        Background(track,
+            CornerRadius(TRACK_H * 0.5f,
+                ZStack(
+                    OffsetXY(knob_x, 0.0f,
+                        Shadow(Z_ELEV_1,
+                            Frame(KNOB, KNOB,
+                                Rect(.color = Z_COLOR_TEXT,
+                                     .radius = KNOB * 0.5f)))),
+                    .align = Z_ALIGN_CENTER))));
+
     return HStack(
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label))),
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
         Spacer(),
-        OnTap(act, chip(bg, on ? "On" : "Off")),
+        OnTap(act, sw),
         .spacing = 12, .align = Z_ALIGN_CENTER);
 }
 
-// A label + [-] value [+] stepper row (idle timeout controls).
+// A label + [-] value [+] stepper row (idle timeout controls). The value sits
+// BETWEEN its two controls and is tabular-width, so stepping it does not make the
+// row's contents shuffle sideways.
 static ZView stepper_row(const char *label, int64_t val, const char *unit,
                          ZAction dec, ZAction inc) {
     ZColor dark = Z_COLOR_SURFACE_3;
     return HStack(
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label))),
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
         Spacer(),
-        OnTap(dec, chip(dark, "-")),
-        Foreground(Z_COLOR_TEXT_INV,
-            Font(Z_FONT_CALLOUT, Text("%lld%s", (long long)val, unit))),
+        OnTap(dec, chip(dark, "\xe2\x88\x92")),   // a real minus sign, not a hyphen
+        Frame(64.0f, 0.0f,
+            HStack(Spacer(),
+                Weight(Z_WEIGHT_SEMIBOLD,
+                    Foreground(Z_COLOR_TEXT,
+                        Font(Z_FONT_BODY,
+                             Text("%lld%s", (long long)val, unit)))),
+                Spacer(), .align = Z_ALIGN_CENTER)),
         OnTap(inc, chip(dark, "+")),
-        .spacing = 10, .align = Z_ALIGN_CENTER);
+        .spacing = 8, .align = Z_ALIGN_CENTER);
+}
+
+// A GROUP: the inset, rounded card that a run of settings rows lives in, with a
+// hairline between rows. This is the shape of every settings screen on every
+// phone — it turns a loose column of labels into a bounded, scannable region (Law
+// of Common Region), and it is what makes a settings screen look like a settings
+// screen rather than a debug panel.
+static ZView group(ZView *rows, int n) {
+    ZStackOpts col = {.spacing = 0, .align = Z_ALIGN_LEADING};
+    int k = 0;
+    for (int i = 0; i < n && k < Z_MAX_CHILDREN - 1; i++) {
+        if (i > 0) {
+            col.children[k++] = Frame(0.0f, 1.0f,
+                Rect(.color = Z_COLOR_BORDER, .grow = 1.0f));
+        }
+        col.children[k++] = Padding(14.0f, rows[i]);
+    }
+    return Background(Z_COLOR_SURFACE,
+        CornerRadius(Z_RADIUS_CARD, z_stack(Z_AXIS_VERTICAL, &col)));
+}
+
+// The label above a group.
+static ZView section(const char *text) {
+    return Padding(4.0f,
+        Weight(Z_WEIGHT_SEMIBOLD,
+            Foreground(Z_COLOR_TEXT_MUTED,
+                Font(Z_FONT_FOOTNOTE, Text("%s", text)))));
 }
 
 // One wallpaper thumbnail: a cover-fit rounded preview of the PNG; the currently
@@ -300,30 +357,23 @@ static ZView wp_grid(SettingsState *s) {
 static ZView settings_body(ZApp *app, SettingsState *state) {
     ensure_init(app, state);
 
-    ZColor dark = Z_COLOR_SURFACE_3;
     ZStackOpts col = {.spacing = 14, .align = Z_ALIGN_LEADING};
     int k = 0;
-    col.children[k++] = Foreground(Z_COLOR_TEXT_INV,
-        Font(Z_FONT_TITLE, Text("Settings")));
-    col.children[k++] = toggle_row(app, 0x5E7101u, "Wi-Fi", state->wifi, t_wifi);
-    col.children[k++] = toggle_row(app, 0x5E7102u, "Mute", state->mute, t_mute);
-    col.children[k++] = toggle_row(app, 0x5E7103u, "Brightness boost",
-                                   state->bright, t_bright);
-    col.children[k++] = toggle_row(app, 0x5E7104u, "Airplane mode",
-                                   state->airplane, t_airplane);
-    // Brightness level stepper (the "at least one more control").
-    col.children[k++] = HStack(
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("Brightness"))),
-        Spacer(),
-        OnTap(bright_dec, chip(dark, "-")),
-        Foreground(Z_COLOR_TEXT_INV,
-            Font(Z_FONT_TITLE, Text("%lld", (long long)state->brightness))),
-        OnTap(bright_inc, chip(dark, "+")),
-        .spacing = 14, .align = Z_ALIGN_CENTER);
+    // A large title, the way a phone's settings screen opens.
+    col.children[k++] = Weight(Z_WEIGHT_BOLD,
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("Settings"))));
+
+    ZView sys_rows[] = {
+        toggle_row(app, 0x5E7101u, "Wi-Fi", state->wifi, t_wifi),
+        toggle_row(app, 0x5E7102u, "Mute", state->mute, t_mute),
+        toggle_row(app, 0x5E7103u, "Brightness boost", state->bright, t_bright),
+        toggle_row(app, 0x5E7104u, "Airplane mode", state->airplane, t_airplane),
+        stepper_row("Brightness", state->brightness, "", bright_dec, bright_inc),
+    };
+    col.children[k++] = group(sys_rows, 5);
 
     // --- P25 wallpaper section ---
-    col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
-        Font(Z_FONT_CAPTION, Text("WALLPAPER")));
+    col.children[k++] = section("Wallpaper");
     if (state->wp_count > 0) {
         col.children[k++] = wp_grid(state);
     } else {
@@ -332,26 +382,25 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
     }
 
     // --- P20 lock screen section ---
-    col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
-        Font(Z_FONT_CAPTION, Text("LOCK SCREEN")));
-    col.children[k++] = toggle_row(app, 0x5E7105u, "Lock screen",
-                                   state->lock_enabled, t_lock);
-    col.children[k++] = stepper_row("Dim after", state->dim_s, "s",
-                                    dim_dec, dim_inc);
-    col.children[k++] = stepper_row("Lock after", state->lock_s, "s",
-                                    lock_dec, lock_inc);
-    col.children[k++] = stepper_row("Screen off after", state->off_s, "s",
-                                    off_dec, off_inc);
-    col.children[k++] = toggle_row(app, 0x5E7106u, "Passcode (1234)",
-                                   state->passcode_set, t_passcode);
+    col.children[k++] = section("Lock screen");
+    ZView lock_rows[] = {
+        toggle_row(app, 0x5E7105u, "Lock screen", state->lock_enabled, t_lock),
+        stepper_row("Dim after", state->dim_s, "s", dim_dec, dim_inc),
+        stepper_row("Lock after", state->lock_s, "s", lock_dec, lock_inc),
+        stepper_row("Screen off after", state->off_s, "s", off_dec, off_inc),
+        toggle_row(app, 0x5E7106u, "Passcode (1234)", state->passcode_set,
+                   t_passcode),
+    };
+    col.children[k++] = group(lock_rows, 5);
     col.children[k++] = OnTap(lock_now,
         Background(Z_COLOR_PRIMARY,
-            CornerRadius(14.0f,
+            CornerRadius(Z_RADIUS_CARD,
                 Padding(14.0f,
                     Foreground(Z_COLOR_ON_PRIMARY,
-                        Font(Z_FONT_CALLOUT, Text("Lock now")))))));
-    col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
-        Font(Z_FONT_CAPTION,
+                        Weight(Z_WEIGHT_SEMIBOLD,
+                            Font(Z_FONT_BODY, Text("Lock now"))))))));
+    col.children[k++] = Foreground(Z_COLOR_TEXT_FAINT,
+        Font(Z_FONT_FOOTNOTE,
             Text("Shared with the shade — changes apply live, and persist")));
 
     // Scroll so the whole list stays reachable in the usable area (top bar +

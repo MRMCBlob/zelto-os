@@ -15,6 +15,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/app_chrome.h"
+
 typedef struct NotesState {
     bool registered;        // have we wired the intent handlers yet?
     bool got_share;
@@ -49,14 +51,15 @@ static ZView payload_panel(const char *label, const char *value, bool got) {
     ZColor bg = got ? Z_COLOR_SUCCESS_DIM
                     : Z_COLOR_SURFACE_2;
     return Background(bg,
-        CornerRadius(14,
+        CornerRadius(Z_RADIUS_CARD,
             Frame(520.0f, 96.0f,
                 VStack(
                     Foreground(Z_COLOR_TEXT_MUTED,
-                        Font(Z_FONT_CAPTION, Text("%s", label))),
-                    Foreground(Z_COLOR_TEXT_INV,
-                        Font(Z_FONT_CALLOUT,
-                            Text("%s", got ? value : "(nothing yet)"))),
+                        Font(Z_FONT_CAPTION2, Text("%s", label))),
+                    Weight(Z_WEIGHT_SEMIBOLD,
+                        Foreground(Z_COLOR_TEXT,
+                            Font(Z_FONT_BODY,
+                                Text("%s", got ? value : "(nothing yet)")))),
                     .spacing = 8, .align = Z_ALIGN_LEADING, .padding = 16))));
 }
 
@@ -74,13 +77,12 @@ static ZView notes_body(ZApp *app, NotesState *state) {
     // shade's grab strip — same structure as Notepad (an overlay's buttons proved
     // un-hittable).
     ZView bar = z_selection_bar(app);
-    ZStackOpts col = {.padding = 28, .spacing = 14, .align = Z_ALIGN_CENTER};
+    ZStackOpts col = {.padding = 24, .spacing = 14, .align = Z_ALIGN_LEADING};
     int k = 0;
     col.children[k++] = Rect(.height = 84.0f);   // clears the shade grab strip
     col.children[k++] =
         Frame(0.0f, 52.0f, bar ? bar : z_rect(&(ZRectOpts){.height = 1.0f}));
-    col.children[k++] =
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("Notes")));
+    col.children[k++] = z_screen_title("Notes");
     // Paste target: focus this field and paste text copied in ANOTHER app — proof
     // the clipboard crosses the process boundary (P22).
     col.children[k++] = Frame(520.0f, 0.0f,

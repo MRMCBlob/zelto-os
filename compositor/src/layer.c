@@ -10,6 +10,7 @@
 #include "zcomp/layer.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -56,7 +57,24 @@ void zcomp_arrange(ZcompServer *server) {
         ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
         ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
     };
+    // Within one layer, configure by ASCENDING EXCLUSIVE ZONE.
+    //
+    // Order decides who gets an edge: two surfaces anchored to the same edge with an
+    // exclusive zone are stacked in the order they are configured, and whoever goes
+    // first takes the edge itself. The nav bar and the on-screen keyboard are both
+    // bottom-anchored and exclusive, so their order matters — and it cannot be left
+    // to which client happens to bind first (the keyboard usually wins that race,
+    // which put it on the bottom edge and shoved the nav bar up into its own key
+    // rows).
+    //
+    // Thin-before-tall is the rule that expresses the intent: the system's permanent
+    // furniture is a slim strip and belongs against the edge of the screen, while a
+    // transient surface (a keyboard) is tall and stacks INSIDE what is left. That
+    // gives the arrangement every phone has — the keyboard rises above the nav bar,
+    // never over it — without the compositor needing to know either surface by name.
     for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+        ZcompLayerSurface *in_layer[32];
+        size_t n = 0;
         ZcompLayerSurface *ls;
         wl_list_for_each(ls, &server->layer_surfaces, link) {
             if (!ls->layer_surface->initialized) {
@@ -65,19 +83,47 @@ void zcomp_arrange(ZcompServer *server) {
             if (ls->layer_surface->current.layer != order[i]) {
                 continue;
             }
-            wlr_scene_layer_surface_v1_configure(ls->scene, &full, &usable);
+            if (n < sizeof(in_layer) / sizeof(in_layer[0])) {
+                in_layer[n++] = ls;
+            }
+        }
+        // Insertion sort: a handful of surfaces per layer, and it is a stable order.
+        for (size_t a = 1; a < n; a++) {
+            ZcompLayerSurface *key = in_layer[a];
+            int32_t kz = key->layer_surface->current.exclusive_zone;
+            size_t b = a;
+            while (b > 0 &&
+                   in_layer[b - 1]->layer_surface->current.exclusive_zone > kz) {
+                in_layer[b] = in_layer[b - 1];
+                b--;
+            }
+            in_layer[b] = key;
+        }
+        for (size_t a = 0; a < n; a++) {
+            wlr_scene_layer_surface_v1_configure(in_layer[a]->scene, &full,
+                                                 &usable);
         }
     }
 
     server->usable = usable;
 
-    // Size every app toplevel to the area left below/around the layers.
+    // Size every app toplevel to the area left below/around the layers — EXCEPT
+    // the home screen, which gets the whole output.
+    //
+    // The home is the one window that draws BEHIND the system bars: that is what
+    // lets the wallpaper run full-bleed under a transparent status bar and under
+    // the nav bar, the way it does on every phone. Clamped to the usable area it
+    // could only ever start below the bar, so the bar had nothing behind it but the
+    // compositor's own background fill. The launcher insets its own content by the
+    // bar/nav heights, so nothing it draws lands under them.
     ZcompToplevel *toplevel;
     wl_list_for_each(toplevel, &server->toplevels, link) {
-        wlr_scene_node_set_position(&toplevel->scene_tree->node, usable.x,
-                                    usable.y);
-        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, usable.width,
-                                  usable.height);
+        const char *app_id = toplevel->xdg_toplevel->app_id;
+        bool is_home = app_id && strcmp(app_id, "os.zelto.launcher") == 0;
+        const struct wlr_box *box = is_home ? &full : &usable;
+        wlr_scene_node_set_position(&toplevel->scene_tree->node, box->x, box->y);
+        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, box->width,
+                                  box->height);
     }
 }
 

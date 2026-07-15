@@ -120,13 +120,21 @@ static void on_hide_key(ZApp *app, void *state) {
 // label hugs the left edge.
 static ZView cap(ZView inner, float grow) {
     return Grow(grow,
-        Background(Z_COLOR_SURFACE_3,
-            CornerRadius(8.0f,
-                Frame(0.0f, (float)KEY_H,
-                    HStack(Spacer(), inner, Spacer(), .align = Z_ALIGN_CENTER)))));
+        Shadow(Z_ELEV_1,
+            Background(Z_COLOR_SURFACE_3,
+                CornerRadius(Z_RADIUS_CHIP,
+                    Frame(0.0f, (float)KEY_H,
+                        HStack(Spacer(), inner, Spacer(),
+                               .align = Z_ALIGN_CENTER))))));
 }
 static ZView glyph(const char *label) {
-    return Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_CALLOUT, Text("%s", label)));
+    return Weight(Z_WEIGHT_MEDIUM,
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_CALLOUT, Text("%s", label))));
+}
+// A key whose fill is LIGHT (the active shift) needs dark ink on it.
+static ZView glyph_on(const char *label, ZColor ink) {
+    return Weight(Z_WEIGHT_SEMIBOLD,
+        Foreground(ink, Font(Z_FONT_SUBHEAD, Text("%s", label))));
 }
 
 // A single character key (letter or symbol), tap commits it.
@@ -146,20 +154,30 @@ static ZView char_row(KbdState *s, const char *chars) {
     return z_stack(Z_AXIS_HORIZONTAL, &row);
 }
 
-// A special (action) key: a labelled tappable cap.
-static ZView action_key(const char *label, ZAction act, float grow, ZColor bg) {
+// A special (action) key: a labelled tappable cap. Action labels are words, not
+// characters, so they take the smaller type step — a 20px "space" next to a 20px
+// "q" makes the word look like it is shouting.
+static ZView action_key(const char *label, ZAction act, float grow, ZColor bg,
+                        ZColor ink) {
     return Grow(grow,
         OnTap(act,
-            Background(bg,
-                CornerRadius(8.0f,
-                    Frame(0.0f, (float)KEY_H,
-                        HStack(Spacer(), glyph(label), Spacer(),
-                               .align = Z_ALIGN_CENTER))))));
+            Shadow(Z_ELEV_1,
+                Background(bg,
+                    CornerRadius(Z_RADIUS_CHIP,
+                        Frame(0.0f, (float)KEY_H,
+                            HStack(Spacer(), glyph_on(label, ink), Spacer(),
+                                   .align = Z_ALIGN_CENTER)))))));
 }
 
 static ZView keyboard_grid(KbdState *s) {
-    ZColor sp = Z_COLOR_SURFACE_2;                        // special-key fill
-    ZColor shift_bg = s->shift ? Z_COLOR_PRIMARY : sp;   // active shift = accent
+    // A special key sits BELOW a character key in the hierarchy: darker fill, so
+    // the letters — the things you are actually aiming at — are the light ones.
+    ZColor sp = Z_COLOR_SURFACE;
+    ZColor spi = Z_COLOR_TEXT_MUTED;
+    // Shift latched: a LIGHT key with dark ink, the way a phone shows it (this is
+    // the same "lit" treatment as an active quick-settings chip).
+    ZColor shift_bg = s->shift ? Z_COLOR_PRIMARY : sp;
+    ZColor shift_ink = s->shift ? Z_COLOR_ON_PRIMARY : spi;
 
     ZView row1 = char_row(s, s->symbols ? "1234567890" : "qwertyuiop");
     ZView row2 = char_row(s, s->symbols ? "@#$%&-+()/" : "asdfghjkl");
@@ -168,29 +186,34 @@ static ZView keyboard_grid(KbdState *s) {
     ZStackOpts r3 = {.spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f};
     int k = 0;
     if (s->symbols) {
-        r3.children[k++] = action_key("ABC", on_symbols, 1.6f, sp);
+        r3.children[k++] = action_key("ABC", on_symbols, 1.6f, sp, spi);
     } else {
-        r3.children[k++] = action_key(s->shift ? "SHIFT" : "shift", on_shift,
-                                      1.6f, shift_bg);
+        r3.children[k++] = action_key("shift", on_shift, 1.6f, shift_bg,
+                                      shift_ink);
     }
     const char *r3c = s->symbols ? "*\"':;!?" : "zxcvbnm";
     for (const char *p = r3c; *p; p++) {
         r3.children[k++] = char_key(s, *p);
     }
-    r3.children[k++] = action_key("<x", on_backspace, 1.6f, sp);
+    r3.children[k++] = action_key("del", on_backspace, 1.6f, sp, spi);
     ZView row3 = z_stack(Z_AXIS_HORIZONTAL, &r3);
 
     // Row 4: symbols toggle, space (wide), paste (system clipboard), enter, hide.
+    // Space keeps the LIGHTER character-key fill, because it is a character key.
+    // Paste was green — a semantic colour spent on a clipboard key, which reads as
+    // "success" for no reason. It is an ordinary action key.
     ZView row4 = HStack(
-        action_key(s->symbols ? "ABC" : "?123", on_symbols, 1.6f, sp),
-        action_key("space", on_space, 4.2f, Z_COLOR_SURFACE_3),
-        action_key("paste", on_paste, 1.8f, Z_COLOR_SUCCESS),
-        action_key("enter", on_enter, 1.6f, sp),
-        action_key("v", on_hide_key, 1.2f, sp),
+        action_key(s->symbols ? "ABC" : "?123", on_symbols, 1.6f, sp, spi),
+        action_key("space", on_space, 4.2f, Z_COLOR_SURFACE_3, Z_COLOR_TEXT),
+        action_key("paste", on_paste, 1.8f, sp, spi),
+        action_key("enter", on_enter, 1.6f, sp, spi),
+        action_key("hide", on_hide_key, 1.4f, sp, spi),
         .spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f);
 
+    // A heavy material: the app behind shows only as a hint. See kbd_body for why
+    // this one is a tint rather than a compositor blur.
     return Fill(
-        Background(Z_COLOR_BG,
+        Background(Z_COLOR_MATERIAL_THICK,
             VStack(row1, row2, row3, row4,
                    .spacing = 8.0f, .padding = 8.0f, .grow = 1.0f)));
 }
@@ -222,6 +245,12 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
     } else {
         z_layer_set_input_none(app);                 // fall through to the app
     }
+    // NO z_backdrop here, deliberately. The keyboard is the one system surface a
+    // blur does nothing for — it is a dense field of opaque keys, so almost none of
+    // the backdrop survives to be seen — and asking for one adds a surface commit
+    // per build, which perturbs the order the compositor hands out exclusive zones
+    // between the two bottom-anchored bars: the keyboard would take the bottom edge
+    // and shove the nav bar up into its own key rows. It gets a heavy tint instead.
 
     // Slide: v animates 0->1; parked slides the whole grid off the bottom edge.
     float v = z_animated_get(s->anim);

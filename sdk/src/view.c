@@ -237,17 +237,20 @@ static ZView field_run(const char *text, int a, int b, bool highlight) {
     buf[n] = '\0';
     ZView t = node_new(Z_K_TEXT);
     t->text = z_arena_strdup(z_build_arena, buf);
-    t->fg = Z_COLOR_TEXT_INV;
+    t->fg = Z_COLOR_TEXT;
     if (highlight) {
         t->has_bg = true;
-        t->bg = z_rgba(0x2e, 0x6b, 0xd0, 0xff);   // selection highlight
+        // Selected text is a LIGHT plate with dark ink on it — the same
+        // "lit" treatment every other active control in the system uses.
+        t->bg = Z_COLOR_PRIMARY;
+        t->fg = Z_COLOR_ON_PRIMARY;
     }
     return t;
 }
 // A thin blinking-style caret (shown at the insertion point, no selection).
 static ZView field_caret(void) {
     ZView c = node_new(Z_K_RECT);
-    c->color = Z_COLOR_TEXT_INV;
+    c->color = Z_COLOR_TEXT;
     c->fixed_w = 2.0f;
     c->fixed_h = 22.0f;
     return c;
@@ -255,7 +258,7 @@ static ZView field_caret(void) {
 // A selection drag handle (a taller accent bar at each selection end).
 static ZView field_handle(void) {
     ZView h = node_new(Z_K_RECT);
-    h->color = z_rgba(0x2e, 0x9b, 0xff, 0xff);
+    h->color = Z_COLOR_ACCENT;
     h->fixed_w = 4.0f;
     h->fixed_h = 30.0f;
     h->radius = 2.0f;
@@ -277,8 +280,10 @@ ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
     n->spacing = 0.0f;
     n->padding = 12.0f;                 // ~44px tall at body size
     n->has_bg = true;
-    n->bg = active ? z_rgba(0x22, 0x2b, 0x38, 0xff) : z_rgba(0x11, 0x16, 0x1f, 0xff);
-    n->radius = 10.0f;
+    // A focused field lifts one step up the surface ramp — it does NOT grow a
+    // coloured ring. (The old ring was a raw azure hex, the last one in the SDK.)
+    n->bg = active ? Z_COLOR_SURFACE_3 : Z_COLOR_SURFACE_2;
+    n->radius = Z_RADIUS_CARD;
     n->on_tap_data = field_on_tap;
     n->tap_data = f;
     n->field = f;
@@ -292,7 +297,7 @@ ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
     if (empty) {
         ZView label = node_new(Z_K_TEXT);
         label->text = z_arena_strdup(z_build_arena, placeholder ? placeholder : "");
-        label->fg = z_rgba(0x8a, 0x93, 0x9e, 0xff);   // dim placeholder
+        label->fg = Z_COLOR_TEXT_FAINT;   // dim placeholder
         n->children[n->n_children++] = label;
         if (active) {
             n->children[n->n_children++] = field_caret();

@@ -2,6 +2,7 @@
 executable(
   'zelto-notes',
   files('main.c'),
+  include_directories : include_directories('../..'),  # system/ for common/app_chrome.h
   dependencies : zelto_dep,
   install : true,
 )
