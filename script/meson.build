@@ -25,6 +25,18 @@ zs_builtins = custom_target(
     'js/notifications.js',
     'js/settings.js',
     'js/intents.js',
+    'js/sensors.js',
+    # andemu — the Android-shaped compat route (P38). These translate android.*
+    # calls into the zelto/* APIs above; compat.js is the graceful contract.
+    'android/compat.js',
+    'android/pm.js',
+    'android/hardware.js',
+    'android/location.js',
+    'android/os.js',
+    'android/net.js',
+    'android/content.js',
+    'android/prefs.js',
+    'android/widget.js',
   ),
   output : 'builtins.c',
   command : [
@@ -39,6 +51,16 @@ zs_builtins = custom_target(
     'zelto/notifications=@INPUT5@',
     'zelto/settings=@INPUT6@',
     'zelto/intents=@INPUT7@',
+    'zelto/sensors=@INPUT8@',
+    'android/compat=@INPUT9@',
+    'android/pm=@INPUT10@',
+    'android/hardware=@INPUT11@',
+    'android/location=@INPUT12@',
+    'android/os=@INPUT13@',
+    'android/net=@INPUT14@',
+    'android/content=@INPUT15@',
+    'android/prefs=@INPUT16@',
+    'android/widget=@INPUT17@',
   ],
 )
 
@@ -46,7 +68,7 @@ zscript_inc = include_directories('include')
 
 libzscript = static_library(
   'zscript',
-  files('src/host.c', 'src/ui.c', 'src/sys.c'),
+  files('src/host.c', 'src/ui.c', 'src/sys.c', 'src/sensors.c'),
   zs_builtins,
   include_directories : [zscript_inc, include_directories('src')],
   dependencies : [zelto_dep, quickjs_dep],

@@ -231,6 +231,7 @@ typedef struct Manifest {
     char links[128];
     char exec[256];     // in-package native path, e.g. native/aarch64/zelto-widget
     char script[256];   // in-package .js path, e.g. script/jsdemo.js (script app)
+    char runtime[16];   // "andemu" for an Android-compat script app (else empty)
 } Manifest;
 
 static void manifest_set(Manifest *m, const char *k, const char *v) {
@@ -254,6 +255,8 @@ static void manifest_set(Manifest *m, const char *k, const char *v) {
         snprintf(m->exec, sizeof(m->exec), "%s", v);
     } else if (strcmp(k, "script") == 0) {
         snprintf(m->script, sizeof(m->script), "%s", v);
+    } else if (strcmp(k, "runtime") == 0) {
+        snprintf(m->runtime, sizeof(m->runtime), "%s", v);
     }
 }
 
@@ -604,8 +607,11 @@ int main(int argc, char **argv) {
         if (!runtime || !runtime[0]) {
             runtime = "/usr/bin/zelto-script";
         }
-        snprintf(exec_cmd, sizeof(exec_cmd), "%s --id %s %s", runtime, m.id,
-                 bin_dst);
+        // runtime=andemu adds --android so the runtime flags the guest as an
+        // emulated Android app (the android/* compat modules are always present).
+        const char *android = strcmp(m.runtime, "andemu") == 0 ? " --android" : "";
+        snprintf(exec_cmd, sizeof(exec_cmd), "%s%s --id %s %s", runtime, android,
+                 m.id, bin_dst);
     } else {
         snprintf(exec_cmd, sizeof(exec_cmd), "%s", bin_dst);
     }

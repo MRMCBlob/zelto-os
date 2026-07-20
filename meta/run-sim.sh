@@ -106,6 +106,17 @@ export ZELTO_WALLPAPER_DIR="${ZELTO_WALLPAPER_DIR:-$REPO_ROOT/resources/wallpape
 # ZELTO_BATTERY_TICK_MS (default 5000). ZELTO_VOLUME_MS widens the HUD dwell for
 # a reliable screenshot.
 export ZELTO_FAKE_BATTERY="${ZELTO_FAKE_BATTERY:-1}"
+
+# P38 sensor/location source: the host has no phone sensors, so zsysd synthesises
+# them from these ZELTO_SIM_* values (a real device port fills them from a HAL).
+# Override any of them to script a reading — e.g. ZELTO_SIM_LOCATION="48.85,2.35"
+# to move the GPS fix, matching `zelto simulator set location` in the docs.
+export ZELTO_SIM_LOCATION="${ZELTO_SIM_LOCATION:-52.5200,13.4050}"
+export ZELTO_SIM_ORIENTATION="${ZELTO_SIM_ORIENTATION:-30,2,1}"
+export ZELTO_SIM_ACCEL="${ZELTO_SIM_ACCEL:-0.6,0.2,9.78}"
+export ZELTO_SIM_GYRO="${ZELTO_SIM_GYRO:-0.02,0.00,0.03}"
+export ZELTO_SIM_MAG="${ZELTO_SIM_MAG:-0,-30,-40}"
+export ZELTO_SIM_LIGHT="${ZELTO_SIM_LIGHT:-320}"
 rm -f "$XDG_RUNTIME_DIR/zsysd.sock"     # drop a stale broker socket from a prior run
 pkill -f "$BUILD/compositor/zcomp" 2>/dev/null || true   # reap a stale sim compositor
 
@@ -179,7 +190,9 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/settings/zelto-settings.app" \
          "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
          "$REPO_ROOT/system/apps/store/zelto-store.app" \
-         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app"; do
+         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app" \
+         "$REPO_ROOT/system/apps/sensors/zelto-sensors.app" \
+         "$REPO_ROOT/samples/andemu-demo/zelto-andemu.app"; do
     [ -f "$m" ] || { echo "!! manifest missing: $m"; continue; }
     # exec= is a COMMAND (system/common/exec_cmd.h): the binary, then optional
     # args — a script app is "/usr/bin/zelto-script --id X /usr/share/zelto/
@@ -219,7 +232,9 @@ spawn() { [ -x "$1" ] && { "$@" & PIDS+=($!); }; }
 # zsysd forks the consent dialog on a permission prompt by absolute path; on the
 # device that's /usr/bin/zelto-consent, uninstalled here — point it at the build
 # binary (the ZELTO_RECENTS_BIN idiom) so prompts resolve instead of auto-denying.
-export ZELTO_CONSENT_BIN="$SYS/consent/zelto-consent"
+# Honour a preset ZELTO_CONSENT_BIN (a harness can point it at /bin/true to
+# auto-allow every prompt for an unattended screenshot); default to the real one.
+export ZELTO_CONSENT_BIN="${ZELTO_CONSENT_BIN:-$SYS/consent/zelto-consent}"
 spawn "$SYS/zsysd/zsysd"
 spawn "$SYS/bar/zelto-bar"
 # The nav bar's Recents button fork/execs the recents overlay by absolute path,

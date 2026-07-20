@@ -760,6 +760,9 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
     }
     if (active != app->active) {
         app->active = active;
+        // when-in-use: pause this app's sensor/GPS streams while it is backgrounded
+        // (battery + privacy), resume them on return. No-op if it opened none.
+        z_sensor_set_paused(!active);
         if (app->lifecycle) {
             app->lifecycle(app, app->state,
                            active ? Z_LC_ACTIVE : Z_LC_INACTIVE);
@@ -2266,13 +2269,13 @@ static int app_run(ZApp *app) {
         }
         wl_display_flush(dpy);
 
-        struct pollfd pfds[4 + Z_NET_POLL_MAX];
+        struct pollfd pfds[5 + Z_NET_POLL_MAX];
         pfds[0].fd = wl_display_get_fd(dpy);
         pfds[0].events = POLLIN;
         pfds[0].revents = 0;
         nfds_t nf = 1;
-        int perm_slot = -1, ctrl_slot = -1, clip_slot = -1, net_slot = -1,
-            net_n = 0;
+        int perm_slot = -1, ctrl_slot = -1, clip_slot = -1, sensor_slot = -1,
+            net_slot = -1, net_n = 0;
         if (app->perm_fd >= 0) {
             perm_slot = (int)nf;
             pfds[nf].fd = app->perm_fd;
@@ -2291,6 +2294,15 @@ static int app_run(ZApp *app) {
         if (app->clip_fd >= 0) {
             clip_slot = (int)nf;
             pfds[nf].fd = app->clip_fd;
+            pfds[nf].events = POLLIN;
+            pfds[nf].revents = 0;
+            nf++;
+        }
+        // Sensor/GPS stream socket (sensors.c): one fd carries every subscription.
+        int sfd = z_sensor_poll_fd();
+        if (sfd >= 0) {
+            sensor_slot = (int)nf;
+            pfds[nf].fd = sfd;
             pfds[nf].events = POLLIN;
             pfds[nf].revents = 0;
             nf++;
@@ -2359,6 +2371,11 @@ static int app_run(ZApp *app) {
         if (clip_slot >= 0 &&
             (pfds[clip_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
             clip_handle_read(app);
+        }
+        // Sensor/GPS stream socket: read + dispatch any pushed samples.
+        if (sensor_slot >= 0 &&
+            (pfds[sensor_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
+            z_sensor_handle_ready();
         }
         // Drive any ready HTTP/WebSocket sockets (callbacks fire from here).
         if (net_n > 0) {

@@ -1216,6 +1216,279 @@ static void battery_init(void) {
             g_batt_tick_ms, g_batt_active);
 }
 
+// --- sensor + location source (zsysd's 6th duty, P38) ----------------------
+// The device sensors (accelerometer, gyroscope, magnetometer, ...) and the GPS
+// are streamed to apps that subscribe over a normal client connection: each
+// subscription is keyed by that connection's fd, carries a sensor type and a
+// refresh rate (clamped to [1,60] Hz — 60 is display-aligned, and the sensible
+// cap for a software-rendered sim), and a per-subscription deadline. sensor_tick
+// pushes one sensor_sample / location_update line per subscription when its
+// deadline passes, exactly like the battery tick funnels through settings_apply,
+// but addressed to a single subscriber fd rather than fanned out.
+//
+// The values are SIM-scriptable: a real device port fills them from a HAL, but
+// here they come from ZELTO_SIM_* env (e.g. ZELTO_SIM_LOCATION="52.52,13.40",
+// ZELTO_SIM_ORIENTATION="az,pitch,roll"), so the harness can `set location`
+// deterministically. Streaming a sensor is gated by the `sensors` grant and
+// location by the `location` grant — the same cached decisions the permission
+// broker already owns (decide()/grant_find), so no new consent path.
+//
+// All numeric fields travel as QUOTED strings ("v0":"0.010000"), because the
+// hand-rolled json_get on both ends only parses quoted string values; the client
+// re-parses them with strtod/atoi (the same way ids travel as quoted strings).
+#define MAX_SENSOR_SUBS 32
+#define SENSOR_RATE_MIN 1
+#define SENSOR_RATE_MAX 60
+
+typedef struct SensorSub {
+    bool used;
+    int fd;                // subscriber connection
+    char app_id[96];
+    int kind;              // 0 = sensor, 1 = location
+    char type[24];         // sensor wire name (kind 0 only)
+    int rate_hz;           // clamped [1,60]
+    int64_t next_ms;       // monotonic ms of this subscription's next sample
+} SensorSub;
+static SensorSub g_sensor_subs[MAX_SENSOR_SUBS];
+
+static float env_f(const char *name, float dflt) {
+    const char *s = getenv(name);
+    return (s && s[0]) ? (float)atof(s) : dflt;
+}
+
+// Parse a "x,y,z" env (or its default) into three floats (missing -> 0).
+static void env_vec3(const char *name, const char *dflt, float out[3]) {
+    const char *s = getenv(name);
+    if (!s || !s[0]) {
+        s = dflt;
+    }
+    out[0] = out[1] = out[2] = 0.0f;
+    sscanf(s, "%f,%f,%f", &out[0], &out[1], &out[2]);
+}
+
+// Synthesize one sensor reading for `type` at time `t` (ms). Writes up to three
+// values into v[] and returns the value count (0 = unknown/absent sensor). The
+// values are static per env (deterministic for screenshots); an app proves a
+// stream's rate by counting samples over time, not by watching a value wobble.
+static int sensor_synth(const char *type, int64_t t, float v[3], int *accuracy) {
+    *accuracy = 3;   // SENSOR_STATUS_ACCURACY_HIGH
+    v[0] = v[1] = v[2] = 0.0f;
+    if (strcmp(type, "accelerometer") == 0 || strcmp(type, "gravity") == 0) {
+        env_vec3("ZELTO_SIM_ACCEL", "0,0,9.81", v);
+        return 3;
+    }
+    if (strcmp(type, "linear_acceleration") == 0) {
+        return 3;   // at rest: no linear acceleration
+    }
+    if (strcmp(type, "gyroscope") == 0) {
+        env_vec3("ZELTO_SIM_GYRO", "0,0,0", v);
+        return 3;
+    }
+    if (strcmp(type, "magnetometer") == 0) {
+        env_vec3("ZELTO_SIM_MAG", "0,-30,-40", v);
+        return 3;
+    }
+    if (strcmp(type, "orientation") == 0 || strcmp(type, "rotation_vector") == 0) {
+        env_vec3("ZELTO_SIM_ORIENTATION", "0,0,0", v);
+        return 3;
+    }
+    if (strcmp(type, "light") == 0) {
+        v[0] = env_f("ZELTO_SIM_LIGHT", 300.0f);
+        return 1;
+    }
+    if (strcmp(type, "proximity") == 0) {
+        v[0] = env_f("ZELTO_SIM_PROXIMITY", 5.0f);
+        return 1;
+    }
+    if (strcmp(type, "pressure") == 0) {
+        v[0] = env_f("ZELTO_SIM_PRESSURE", 1013.25f);
+        return 1;
+    }
+    if (strcmp(type, "step_counter") == 0) {
+        v[0] = env_f("ZELTO_SIM_STEPS", 0.0f) + (float)(t / 1000);   // ~1 step/s
+        return 1;
+    }
+    return 0;   // unknown sensor
+}
+
+// Fill a location reading from ZELTO_SIM_LOCATION (+ optional altitude/speed/
+// bearing). Returns false if no simulated location is configured.
+static bool location_synth(double *lat, double *lng, float *acc, float *alt,
+                           float *speed, float *bearing) {
+    const char *s = getenv("ZELTO_SIM_LOCATION");
+    if (!s || !s[0]) {
+        s = "52.5200,13.4050";   // a default fix so location demos have data
+    }
+    double la = 0, ln = 0;
+    if (sscanf(s, "%lf,%lf", &la, &ln) < 2) {
+        return false;
+    }
+    *lat = la;
+    *lng = ln;
+    *acc = env_f("ZELTO_SIM_LOC_ACCURACY", 12.0f);
+    *alt = env_f("ZELTO_SIM_ALTITUDE", 34.0f);
+    *speed = env_f("ZELTO_SIM_SPEED", 0.0f);
+    *bearing = env_f("ZELTO_SIM_BEARING", 0.0f);
+    return true;
+}
+
+static int clamp_rate(int hz) {
+    if (hz < SENSOR_RATE_MIN) {
+        return SENSOR_RATE_MIN;
+    }
+    if (hz > SENSOR_RATE_MAX) {
+        return SENSOR_RATE_MAX;
+    }
+    return hz;
+}
+
+// Register (or re-arm) a subscription on this fd. kind 0 keys on fd+type; kind 1
+// (location) keys on fd. Re-subscribing updates the rate in place.
+static void sensor_sub_add(int fd, const char *app_id, int kind,
+                           const char *type, int rate_hz) {
+    SensorSub *slot = NULL;
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        SensorSub *s = &g_sensor_subs[i];
+        if (s->used && s->fd == fd && s->kind == kind &&
+            (kind != 0 || strcmp(s->type, type) == 0)) {
+            slot = s;
+            break;
+        }
+        if (!slot && !s->used) {
+            slot = s;   // remember a free slot but keep scanning for a match
+        }
+    }
+    if (!slot) {
+        return;   // table full
+    }
+    slot->used = true;
+    slot->fd = fd;
+    slot->kind = kind;
+    snprintf(slot->app_id, sizeof(slot->app_id), "%s", app_id ? app_id : "");
+    if (kind == 0) {
+        snprintf(slot->type, sizeof(slot->type), "%s", type ? type : "");
+    } else {
+        slot->type[0] = '\0';
+    }
+    slot->rate_hz = clamp_rate(rate_hz);
+    slot->next_ms = now_ms();   // deliver the first sample promptly
+}
+
+// Drop a subscription. type==NULL removes every sub of `kind` on this fd.
+static void sensor_sub_remove(int fd, int kind, const char *type) {
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        SensorSub *s = &g_sensor_subs[i];
+        if (s->used && s->fd == fd && s->kind == kind &&
+            (kind != 0 || !type || strcmp(s->type, type) == 0)) {
+            s->used = false;
+        }
+    }
+}
+
+// Drop every subscription on a fd (called when the connection closes).
+static void sensor_unsubscribe_fd(int fd) {
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        if (g_sensor_subs[i].used && g_sensor_subs[i].fd == fd) {
+            g_sensor_subs[i].used = false;
+        }
+    }
+}
+
+// Push a sensor sample / location update to each subscription whose deadline has
+// passed, then advance that subscription's deadline by its period. A subscription
+// whose grant was revoked (or never held) is skipped silently.
+static void sensor_tick(void) {
+    int64_t t = now_ms();
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        SensorSub *s = &g_sensor_subs[i];
+        if (!s->used || t < s->next_ms) {
+            continue;
+        }
+        int period = 1000 / (s->rate_hz > 0 ? s->rate_hz : 1);
+        s->next_ms = t + (period > 0 ? period : 1);
+
+        const char *perm = (s->kind == 1) ? "location" : "sensors";
+        Grant *g = grant_find(s->app_id, perm);
+        if (!g || !g->granted) {
+            continue;   // not (or no longer) permitted: stream nothing
+        }
+
+        char msg[320];
+        int m;
+        if (s->kind == 1) {
+            double lat = 0, lng = 0;
+            float acc = 0, alt = 0, spd = 0, brg = 0;
+            if (!location_synth(&lat, &lng, &acc, &alt, &spd, &brg)) {
+                continue;
+            }
+            m = snprintf(msg, sizeof(msg),
+                         "{\"op\":\"location_update\",\"lat\":\"%.6f\","
+                         "\"lng\":\"%.6f\",\"accuracy\":\"%.1f\","
+                         "\"altitude\":\"%.1f\",\"speed\":\"%.2f\","
+                         "\"bearing\":\"%.1f\",\"t\":\"%lld\"}\n",
+                         lat, lng, acc, alt, spd, brg, (long long)t);
+        } else {
+            float v[3];
+            int acc = 3;
+            int n = sensor_synth(s->type, t, v, &acc);
+            if (n == 0) {
+                continue;
+            }
+            m = snprintf(msg, sizeof(msg),
+                         "{\"op\":\"sensor_sample\",\"type\":\"%s\",\"t\":\"%lld\","
+                         "\"n\":\"%d\",\"accuracy\":\"%d\",\"v0\":\"%.6f\","
+                         "\"v1\":\"%.6f\",\"v2\":\"%.6f\"}\n",
+                         s->type, (long long)t, n, acc, v[0], v[1], v[2]);
+        }
+        if (m > 0 && m < (int)sizeof(msg)) {
+            ssize_t w = write(s->fd, msg, (size_t)m);
+            (void)w;
+        }
+    }
+}
+
+// ms until the soonest subscription deadline; -1 (block) when there are none.
+static int sensor_poll_timeout(void) {
+    int64_t soonest = -1;
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        if (g_sensor_subs[i].used &&
+            (soonest < 0 || g_sensor_subs[i].next_ms < soonest)) {
+            soonest = g_sensor_subs[i].next_ms;
+        }
+    }
+    if (soonest < 0) {
+        return -1;
+    }
+    int64_t rem = soonest - now_ms();
+    return rem < 0 ? 0 : (int)rem;
+}
+
+// Answer a synchronous one-shot location_get on the requesting connection. Gated
+// by the `location` grant; a denial (or no fix) replies {"ok":"0"}.
+static void handle_location_get(int fd, const char *line) {
+    char app_id[96] = {0};
+    json_get(line, "app_id", app_id, sizeof(app_id));
+    Grant *g = grant_find(app_id, "location");
+    double lat = 0, lng = 0;
+    float acc = 0, alt = 0, spd = 0, brg = 0;
+    char reply[320];
+    int m;
+    if (g && g->granted &&
+        location_synth(&lat, &lng, &acc, &alt, &spd, &brg)) {
+        m = snprintf(reply, sizeof(reply),
+                     "{\"ok\":\"1\",\"lat\":\"%.6f\",\"lng\":\"%.6f\","
+                     "\"accuracy\":\"%.1f\",\"altitude\":\"%.1f\","
+                     "\"speed\":\"%.2f\",\"bearing\":\"%.1f\",\"t\":\"%lld\"}\n",
+                     lat, lng, acc, alt, spd, brg, (long long)now_ms());
+    } else {
+        m = snprintf(reply, sizeof(reply), "{\"ok\":\"0\"}\n");
+    }
+    if (m > 0 && m < (int)sizeof(reply)) {
+        ssize_t w = write(fd, reply, (size_t)m);
+        (void)w;
+    }
+}
+
 // Process one request line. Perm ops reply on the same connection; register and
 // intent_resolve come over a persistent control connection (no reply). `slot`
 // is the client's table index, so a register can record its mailbox app_id.
@@ -1341,6 +1614,53 @@ static void handle_line(int slot, int fd, char *line) {
                 slot, g_n_settings_subs);
         return;
     }
+
+    // --- sensors + location (P38) ---
+    // A stream subscription keyed by this connection's fd; sensor_tick pushes
+    // samples to it at the requested (clamped) rate. Fire-and-forget (no reply);
+    // permission is checked at each tick against the cached grant.
+    if (strcmp(op, "sensor_subscribe") == 0) {
+        char sapp[96] = {0}, type[24] = {0}, rate[8] = {0};
+        json_get(line, "app_id", sapp, sizeof(sapp));
+        json_get(line, "type", type, sizeof(type));
+        json_get(line, "rate", rate, sizeof(rate));
+        if (type[0]) {
+            sensor_sub_add(fd, sapp, 0, type, rate[0] ? atoi(rate) : 5);
+            fprintf(stderr, "[zsysd] sensor_subscribe app=%s type=%s rate=%s\n",
+                    sapp, type, rate[0] ? rate : "5");
+        }
+        return;
+    }
+    if (strcmp(op, "sensor_unsubscribe") == 0) {
+        char type[24] = {0};
+        json_get(line, "type", type, sizeof(type));
+        sensor_sub_remove(fd, 0, type[0] ? type : NULL);
+        // Logged symmetrically with the subscribe: an app backgrounding pauses its
+        // streams (libzelto's when-in-use gate), so a stream that stops without the
+        // app exiting is the expected battery/privacy behaviour, not a leak.
+        fprintf(stderr, "[zsysd] sensor_unsubscribe type=%s\n",
+                type[0] ? type : "*");
+        return;
+    }
+    if (strcmp(op, "location_subscribe") == 0) {
+        char sapp[96] = {0}, rate[8] = {0};
+        json_get(line, "app_id", sapp, sizeof(sapp));
+        json_get(line, "rate", rate, sizeof(rate));
+        sensor_sub_add(fd, sapp, 1, NULL, rate[0] ? atoi(rate) : 1);
+        fprintf(stderr, "[zsysd] location_subscribe app=%s\n", sapp);
+        return;
+    }
+    if (strcmp(op, "location_unsubscribe") == 0) {
+        sensor_sub_remove(fd, 1, NULL);
+        fprintf(stderr, "[zsysd] location_unsubscribe\n");
+        return;
+    }
+    // location_get is a synchronous one-shot (replies on this conn, like
+    // settings_get), so an app can read a single fix without a stream.
+    if (strcmp(op, "location_get") == 0) {
+        handle_location_get(fd, line);
+        return;
+    }
     if (strcmp(op, "notify_badge") == 0) {
         char bapp[96] = {0}, count[16] = {0};
         json_get(line, "app_id", bapp, sizeof(bapp));
@@ -1407,6 +1727,10 @@ static void serve_once(int timeout_ms) {
         battery_tick();
     }
 
+    // Sensor/location streams: push a sample to each subscription whose deadline
+    // has passed (the poll woke us at the soonest deadline, computed below).
+    sensor_tick();
+
     // New connection.
     if (pfds[0].revents & POLLIN) {
         int c = accept(g_lfd, NULL, NULL);
@@ -1444,6 +1768,7 @@ static void serve_once(int timeout_ms) {
                 g_shade_fd = -1;   // shade sink disconnected
             }
             settings_unsubscribe_fd(cfd);   // drop a settings observer too
+            sensor_unsubscribe_fd(cfd);     // and any sensor/location streams
             continue;
         }
         buf[r] = '\0';
@@ -1503,7 +1828,12 @@ int main(void) {
     g_lfd = lfd;
 
     for (;;) {
-        serve_once(battery_poll_timeout());
+        // Wake for whichever periodic source is due first (battery drain or a
+        // sensor/location stream). -1 from one loses to a finite deadline.
+        int bt = battery_poll_timeout();
+        int st = sensor_poll_timeout();
+        int timeout = (bt < 0) ? st : (st < 0 ? bt : (bt < st ? bt : st));
+        serve_once(timeout);
 
         // Replay whatever queued behind a consent dialog, now that it is gone.
         // Taken off the queue BEFORE handling, because handling one may raise the

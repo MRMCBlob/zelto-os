@@ -1315,6 +1315,108 @@ void z_ws_send(ZWebSocket *ws, const void *data, size_t len);  // masked text fr
 void z_ws_close(ZWebSocket *ws);
 
 // ---------------------------------------------------------------------------
+// Sensors + location (P38).
+//
+// The device sensors (accelerometer, gyroscope, magnetometer, ...) and the GPS
+// are streamed from the zsysd sensor source. A one-shot fix (z_loc_get) is a fast
+// synchronous read; a continuous stream (z_sensor_open / z_loc_watch) parks a
+// subscription that pushes samples to a callback from the app loop, at a
+// requested refresh rate clamped to [Z_SENSOR_RATE_MIN, Z_SENSOR_RATE_MAX] Hz.
+// Sensor access needs the `sensors` permission; location needs `location`
+// (request it with z_perm_request before opening a stream, exactly like network).
+// A denied capability streams nothing rather than aborting. See
+// docs/system-apis/location.md.
+// ---------------------------------------------------------------------------
+
+// The device sensors Zelto exposes (a modern-phone set). Values are SI units:
+// acceleration m/s^2, rotation rad/s, magnetic field microtesla, orientation
+// degrees [azimuth,pitch,roll], light lux, proximity cm, pressure hPa, step
+// counter a cumulative count. Unknown/absent sensors report .present == false.
+typedef enum ZSensorType {
+    Z_SENSOR_ACCELEROMETER = 0,
+    Z_SENSOR_GYROSCOPE,
+    Z_SENSOR_MAGNETOMETER,
+    Z_SENSOR_ORIENTATION,
+    Z_SENSOR_GRAVITY,
+    Z_SENSOR_LINEAR_ACCEL,
+    Z_SENSOR_ROTATION_VECTOR,
+    Z_SENSOR_LIGHT,
+    Z_SENSOR_PROXIMITY,
+    Z_SENSOR_PRESSURE,
+    Z_SENSOR_STEP_COUNTER,
+    Z_SENSOR_COUNT,
+} ZSensorType;
+
+// Refresh-rate bounds. A request outside this range is clamped; Android's
+// SENSOR_DELAY_FASTEST maps to the max (its contract is "device-dependent
+// fastest", so a 60 Hz cap is compliant). Named presets mirror the Android
+// delays for the andemu bridge.
+#define Z_SENSOR_RATE_MIN     1
+#define Z_SENSOR_RATE_MAX     60
+#define Z_SENSOR_RATE_NORMAL  5
+#define Z_SENSOR_RATE_UI      16
+#define Z_SENSOR_RATE_GAME    50
+#define Z_SENSOR_RATE_FASTEST 60
+
+// One sensor reading. `n` is how many of `v[]` are meaningful (1 for scalar
+// sensors like light/pressure, 3 for vectors); `t` is a monotonic timestamp (ms);
+// `accuracy` is 0..3 (unreliable..high), mirroring Android's SensorEvent.accuracy.
+typedef struct ZSensorSample {
+    ZSensorType type;
+    float v[3];
+    int n;
+    int accuracy;
+    int64_t t;
+} ZSensorSample;
+
+// Static capability of a sensor: whether it is present and its rate bounds.
+typedef struct ZSensorCaps {
+    bool present;
+    int min_hz;
+    int max_hz;
+} ZSensorCaps;
+
+// A location fix. `ok` is false when the fix is unavailable (permission denied /
+// no source). Angles in degrees, accuracy/altitude in metres, speed in m/s,
+// bearing in degrees; `t` is a monotonic timestamp (ms).
+typedef struct ZLocation {
+    double lat, lng;
+    float accuracy;
+    float altitude;
+    float speed;
+    float bearing;
+    int64_t t;
+    bool ok;
+} ZLocation;
+
+// Stream callbacks, fired from the app loop. The sample/fix is valid only for the
+// call (copy what you keep).
+typedef void (*ZSensorCb)(ZApp *app, const ZSensorSample *s, void *ud);
+typedef void (*ZLocationCb)(ZApp *app, const ZLocation *loc, void *ud);
+
+// Static capability of a sensor type (no round-trip).
+ZSensorCaps z_sensor_info(ZSensorType type);
+
+// Open a sensor stream at `rate_hz` (clamped to [MIN,MAX]); `cb` fires per sample
+// from the app loop. Returns a handle (>0) or 0 on failure / unknown sensor.
+// Needs the `sensors` grant — a denied stream simply never delivers.
+int z_sensor_open(ZApp *app, ZSensorType type, int rate_hz, ZSensorCb cb, void *ud);
+
+// Change an open stream's rate, or close it. Closing fires no further callbacks.
+void z_sensor_set_rate(int handle, int rate_hz);
+void z_sensor_close(int handle);
+
+// A single location fix (fast synchronous round-trip to the broker). `.ok` is
+// false when the `location` grant is missing or there is no fix.
+ZLocation z_loc_get(ZApp *app);
+
+// Continuous location: `cb` fires from the app loop at ~`rate_hz` (clamped).
+// Returns a handle (>0) or 0 on failure. Needs the `location` grant. Stop with
+// z_loc_stop.
+int z_loc_watch(ZApp *app, int rate_hz, ZLocationCb cb, void *ud);
+void z_loc_stop(int handle);
+
+// ---------------------------------------------------------------------------
 // Task switcher (running apps).
 //
 // A client (the launcher) can list every other running app window and switch to

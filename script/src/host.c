@@ -299,6 +299,16 @@ static void install_globals(JSContext *ctx) {
                                "{ Promise.resolve().then(fn); };"),
                         "<bootstrap>", JS_EVAL_TYPE_GLOBAL);
     JS_FreeValue(ctx, r);
+
+    // andemu marker: an app launched with --android (runtime=andemu) advertises
+    // it to the guest so the android/* compat layer can tune itself. The modules
+    // work either way; this only flags that Android shapes are in play.
+    if (getenv("ZELTO_ANDROID")) {
+        const char *src = "globalThis.__ANDEMU__ = true;";
+        JSValue a = JS_Eval(ctx, src, strlen(src), "<bootstrap>",
+                            JS_EVAL_TYPE_GLOBAL);
+        JS_FreeValue(ctx, a);
+    }
 }
 
 // --- module loading --------------------------------------------------------

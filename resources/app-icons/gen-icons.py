@@ -354,6 +354,44 @@ def rows_icon():
     return buf
 
 
+def sensors_icon():
+    # Motion + location: a gyroscope. Two crossed gimbal rings around a bright core,
+    # with a tilted axis through it — the mark for "this device knows how it is held
+    # and how it is moving" (accelerometer / gyroscope / orientation). Green, the
+    # hue the manifest already tints the tile with.
+    buf = tile(hexrgb("#4BD98C"), hexrgb("#159E58"))
+    ring(buf, 256, 256, 150, 24, W)                 # outer gimbal
+    ring(buf, 256, 256, 96, 20, W, 0.72)            # inner gimbal
+    capsule(buf, 150, 362, 362, 150, 18, W, 0.9)    # tilted spin axis (attitude)
+    disc(buf, 256, 256, 34, W)                       # the core / location fix
+    return buf
+
+
+def andemu_icon():
+    # The andemu route: an Android app running on Zelto. The bugdroid head — a domed
+    # top with a flat bottom, two antennae, two eyes — on the canonical Android
+    # green. It reads as "this is an Android app" at a glance, which is the whole
+    # point of the compat layer. The dome is a disc clipped to its top half so the
+    # bottom edge is straight, the one mark in the family that is not a pure disc.
+    buf = tile(hexrgb("#B7DB52"), hexrgb("#8AB135"))
+    hx, hy, hr = 256, 306, 120           # head centre; flat bottom sits at y = hy
+    for y in range(max(0, int(hy - hr - 1)), min(N, int(hy + 2))):
+        for x in range(max(0, int(hx - hr - 1)), min(N, int(hx + hr + 2))):
+            if y + 0.5 > hy:             # clip everything below the flat bottom
+                continue
+            d = math.hypot(x + 0.5 - hx, y + 0.5 - hy)
+            cov = aa(hr + 0.5 - d)
+            if cov > 0:
+                over(buf[y * N + x], 1.0, 1.0, 1.0, cov)
+    # Antennae: two short stalks springing up-and-out from the dome.
+    capsule(buf, 204, 214, 176, 156, 12, W)
+    capsule(buf, 308, 214, 336, 156, 12, W)
+    # Eyes: two tile-hue discs knocked through the white dome.
+    disc(buf, 220, 258, 17, hexrgb("#5F7A22"))
+    disc(buf, 292, 258, 17, hexrgb("#5F7A22"))
+    return buf
+
+
 def placeholder_icon():
     # The fallback for an app that ships no icon: a neutral tile with a quiet
     # dotted grid. Deliberately characterless — it should read as "no icon yet",
@@ -378,6 +416,8 @@ ICONS = {
     "os.zelto.greeter": greeter_icon,
     "os.zelto.app": rows_icon,          # samples/hello, shown as "Rows"
     "os.zelto.share": share_icon,
+    "os.zelto.sensors": sensors_icon,          # the P38 native sensor/location app
+    "os.zelto.andemu.demo": andemu_icon,       # the andemu Android-compat demo
     "Placeholder": placeholder_icon,
 }
 

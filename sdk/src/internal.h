@@ -252,6 +252,18 @@ void z_keyed_frame_end(ZScreen *s);
 int z_net_collect_fds(struct pollfd *pfds, int max);
 void z_net_handle_ready(struct pollfd *pfds, int count);
 
+// --- Sensor/location event-loop integration (sensors.c) --------------------
+// The sensor/GPS streams share ONE persistent socket to zsysd (all of an app's
+// subscriptions ride it), so the loop hosts a single fd. z_sensor_poll_fd is that
+// fd (or -1 when no stream is open); z_sensor_handle_ready reads and dispatches
+// whatever samples arrived. See sensors.c.
+int z_sensor_poll_fd(void);
+void z_sensor_handle_ready(void);
+// Foreground gate: pause every sensor/location stream at the broker while the app
+// is backgrounded, resume on return (the "when-in-use" contract). app.c calls it
+// from the xdg lifecycle transition. See sensors.c.
+void z_sensor_set_paused(bool paused);
+
 // --- Navigator back-swipe (called from the app loop's pointer handling) ----
 // The interruptible edge-swipe (P33). app.c owns the pointer geometry and drives
 // the top screen's transition spring through these; see navigation.c.
