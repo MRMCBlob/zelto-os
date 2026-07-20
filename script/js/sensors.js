@@ -13,12 +13,14 @@
 import * as N from "zelto:native";
 import { ensure, status } from "zelto/permissions";
 
-// Subscribe once the grant is held. The broker only allows ONE consent request in
-// flight at a time, so a "request once, open many" app (the common shape — open
-// the accelerometer AND the magnetometer to fuse orientation) must not fire a
-// fresh consent per stream. When the capability is already granted we subscribe
-// straight away; only an undecided/denied grant awaits the dialog. That mirrors a
-// native app, which calls z_perm_request once and then opens every stream.
+// Subscribe once the grant is held. A "request once, open many" app (the common
+// shape — open the accelerometer AND the magnetometer to fuse orientation) opens
+// several streams at once. When the capability is already granted we subscribe
+// straight away (no microtask, no dialog); an undecided/denied grant awaits the
+// dialog. The concurrent-undecided case — several streams opened before any grant
+// lands — is safe because permissions.request() coalesces same-permission asks
+// into one broker dialog (the broker allows only one consent in flight), so this
+// mirrors a native app: one consent, then every stream opens.
 function whenGranted(perm, start) {
   if (status(perm) === "granted") {
     start();

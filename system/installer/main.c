@@ -415,6 +415,51 @@ static bool verify_hashes(const char *workdir) {
     return ok;
 }
 
+// Strip leading "./" segments so a MANIFEST path ("./native/x") and a
+// manifest-declared path ("native/x") compare equal.
+static const char *strip_dotslash(const char *p) {
+    while (p[0] == '.' && p[1] == '/') {
+        p += 2;
+    }
+    return p;
+}
+
+// Is `relpath` one of the files enumerated by MANIFEST.sha256 (and therefore
+// proven by verify_hashes to match its recorded digest)? verify_hashes only
+// checks the files the manifest LISTS — it says nothing about a file the manifest
+// omits. Both the signature (over the MANIFEST bytes) and the hash loop would
+// pass for a .zap that ships a payload, or a zelto.toml, that MANIFEST never
+// names — leaving the bytes we actually parse and execute unattested. So the
+// security-critical files must be asserted present here. mkzap always lists them;
+// a hand-forged package might not.
+static bool path_in_manifest(const char *workdir, const char *relpath) {
+    char mpath[1024];
+    snprintf(mpath, sizeof(mpath), "%s/MANIFEST.sha256", workdir);
+    FILE *f = fopen(mpath, "r");
+    if (!f) {
+        return false;
+    }
+    const char *want = strip_dotslash(relpath);
+    bool found = false;
+    char line[1024];
+    while (!found && fgets(line, sizeof(line), f)) {
+        chomp(line);
+        if (strlen(line) < 67) {
+            continue;
+        }
+        // Same field split as verify_hashes: 64 hex, then separator(s), then path.
+        const char *p = line + 64;
+        while (*p == ' ' || *p == '\t' || *p == '*') {
+            p++;
+        }
+        if (strcmp(strip_dotslash(p), want) == 0) {
+            found = true;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
 // --- zsysd reload ----------------------------------------------------------
 
 // Tell zsysd to re-scan its manifest dirs so a same-boot install is visible to
@@ -551,6 +596,14 @@ int main(int argc, char **argv) {
                 "refusing\n");
         goto cleanup;
     }
+    // The manifest we just parsed — which drives the permission set and the exec
+    // synthesis below — must itself be hash-covered, or a tampered zelto.toml
+    // (rewritten id/permissions/exec) would sail through unnoticed.
+    if (!path_in_manifest(workdir, "zelto.toml")) {
+        fprintf(stderr, "[zelto-install] zelto.toml is not covered by "
+                        "MANIFEST.sha256; refusing\n");
+        goto cleanup;
+    }
 
     const char *data = data_dir();
 
@@ -586,6 +639,15 @@ int main(int argc, char **argv) {
     // The payload: the ELF, or the script entry. A .js is data, not an image —
     // install it 0644 (it is executed by the runtime, never exec'd itself).
     const char *payload = m.script[0] ? m.script : m.exec;
+    // The payload is the one file we go on to execute; assert it is hash-covered
+    // before installing it, so a .zap cannot smuggle in bytes MANIFEST omitted.
+    if (!path_in_manifest(workdir, payload)) {
+        fprintf(stderr,
+                "[zelto-install] payload %s is not covered by MANIFEST.sha256; "
+                "refusing\n",
+                payload);
+        goto cleanup;
+    }
     char bin_src[1300], bin_dst[1400];
     snprintf(bin_src, sizeof(bin_src), "%s/%s", workdir, payload);
     snprintf(bin_dst, sizeof(bin_dst), "%s/%s", installed_dir,

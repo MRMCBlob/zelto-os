@@ -60,6 +60,12 @@ class SensorObj {
 
 export class SensorManager {
   constructor() {
+    // listener -> [stop, ...]. Android lets one SensorEventListener register for
+    // several sensors at once; each registration owns its own Zelto stream, so we
+    // keep a LIST of unsubscribe fns per listener. (Keying a single stop by
+    // listener would drop the earlier stream's handle on the second register, and
+    // unregisterListener would then leak it — a live sensor after the app thinks
+    // it stopped, defeating the when-in-use pause.)
     this._streams = new Map();
   }
 
@@ -118,21 +124,24 @@ export class SensorManager {
       },
       { rate }
     );
-    this._streams.set(listener, stop);
+    const existing = this._streams.get(listener);
+    if (existing) existing.push(stop);
+    else this._streams.set(listener, [stop]);
     return true;
   }
 
   unregisterListener(listener) {
     if (listener) {
-      const stop = this._streams.get(listener);
-      if (stop) {
-        stop();
+      const stops = this._streams.get(listener);
+      if (stops) {
+        for (const stop of stops) stop();
         this._streams.delete(listener);
       }
       return;
     }
     // No listener: unregister everything (the Android overload).
-    for (const stop of this._streams.values()) stop();
+    for (const stops of this._streams.values())
+      for (const stop of stops) stop();
     this._streams.clear();
   }
 }
