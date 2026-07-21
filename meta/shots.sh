@@ -160,8 +160,13 @@ run_shot 41-settings-press "Settings: Wi-Fi toggle pressed (veil over PRIMARY ch
 # ===========================================================================
 # SYSTEM OVERLAYS (shade / volume / keyboard / lock / recents / consent / banner)
 # ===========================================================================
-run_shot 11-shade-open "Pull-down shade: quick settings + notifications (open)" 6 \
-    ZELTO_SHADE_OPEN=1
+# The top edge now hosts TWO pull-downs, split left/right (P40 stage 2), so it
+# takes two shots: the right half brings down the Control Center, the left half
+# the Notification Center.
+run_shot 11-control-center "Control Center: round toggle grid (pulled from top right)" 6 \
+    ZELTO_SHADE_OPEN=cc
+run_shot 11a-notification-center "Notification Center: clock + cards (pulled from top left)" 6 \
+    ZELTO_SHADE_OPEN=nc
 SEED='sys.volume\t7\n' run_shot 12-volume-hud "Volume rocker HUD (shown at level 7)" 6 \
     ZELTO_VOLUME_SHOW=1
 
@@ -179,9 +184,17 @@ SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t6\n' \
     run_shot 17-lock-off "Screen-off scrim (idle past idle_off_s while locked)" 11
 
-# Recents (task switcher): three apps left running, then the overlay on top.
-run_shot 18-recents "Recents overview (3 running apps)" 9 \
+# App Switcher: three apps left running, then the overlay on top. Plus its two
+# gestures, frozen: the deck paged between cards, and the centred card lifted
+# toward the flick-up close.
+run_shot 18-switcher "App Switcher: card deck (3 running apps)" 9 \
     SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1
+run_shot 18a-switcher-paging "App Switcher paged between two cards (frozen 1.5)" 9 \
+    SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1 \
+    ZELTO_SWITCHER_SCROLL=1.5
+run_shot 18b-switcher-close "App Switcher: centred card flicked up to close (frozen)" 9 \
+    SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1 \
+    ZELTO_SWITCHER_LIFT=-140
 # Permission consent modal (spawned standalone with app_id + perm).
 run_shot 19-consent "Permission consent dialog (Allow / Deny modal)" 7 \
     SIM_CONSENT="os.zelto.pinger notifications"
@@ -208,8 +221,8 @@ run_shot 45-toast-enter "Launcher toast mid slide-up+fade entrance (frozen 0.5)"
 # State-change cross-fades (P32 item 2): a toggle's on/off fill animates instead
 # of hard-swapping — pinned mid cross-fade via ZELTO_QS_ANIM. Plus the P31 press
 # flash verified over a bottom-nav button (ZELTO_PRESS_APP scopes it to the nav).
-run_shot 46-qs-crossfade "Quick-settings chips mid on/off cross-fade (frozen 0.5)" 6 \
-    ZELTO_SHADE_OPEN=1 ZELTO_QS_ANIM=0.5
+run_shot 46-qs-crossfade "Control Center toggles mid on/off cross-fade (frozen 0.5)" 6 \
+    ZELTO_SHADE_OPEN=cc ZELTO_QS_ANIM=0.5
 run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)" 8 \
     SIM_APP=zelto-settings ZELTO_QS_ANIM=0.5
 run_shot 48-nav-press "Bottom-nav Back button press flash (P31 feedback)" 6 \
@@ -257,8 +270,8 @@ run_shot 56-consent-drag "Consent modal dragged down toward flick-to-Deny (froze
 # incoming screen sliding under it (ZELTO_NAV_BACK=<0..1> = how far the finger is).
 run_shot 57-nav-back-swipe "Navigator back-swipe tracking the finger (frozen 0.5)" 8 \
     SIM_APP=zelto-hello ZELTO_NAV_BACK=0.5
-# Shade over-pull past fully-open, resisting with the rubber-band.
-run_shot 58-shade-overpull "Shade pulled past open, rubber-banding at the limit (frozen)" 6 \
+# Control Center over-pulled past fully-open, resisting with the rubber-band.
+run_shot 58-shade-overpull "Control Center pulled past open, rubber-banding at the limit (frozen)" 6 \
     ZELTO_SHADE_PULL=1.25
 # App drawer over-pulled past fully-up, rubber-banding.
 run_shot 59-drawer-overpull "App drawer over-pulled past open, rubber-banding (frozen)" 6 \
@@ -268,20 +281,28 @@ run_shot 59-drawer-overpull "App drawer over-pulled past open, rubber-banding (f
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
     run_shot 60-reduce-drag "Reduce Motion: drag tracks finger, release would snap (vs 53)" 6 \
     ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
-# Hit-test on a MOVING subtree: the shade panel is frozen OVER-PULLED (slid down
-# past open by the rubber-band) and the press freeze-hook is aimed at the Wi-Fi
-# quick-settings chip AT ITS LIVE offset position. The press veil landing on the
-# (opaque, translated) chip proves hit_test uses the offset frame — a moving subtree
-# stays tappable where it visually is, not at its un-shifted layout home.
-run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset shade chip" 6 \
+# Hit-test on a MOVING subtree: the Control Center is frozen OVER-PULLED (slid
+# down past open by the rubber-band) and the press freeze-hook is aimed at a
+# toggle AT ITS LIVE offset position. The press veil landing on the (opaque,
+# translated) disc proves hit_test uses the offset frame — a moving subtree stays
+# tappable where it visually is, not at its un-shifted layout home. It aims at an
+# OFF toggle (Lock, row 2 centre): the veil is a white wash, so on an ON toggle —
+# a near-white PRIMARY disc — there would be nothing to see.
+run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset Lock toggle" 6 \
     ZELTO_SHADE_PULL=1.18 ZELTO_PRESS_APP=shade_body \
-    ZELTO_PRESS_X=356 ZELTO_PRESS_Y=252
+    ZELTO_PRESS_X=360 ZELTO_PRESS_Y=192
 
 # ===========================================================================
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
 # ===========================================================================
-SEED='sys.wifi\t1\nsys.airplane\t0\nsys.brightness\t5\n' \
-    run_shot 21-bar-wifi-bright "Status bar: Wi-Fi on, brightness high" 6
+SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t4\nsys.brightness\t5\n' \
+    run_shot 21-bar-wifi-bright "Status bar: full cellular + Wi-Fi, brightness high" 6
+# Weak cellular: the unlit bars stay drawn (TEXT_FAINT), so the mark keeps its
+# silhouette at every level instead of shrinking.
+SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t1\nsys.brightness\t5\n' \
+    run_shot 21a-bar-signal-low "Status bar: one cellular bar lit of four" 6
+# Airplane mode REPLACES the bars with the plane (the radios are off, so a signal
+# reading beside it would state the opposite of the truth).
 SEED='sys.wifi\t0\nsys.airplane\t1\nsys.brightness\t2\n' \
     run_shot 22-bar-airplane "Status bar: airplane mode, brightness low" 6
 SEED='sys.battery_pct\t8\nsys.battery_charging\t0\n' \

@@ -3,6 +3,7 @@
 executable(
   'zelto-consent',
   files('main.c'),
+  include_directories : include_directories('..'),  # system/ for common/app_icons.h
   dependencies : zelto_dep,
   install : true,
 )

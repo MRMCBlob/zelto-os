@@ -74,6 +74,10 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 #define Z_COLOR_SURFACE    z_rgba(0x1c, 0x1c, 0x1e, 0xff)  // raised panel
 #define Z_COLOR_SURFACE_2  z_rgba(0x2c, 0x2c, 0x2e, 0xff)  // card / row
 #define Z_COLOR_SURFACE_3  z_rgba(0x3a, 0x3a, 0x3c, 0xff)  // input / key / chip
+// One step lighter again, for a control that must stand OFF a surface which is
+// itself already raised — the character caps on the keyboard's dark material,
+// where SURFACE_3 sits too close to the field of keys to read as a key.
+#define Z_COLOR_SURFACE_4  z_rgba(0x55, 0x55, 0x59, 0xff)  // key cap on a panel
 #define Z_COLOR_BORDER     z_rgba(0x38, 0x38, 0x3a, 0xff)  // hairline / divider
 
 // The interactive fill. Not a hue — a light, "lit" surface. Text and glyphs on it
