@@ -433,6 +433,14 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
 
     # ---------------------------------------------------------------------
+    # !! STALE SINCE P40 STAGE 2 — the swipe-up APP DRAWER this harness drives no
+    # longer exists. Its job moved to the App Library, the LAST PAGE of the home
+    # carousel, so "swipe up from above the dock" opens nothing and every step
+    # after it here photographs an unchanged home screen. The favourites-persist
+    # half (boots #1/#2 reading home.layout back) is still valid. Rewriting the
+    # gesture script needs a real QEMU run to re-derive the coordinates; until
+    # someone does that, treat a HOME_TEST=1 run's drawer frames as expected
+    # failures. The same applies to the QUICK=1 harness below.
     # P15 home screen + app drawer (HOME=1): a TWO-BOOT test against the same
     # data.img proving (a) the home/drawer split, (b) the slide-up drawer with a
     # live swipe + spring settle, (c) launching from both surfaces, and (d)
@@ -557,6 +565,11 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
 
     # ---------------------------------------------------------------------
+    # !! STALE SINCE P40 STAGE 2, twice over: the swipe-up drawer is gone (see the
+    # HOME_TEST=1 note above) and the unified quick-settings shade split into a
+    # Control Center pulled from the top RIGHT and a Notification Center from the
+    # top LEFT — so a centred down-swipe now lands in whichever half its x falls
+    # in, and the "Wi-Fi chip" it taps is a round toggle at different coordinates.
     # P16 curate favourites + quick-settings shade (QUICK=1): a TWO-BOOT test
     # against the same data.img proving (a) a long-press on a drawer icon adds it
     # to the home favourites, (b) a long-press on a home favourite removes it,

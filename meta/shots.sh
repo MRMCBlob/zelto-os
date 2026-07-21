@@ -21,7 +21,7 @@
 #     input — just process spawns run-sim.sh does for us (SIM_EXTRA / SIM_RECENTS /
 #     SIM_CONSENT / SIM_APP + the auto-post/auto-allow hooks).
 # There are NO flaky pointer-swipe shots here: every state that a real user reaches
-# by a gesture (open the drawer, pull the shade, lift a home icon, raise the
+# by a gesture (page to the App Library, pull the shade, lift a home icon, raise the
 # keyboard, pop the volume HUD) is instead reached by a deterministic test-hook
 # added to that surface, so the catalogue reproduces exactly every run.
 set -euo pipefail
@@ -116,7 +116,7 @@ run_shot() {
 # ===========================================================================
 # HOME SCREEN (the launcher's bento grid — env hooks in system/launcher/main.c)
 # ===========================================================================
-run_shot 01-home-page1 "Home, page 1 (default layout: 3 widgets + 4 app icons)" 6
+run_shot 01-home-page1 "Home, page 1 (default seed: 3 widgets + 6 app icons)" 6
 
 # Page 2 / carousel: force tiny 2-row pages so the default set overflows past one
 # page, then settle on page 2 / freeze a flip mid-slide / show the overflow.
@@ -145,9 +145,15 @@ run_shot 09-home-crosspage "Rearrange: ghost held in the right edge gutter on pa
     ZELTO_HOME_ROWS_PER_PAGE=2 ZELTO_HOME_REARRANGE=1 ZELTO_HOME_PAGE=1 \
     ZELTO_HOME_HELD=4 ZELTO_HOME_GHOST_X=690 ZELTO_HOME_GHOST_Y=300
 
-# App drawer (slid up).
-run_shot 10-app-drawer "App drawer slid up (all installed apps)" 6 \
-    ZELTO_HOME_DRAWER=1
+# App Library: the LAST page of the home carousel (the swipe-up drawer is gone).
+# Reached by paging, so the shot just settles the carousel on that page.
+run_shot 10-app-library "App Library: last carousel page (every installed app)" 6 \
+    ZELTO_HOME_PAGE=1
+# Searching: the field is focused, so the system keyboard is up, the page has
+# inset itself by KBD_H (the compositor does not shrink the home window) and the
+# dots + dock have stood down.
+run_shot 10a-app-library-search "App Library search: filtered, keyboard raised" 7 \
+    ZELTO_HOME_PAGE=1 ZELTO_HOME_SEARCH=not
 
 # Press feedback (P31): freeze the global press spring over a tappable node so the
 # touch-down highlight veil paints on a still frame (ZELTO_PRESS_X/Y in surface px,
@@ -273,9 +279,6 @@ run_shot 57-nav-back-swipe "Navigator back-swipe tracking the finger (frozen 0.5
 # Control Center over-pulled past fully-open, resisting with the rubber-band.
 run_shot 58-shade-overpull "Control Center pulled past open, rubber-banding at the limit (frozen)" 6 \
     ZELTO_SHADE_PULL=1.25
-# App drawer over-pulled past fully-up, rubber-banding.
-run_shot 59-drawer-overpull "App drawer over-pulled past open, rubber-banding (frozen)" 6 \
-    ZELTO_HOME_DRAWER=1 ZELTO_DRAWER_OVERPULL=120
 # Reduce Motion A/B: the release animation collapses, but the 1:1 drag itself is
 # intact — the SAME volume drag as 53, still shown at the frozen finger position.
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \

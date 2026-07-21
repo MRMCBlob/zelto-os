@@ -208,8 +208,8 @@ ZUI *z_app_ui(ZApp *app);
 void *z_app_state(ZApp *app);
 // Text-field focus (P21). z_text_field (view.c) uses these to reflect + set the
 // app's active text field; app.c drives text-input-v3 enable/disable off it.
-void z_app_focus_field(ZApp *app, ZTextField *f);
-bool z_app_field_active(ZApp *app, const ZTextField *f);
+// z_app_focus_field / z_app_field_active are PUBLIC (declared in <zelto/ui.h>,
+// included above) — the home screen needs them to inset for the keyboard.
 // The app's currently-focused field, or NULL (P22 selection actions operate on it).
 ZTextField *z_app_active_field(ZApp *app);
 

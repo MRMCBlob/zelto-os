@@ -7,8 +7,32 @@
 //
 //   - a HOME surface: a drawn/photo wallpaper and a directly-manipulable BENTO
 //     GRID holding BOTH app icons and widgets in one ordered sequence; and
-//   - an APP DRAWER: the *complete* installed-app list in a scroll, on an opaque
-//     panel that slides up over the home surface.
+//   - an APP LIBRARY: the *complete* installed-app list, as the LAST PAGE of the
+//     same carousel.
+//
+// THE APP LIBRARY (P40 stage 2). This used to be a swipe-up DRAWER — an opaque
+// panel that slid over the home from below. iOS has no drawer, and deleting one
+// is not as simple as removing the surface: the curate menu can REMOVE an app
+// from home, and with no second list that app is orphaned with no way back. So
+// the drawer's job moves to a page at the END of the carousel, reached by the
+// SAME horizontal swipe that flips home pages — one gesture for "move sideways
+// through my apps" instead of a page swipe and a separate up-swipe that has to be
+// told apart from it (the old on_home_pan locked an axis to do exactly that).
+//
+// The Library page is SYNTHETIC: it is not in the pack, not in home.layout, and
+// cannot be reordered into. Pages are `packed + nlib`, where the packed pages
+// come from the layout and the Library pages come from the installed-app list;
+// rearrange's cross-page edge-dwell still caps at the last PACKED page, so an
+// icon can never be dragged into the Library. Long-press an app there to add it
+// back to Home — the inverse of the curate menu's Remove.
+//
+// SEARCH. The Library's field is a real TextField, so focusing it raises the
+// system keyboard (text-input-v3 -> input-method-v2). The compositor sizes the
+// home window to the FULL output rather than the usable area (it draws behind the
+// bars, see zcomp layer.c), so the keyboard's exclusive zone does NOT shrink it:
+// the page insets its own bottom by KBD_H while the field is focused, and hides
+// the dots + dock, which the keyboard would otherwise cover. Leaving the page
+// blurs the field, or the keyboard would stay up over a page with no field on it.
 //
 // UNIFIED BENTO GRID (this iteration). The home surface is one ordered sequence
 // of typed entries — an app icon (1x1 cell) or a widget (a cw x ch cell span,
@@ -56,6 +80,7 @@
 // the launcher's private storage on /var/zelto; on first run (no home.layout) it
 // migrates from the older home.widgets + home.favorites prefs, else seeds a
 // default. Tapping any icon fork()+exec()s the app's `exec=` binary.
+#include <ctype.h>
 #include <dirent.h>
 #include <math.h>
 #include <stdint.h>
@@ -74,12 +99,16 @@
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
 #define MAX_APPS 32
-// On first run the home seeds EVERY installed app, the way a phone does — an app
-// you installed is on the home screen, and you curate from there. Seeding only a
-// handful left the grid with one short row of icons and most of a screen of bare
-// wallpaper, which reads as an unfinished device rather than a tidy one. The dock
-// is drawn from the same list, so the first four are reachable from every page.
-#define DEFAULT_FAVS 16  // cap: the seed stops here (the carousel pages the rest)
+// The first-run home seed. This used to be EVERY installed app (16), because with
+// only the drawer behind it a short seed left the grid looking like an unfinished
+// device — one row of icons over a screen of bare wallpaper. The App Library
+// changes that calculation: seeding everything makes the Library an exact copy of
+// the home pages, so it has nothing to be FOR until you start removing things. A
+// small seed gives both surfaces a job from the first boot — home is the set you
+// chose, the Library is everything you have — and the widgets keep page 1 full.
+// The dock is drawn from the app list, not from this, so the first four apps stay
+// reachable from every page regardless.
+#define DEFAULT_FAVS 6   // cap: the seed stops here; the rest live in the Library
 
 // One installed app, parsed from a .app manifest. `id` is the manifest basename
 // (minus ".app"), e.g. "os.zelto.cards" — the stable key used in the layout.
@@ -673,17 +702,22 @@ static int target_index(const Placed *pl, int n, int gslot, int rpp) {
 
 // --- launcher state -------------------------------------------------------
 typedef struct LauncherState {
-    ZAnimated *drawer_anim;   // 0 hidden below the fold .. 1 covering home (cell 0)
-    ZAnimated *ghost_anim;    // lifted ghost's x (cell 1) — the ONLY reorder anim
-    ZAnimated *page_anim;     // carousel scroll position, in page units (cell 2)
+    ZAnimated *ghost_anim;    // lifted ghost's x (cell 0) — the ONLY reorder anim
+    ZAnimated *page_anim;     // carousel scroll position, in page units (cell 1)
     float surface_w, surface_h;
 
     // Horizontal pager.
     int page;                 // current settled page (integer)
-    int npages;               // page count from the last build
+    int npages;               // PACKED page count from the last build (home only)
+    int nlib;                 // App Library pages after them (>= 1)
     int pan_axis;             // gesture axis lock: 0 undecided, 1 horiz, 2 vert
     float page_base;          // page_anim value at pan begin (for horiz drags)
     int dwell_edge;           // cross-page edge-gutter dwell: -1 none, 0 L, 1 R
+
+    // App Library search (P40 stage 2). The query filters the Library grid; the
+    // field is a real TextField, so focusing it raises the system keyboard and the
+    // page has to inset for it (see the file header).
+    ZTextField search;
 
     // Wallpaper (P25).
     bool wp_subscribed;
@@ -882,9 +916,11 @@ static void on_remove_entry(ZApp *app, void *state, void *data) {
     z_invalidate(app);
 }
 
-// Drawer long-press: add this app to the home sequence.
-static void on_drawer_add(ZApp *app, void *state, void *data, float x,
-                          float y) {
+// App Library long-press: add this app to the home sequence. This is the inverse
+// of the curate menu's Remove, and the reason the Library exists at all — without
+// it, removing an app from home would orphan it with no way back.
+static void on_library_add(ZApp *app, void *state, void *data, float x,
+                           float y) {
     (void)x;
     (void)y;
     LauncherState *s = state;
@@ -994,23 +1030,16 @@ static void ghost_land(ZApp *app, LauncherState *s) {
     s->landing = true;
 }
 
-// Map the RAW drawer position (a drag may push it past either end) to the DISPLAYED
-// one, rubber-banding the over-pull so dragging the drawer up past fully-open (or
-// down past fully-closed) resists instead of running off-screen, and snaps back on
-// release (P33). dim is in drawer-units (a fraction of the surface travel).
-static float drawer_display(float raw) {
-    if (raw > 1.0f) {
-        return 1.0f + z_rubber_band(raw - 1.0f, 0.4f);
-    }
-    if (raw < 0.0f) {
-        return z_rubber_band(raw, 0.4f);
-    }
-    return raw;
+// The last page you can swipe to: the packed home pages plus the App Library
+// pages that follow them.
+static int last_page(const LauncherState *s) {
+    int total = s->npages + (s->nlib > 0 ? s->nlib : 1);
+    return total > 0 ? total - 1 : 0;
 }
 
 // Spring the carousel to page `p` (clamped) and record it as the settled page.
 static void snap_to_page(ZApp *app, LauncherState *s, int p) {
-    int maxp = s->npages > 0 ? s->npages - 1 : 0;
+    int maxp = last_page(s);
     if (p < 0) p = 0;
     if (p > maxp) p = maxp;
     s->page = p;
@@ -1116,35 +1145,36 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
         return;
     }
 
-    if (!s->drawer_anim || !s->page_anim) {
+    if (!s->page_anim) {
         return;
     }
-    float h = s->surface_h > 1.0f ? s->surface_h : 1.0f;
     float w = s->surface_w > 1.0f ? s->surface_w : 1.0f;
     if (e->phase == Z_PAN_BEGIN) {
         s->pan_axis = 0;
         s->page_base = z_animated_get(s->page_anim);
     } else if (e->phase == Z_PAN_CHANGED) {
-        if (s->pan_axis == 0) {   // lock the axis on the first real motion
+        // Lock the axis on the first real motion. Only the horizontal one does
+        // anything now — the up-swipe that used to pull the drawer up is gone with
+        // it, and the bottom edge belongs to the home indicator (a separate layer
+        // surface with its own 34px strip), so a vertical drag here is inert. The
+        // lock stays because it is what keeps a slightly-diagonal vertical drag
+        // from nudging the carousel a page sideways.
+        if (s->pan_axis == 0) {
             float ax = fabsf(e->translation_x), ay = fabsf(e->translation_y);
             if (ax > 8.0f && ax >= ay) {
                 s->pan_axis = 1;
             } else if (ay > 8.0f) {
                 s->pan_axis = 2;
-                z_animated_grab(s->drawer_anim);   // interruptible: take a settle over
             }
         }
         if (s->pan_axis == 1) {
             float p = s->page_base - e->translation_x / w;
-            float maxp = s->npages > 0 ? (float)(s->npages - 1) : 0.0f;
+            float maxp = (float)last_page(s);
             if (p < 0.0f) p = 0.0f;
             if (p > maxp) p = maxp;
             z_animated_set(s->page_anim, p);
             z_full_repaint(app);
             z_invalidate(app);
-        } else if (s->pan_axis == 2) {
-            // Store the RAW drawer position (render rubber-bands the over-pull).
-            z_animated_set(s->drawer_anim, -e->translation_y / h);
         }
     } else if (e->phase == Z_PAN_END) {
         if (s->pan_axis == 1) {
@@ -1156,60 +1186,8 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
                 target = (int)floorf(p);    // fling right → previous page
             }
             snap_to_page(app, s, target);
-        } else if (s->pan_axis == 2) {
-            float a = z_animated_get(s->drawer_anim);
-            bool open = a > 0.35f || e->velocity_y < -500.0f;
-            // Settle carrying the finger velocity (px/s -> drawer-units/s; up = open,
-            // so an upward (negative) velocity raises the drawer value -> negate).
-            z_animated_spring_velocity(s->drawer_anim, open ? 1.0f : 0.0f,
-                                       Z_SPRING_STANDARD, -e->velocity_y / h);
         }
     }
-}
-
-static void on_drawer_pan(ZApp *app, void *state, const ZPanEvent *e) {
-    (void)app;
-    LauncherState *s = state;
-    if (!s->drawer_anim) {
-        return;
-    }
-    float h = s->surface_h > 1.0f ? s->surface_h : 1.0f;
-    if (e->phase == Z_PAN_BEGIN) {
-        // Interruptible: grab a settling drawer so the finger takes over its live
-        // value with no jump.
-        z_animated_grab(s->drawer_anim);
-    } else if (e->phase == Z_PAN_CHANGED) {
-        // RAW (unclamped) drawer position; the render rubber-bands the over-pull.
-        z_animated_set(s->drawer_anim, 1.0f - e->translation_y / h);
-    } else if (e->phase == Z_PAN_END) {
-        float a = z_animated_get(s->drawer_anim);
-        bool close = a < 0.65f || e->velocity_y > 500.0f;
-        z_animated_spring_velocity(s->drawer_anim, close ? 0.0f : 1.0f,
-                                   Z_SPRING_STANDARD, -e->velocity_y / h);
-    }
-}
-
-static void anim_open(ZApp *app, void *state) {
-    (void)app;
-    LauncherState *s = state;
-    if (s->drawer_anim) {
-        z_animated_spring(s->drawer_anim, 1.0f);
-    }
-}
-static void anim_close(ZApp *app, void *state) {
-    (void)app;
-    LauncherState *s = state;
-    if (s->drawer_anim) {
-        z_animated_spring(s->drawer_anim, 0.0f);
-    }
-}
-static void open_drawer(ZApp *app, void *state) {
-    (void)state;
-    z_with_animation(app, Z_SPRING_STANDARD, anim_open);
-}
-static void close_drawer(ZApp *app, void *state) {
-    (void)state;
-    z_with_animation(app, Z_SPRING_STANDARD, anim_close);
 }
 
 // --- wallpaper ------------------------------------------------------------
@@ -1506,23 +1484,186 @@ static ZView raster_layer(LauncherState *s, int rows) {
     return Fill(z_stack(Z_AXIS_DEPTH, &st));
 }
 
-// The carousel page indicator: one dot per page, the current one bright + larger.
-// `page_v` is the live (fractional) scroll position; the nearest page reads as
-// active mid-flip.
-static ZView page_dots(int npages, float page_v) {
+// --- the App Library ------------------------------------------------------
+// The last page(s) of the carousel: every installed app, name-sorted (g_apps is
+// already sorted), over a search field. It reuses the home's cell metrics and
+// app_cell_content verbatim — an app icon must be the same object here as it is
+// on home, or paging into the Library reads as arriving in a different program.
+#define KBD_H 300.0f     // system/keyboard's strip height (== its exclusive zone)
+#define LIB_TOP 116.0f   // the title + search field above the grid
+
+// Case-insensitive substring test. strcasestr is a GNU extension and this file
+// is built -Wpedantic, so the scan is written out.
+static bool ci_contains(const char *hay, const char *needle) {
+    if (!needle || !needle[0]) {
+        return true;
+    }
+    for (const char *h = hay; *h; h++) {
+        const char *a = h, *b = needle;
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+            a++;
+            b++;
+        }
+        if (!*b) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Does this app match the live query? Name first, then the id — searching
+// "zelto" or "os.zelto.cards" should find things too, and an id is the only
+// handle an app with a generic display name has.
+static bool lib_matches(const AppEntry *e, const char *q) {
+    return ci_contains(e->name, q) || ci_contains(e->id, q);
+}
+
+// Rows one Library page holds. While the search field is focused the system
+// keyboard covers the bottom KBD_H of the screen and the compositor does NOT
+// shrink this window (the home is sized to the full output), so the page reserves
+// that height itself instead of the dots + dock it hides.
+static int lib_rows(float sw, float sh, bool searching) {
+    float cell = cell_side(sw);
+    float reserve = searching ? (KBD_H + 24.0f) : BOTTOM_RESERVE;
+    float avail = sh - GRID_TOP - LIB_TOP - reserve;
+    int r = (int)floorf((avail + GRID_GAP) / (cell + GRID_GAP));
+    if (r < 1) {
+        r = 1;
+    }
+    if (r > MAX_ROWS) {
+        r = MAX_ROWS;
+    }
+    return r;
+}
+
+// Collect the matching app indices into `out`; returns how many.
+static int lib_collect(const char *q, int *out) {
+    int n = 0;
+    for (int i = 0; i < g_n_apps && n < MAX_APPS; i++) {
+        if (lib_matches(&g_apps[i], q)) {
+            out[n++] = i;
+        }
+    }
+    return n;
+}
+
+// The live query, or NULL when the field is empty.
+static const char *lib_query(const LauncherState *s) {
+    return s->search.len > 0 ? s->search.text : NULL;
+}
+
+// How many Library pages the current (possibly filtered) app list needs. Always
+// at least one: an empty result set still has a page to say so on.
+static int lib_page_count(const LauncherState *s, bool searching) {
+    int idx[MAX_APPS];
+    int n = lib_collect(lib_query(s), idx);
+    int per = GRID_COLS * lib_rows(s->surface_w, s->surface_h, searching);
+    int pages = per > 0 ? (n + per - 1) / per : 1;
+    return pages < 1 ? 1 : pages;
+}
+
+// One Library page. The title sits on every page (so a second page is not a
+// mystery grid); the FIELD is built only on the first — two live TextField nodes
+// bound to one ZTextField would be two carets on one buffer.
+static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
+                               bool searching) {
+    int idx[MAX_APPS];
+    int n = lib_collect(lib_query(s), idx);
+    int rows = lib_rows(s->surface_w, s->surface_h, searching);
+    int per = GRID_COLS * rows;
+    int start = lp * per;
+
+    ZStackOpts col = {.spacing = GRID_GAP, .align = Z_ALIGN_LEADING};
+    int k = 0;
+    col.children[k++] = vgap(GRID_TOP - GRID_PAD);
+    col.children[k++] = Weight(Z_WEIGHT_BOLD,
+        TextShadow(Foreground(Z_COLOR_TEXT,
+            Font(Z_FONT_TITLE, Text("App Library")))));
+    if (lp == 0) {
+        col.children[k++] = Frame(s->surface_w - 2.0f * GRID_PAD, 0.0f,
+            TextField(app, &s->search, "Search"));
+    } else {
+        col.children[k++] = vgap(52.0f);   // hold the grid at the same height
+    }
+
+    if (n == 0) {
+        col.children[k++] = vgap(24.0f);
+        col.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
+            Font(Z_FONT_CALLOUT, Text("No apps match \"%s\"", s->search.text)));
+    }
+    for (int r = 0; r < rows && k < Z_MAX_CHILDREN - 3; r++) {
+        int base = start + r * GRID_COLS;
+        if (base >= n) {
+            break;
+        }
+        // FIXED-width cells, not Grow(1): a grow-weighted row distributes its
+        // spare space among however many children it has, so a filtered row of
+        // two results would sit at different x's than the four-up rows above it —
+        // the icons would visibly shift sideways as you type. A fixed cell (the
+        // home grid's own cell_side, so 4 of them plus the gaps come to exactly
+        // the padded width) keeps every column on the same axis at every count.
+        float cell = cell_side(s->surface_w);
+        ZStackOpts row = {.spacing = GRID_GAP, .align = Z_ALIGN_LEADING};
+        for (int c = 0; c < GRID_COLS; c++) {
+            int j = base + c;
+            if (j < n) {
+                const AppEntry *e = &g_apps[idx[j]];
+                // Long-press ADDS to Home (the inverse of curate's Remove); tap
+                // launches. No rearrange here — the Library's order is the app
+                // list's, and there is nothing to arrange.
+                row.children[c] = Frame(cell, 0.0f,
+                    OnLongPress(on_library_add, (void *)e,
+                        OnTapData(launch_app, (void *)e,
+                            app_cell_content(e))));
+            } else {
+                row.children[c] = Frame(cell, 1.0f,
+                    Rect(.color = z_rgba(0, 0, 0, 0)));
+            }
+        }
+        col.children[k++] = z_stack(Z_AXIS_HORIZONTAL, &row);
+    }
+    col.children[k++] = Spacer();
+    // The bottom reserve: the keyboard while searching, else the dots + dock.
+    col.children[k++] = vgap(searching ? KBD_H : BOTTOM_RESERVE);
+
+    ZStackOpts opts = col;
+    opts.padding = GRID_PAD;
+    return Fill(z_stack(Z_AXIS_VERTICAL, &opts));
+}
+
+// The carousel page indicator: one dot per HOME page, then a distinct four-square
+// mark for the App Library. The Library is not another home page — it is the end
+// of the road — so it gets its own mark rather than an n+1'th dot, which is where
+// iOS puts it too. `page_v` is the live (fractional) scroll position; the nearest
+// page reads as active mid-flip.
+static ZView page_dots(int npages, int nlib, float page_v) {
     int active = (int)floorf(page_v + 0.5f);
     // Flanking Spacers centre the dots: a bare HStack expands to the full width
     // and would otherwise pack the dots at the leading edge.
     ZStackOpts row = {.spacing = 9, .align = Z_ALIGN_CENTER};
     int k = 0;
     row.children[k++] = Spacer();
-    for (int i = 0; i < npages && k < Z_MAX_CHILDREN - 1; i++) {
+    for (int i = 0; i < npages && k < Z_MAX_CHILDREN - 3; i++) {
         bool on = i == active;
         float d = on ? 9.0f : 7.0f;
         row.children[k++] = Frame(d, d,
             CornerRadius(d / 2.0f,
                 Rect(.color = on ? Z_COLOR_TEXT_INV : Z_COLOR_TEXT_MUTED,
                      .radius = d / 2.0f)));
+    }
+    if (nlib > 0) {
+        bool on = active >= npages;
+        ZColor c = on ? Z_COLOR_TEXT_INV : Z_COLOR_TEXT_MUTED;
+        float q = on ? 4.0f : 3.0f;
+        ZView quad = VStack(
+            HStack(Frame(q, q, Rect(.color = c, .radius = 1.0f)),
+                   Frame(q, q, Rect(.color = c, .radius = 1.0f)),
+                   .spacing = 2, .align = Z_ALIGN_CENTER),
+            HStack(Frame(q, q, Rect(.color = c, .radius = 1.0f)),
+                   Frame(q, q, Rect(.color = c, .radius = 1.0f)),
+                   .spacing = 2, .align = Z_ALIGN_CENTER),
+            .spacing = 2, .align = Z_ALIGN_CENTER);
+        row.children[k++] = quad;
     }
     row.children[k++] = Spacer();
     return z_stack(Z_AXIS_HORIZONTAL, &row);
@@ -1547,12 +1688,11 @@ static void on_launcher_lifecycle(ZApp *app, void *state, ZLifecycle ev) {
 
 static ZView launcher_body(ZApp *app, LauncherState *state) {
     // Retained hooks FIRST + unconditionally so their call-order identity is
-    // stable: drawer_anim (cell 0), ghost_anim (cell 1, the only reorder anim),
-    // page_anim (cell 2, the carousel scroll position in page units). These
-    // three call-order cells sit in a separate namespace from the per-item
-    // z_animated_keyed cells (keyed by identity), so adding page_anim here does
-    // not disturb any item's spring.
-    state->drawer_anim = z_animated_value(app, 0.0f);
+    // stable: ghost_anim (cell 0, the only reorder anim), page_anim (cell 1, the
+    // carousel scroll position in page units). These call-order cells sit in a
+    // separate namespace from the per-item z_animated_keyed cells (keyed by
+    // identity), so changing this list cannot disturb any item's spring — the
+    // drawer_anim that used to be cell 0 went out with the drawer.
     state->ghost_anim = z_animated_value(app, 0.0f);
     state->page_anim = z_animated_value(app, 0.0f);
     // App-open cue spring — IDENTITY-keyed, so it shares no cell with the three
@@ -1607,20 +1747,17 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             state->page = p;
             z_animated_set(state->page_anim, (float)p);
         }
-        // ZELTO_HOME_DRAWER=1 seeds the app drawer fully open on the first build,
-        // so the slid-up all-apps panel is screenshot-verifiable without a swipe.
-        const char *dr = getenv("ZELTO_HOME_DRAWER");
-        if (dr && dr[0] == '1') {
-            z_animated_set(state->drawer_anim, 1.0f);
-        }
-        // Over-pull freeze-frame (P33): ZELTO_DRAWER_OVERPULL=<px> pins the RAW
-        // drawer position past fully-open so the rubber-banded resistance (via
-        // drawer_display) is shot-verifiable.
-        const char *dop = getenv("ZELTO_DRAWER_OVERPULL");
-        if (dop && dop[0]) {
-            float px = (float)atof(dop);
-            float hh = state->surface_h > 1.0f ? state->surface_h : 1280.0f;
-            z_animated_set(state->drawer_anim, 1.0f + px / hh);
+        // ZELTO_HOME_SEARCH=<text> seeds the App Library's query (and focuses the
+        // field, so the shot also shows the keyboard-inset layout) without driving
+        // a tap + keystrokes. Pair it with ZELTO_HOME_PAGE=<last> to land on the
+        // Library page.
+        const char *sq = getenv("ZELTO_HOME_SEARCH");
+        if (sq && sq[0]) {
+            snprintf(state->search.text, sizeof(state->search.text), "%s", sq);
+            state->search.len = (int)strlen(state->search.text);
+            state->search.caret = state->search.len;
+            state->search.anchor = state->search.len;
+            z_app_focus_field(app, &state->search);
         }
         const char *rr = getenv("ZELTO_HOME_REARRANGE");
         if (rr && rr[0] == '1' && g_n_home > 0) {
@@ -1736,12 +1873,29 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     static Placed pl[MAX_HOME];
     int npages = pack_home_paged(disp, nd, rpp, pl);
     state->npages = npages;
-    // Clamp the settled page in case the sequence shrank (removal / commit).
-    if (state->page > npages - 1) {
-        state->page = npages - 1;
+    // The App Library pages follow the packed home pages. Its page count depends
+    // on whether the search field is focused (the keyboard eats rows), so resolve
+    // focus first — and if focus is up but the carousel has left the Library,
+    // blur, or the keyboard stays raised over a page with no field on it.
+    bool searching = z_app_field_active(app, &state->search);
+    if (searching && z_animated_get(state->page_anim) < (float)npages - 0.5f) {
+        z_app_focus_field(app, NULL);
+        searching = false;
+    }
+    state->nlib = lib_page_count(state, searching);
+    // Clamp the settled page in case the sequence (or the filtered list) shrank.
+    if (state->page > last_page(state)) {
+        state->page = last_page(state);
     }
     if (state->page < 0) {
         state->page = 0;
+    }
+    // ...and drag the live carousel position back with it, or a page count that
+    // shrank under a settled scroll (a removal, a search that filtered the Library
+    // down to one page, ZELTO_HOME_PAGE past the end) leaves the surface parked on
+    // empty space with every page translated off-screen.
+    if (z_animated_get(state->page_anim) > (float)last_page(state)) {
+        z_animated_set(state->page_anim, (float)state->page);
     }
 
     // In a headless anim-frame test the springs are stepped then FROZEN (pinned)
@@ -1898,13 +2052,20 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         pages_root.children[prk++] =
             OffsetXY(px, 0.0f, Fill(z_stack(Z_AXIS_DEPTH, &pcells)));
     }
+    // The App Library pages ride the same carousel translation, so paging into
+    // them is the same rigid slide as flipping between two home pages — there is
+    // no separate surface and no second gesture.
+    for (int lp = 0; lp < state->nlib && prk < Z_MAX_CHILDREN - 1; lp++) {
+        float px = ((float)(npages + lp) - page_v) * state->surface_w;
+        pages_root.children[prk++] = OffsetXY(px, 0.0f,
+            library_page_view(app, state, lp, searching));
+    }
     ZView cells_layer = Fill(z_stack(Z_AXIS_DEPTH, &pages_root));
 
     // The bottom bar: page dots over the DOCK — or a Done bar while rearranging.
-    // The drawer is opened by the up-swipe (on_home_pan) or by tapping the grab
-    // handle above the dock; the old "^ / All apps" text label is gone, because a
-    // dock plus a grabber is the arrangement every phone user already knows and it
-    // needs no instructions (Jakob's Law, Paradox of the Active User).
+    // The grab handle above the dock is gone with the drawer it opened: there is
+    // no up-swipe to advertise any more, and the App Library is reached by the
+    // same sideways swipe as every other page, which needs no handle.
     ZView bottom_content = state->rearrange
         ? OnTap(exit_rearrange,
             Background(Z_COLOR_PRIMARY,
@@ -1913,25 +2074,25 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                         Foreground(Z_COLOR_ON_PRIMARY,
                             Weight(Z_WEIGHT_SEMIBOLD,
                                 Font(Z_FONT_CALLOUT, Text("Done"))))))))
-        : VStack(
-            OnTap(open_drawer,
-                Padding(6.0f,
-                    Rect(.color = Z_COLOR_TEXT_MUTED,
-                         .width = 44, .height = 5, .radius = 2.5f))),
-            dock_view(),
-            .spacing = 4, .align = Z_ALIGN_CENTER);
+        : dock_view();
 
-    ZStackOpts bstack = {.spacing = 12, .align = Z_ALIGN_CENTER,
-                         .padding = state->rearrange ? 28.0f : 14.0f};
-    int bk = 0;
-    bstack.children[bk++] = Spacer();
-    if (npages > 1) {
-        bstack.children[bk++] = page_dots(npages, page_v);
+    // While searching, the keyboard occupies the bottom KBD_H — the dots and dock
+    // would be behind it, so the whole bar stands down and the Library page takes
+    // the space back (lib_rows reserves the keyboard instead of BOTTOM_RESERVE).
+    ZView bottom = NULL;
+    if (!searching) {
+        ZStackOpts bstack = {.spacing = 12, .align = Z_ALIGN_CENTER,
+                             .padding = state->rearrange ? 28.0f : 14.0f};
+        int bk = 0;
+        bstack.children[bk++] = Spacer();
+        // Dots stay up in rearrange too: they are the only readout of which page
+        // the edge-dwell flip has carried the held item onto.
+        bstack.children[bk++] = page_dots(npages, state->nlib, page_v);
+        bstack.children[bk++] = bottom_content;
+        // The surface runs under the home indicator, so hold the dock clear of it.
+        bstack.children[bk++] = vgap(HOMEBAR_H);
+        bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
     }
-    bstack.children[bk++] = bottom_content;
-    // The surface runs under the home indicator, so hold the dock clear of it.
-    bstack.children[bk++] = vgap(HOMEBAR_H);
-    ZView bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
 
     // The lifted ghost: the held item's content, drawn on top via its shared
     // keyed x/y cell. While HELD the cell is locked to the finger; on release it
@@ -1981,86 +2142,13 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         hs.children[hk++] = raster_layer(state, rpp);
     }
     hs.children[hk++] = cells_layer;
-    hs.children[hk++] = bottom;
+    if (bottom) {
+        hs.children[hk++] = bottom;
+    }
     if (ghost) {
         hs.children[hk++] = ghost;
     }
     ZView home = OnPan(on_home_pan, Fill(z_stack(Z_AXIS_DEPTH, &hs)));
-
-    // The app drawer: an opaque panel slid up from below. The slide uses the
-    // rubber-banded DISPLAY position, so an over-pull past fully-open resists (P33).
-    float drawer_v = z_animated_get(state->drawer_anim);
-    float slide = (1.0f - drawer_display(drawer_v)) * state->surface_h;
-    // A real vector cross, not the letter "X" — a glyph borrowed from the alphabet
-    // is the tell of an unfinished UI, and it sits on the text baseline instead of
-    // optically centred in its tap target.
-    static const float cross[] = {0.25f, 0.25f, 0.75f, 0.75f};
-    static const float cross2[] = {0.75f, 0.25f, 0.25f, 0.75f};
-    ZView close_mark = OnTap(close_drawer,
-        Frame(44.0f, 44.0f,          // a 44pt hit target, the accessibility floor
-            ZStack(
-                Frame(18.0f, 18.0f,
-                    Stroke(.points = cross, .count = 2, .thickness = 2.5f,
-                           .color = Z_COLOR_TEXT)),
-                Frame(18.0f, 18.0f,
-                    Stroke(.points = cross2, .count = 2, .thickness = 2.5f,
-                           .color = Z_COLOR_TEXT)),
-                .align = Z_ALIGN_CENTER)));
-
-    ZView grabber = OnPan(on_drawer_pan,
-        VStack(
-            Rect(.color = Z_COLOR_TEXT_MUTED, .width = 44, .height = 5,
-                 .radius = 2.5f),
-            HStack(
-                Weight(Z_WEIGHT_BOLD, Foreground(Z_COLOR_TEXT,
-                    Font(Z_FONT_TITLE, Text("All apps")))),
-                Spacer(),
-                close_mark,
-                .align = Z_ALIGN_CENTER),
-            .spacing = 10, .align = Z_ALIGN_CENTER));
-
-    // Drawer app grid: a plain 4-col icon grid; long-press adds to Home.
-    ZStackOpts dgrid = {.spacing = 18, .align = Z_ALIGN_LEADING};
-    int gk = 0;
-    for (int i = 0; i < g_n_apps && gk < Z_MAX_CHILDREN; i += GRID_COLS) {
-        ZStackOpts row = {.spacing = 16, .align = Z_ALIGN_LEADING};
-        for (int c = 0; c < GRID_COLS; c++) {
-            int j = i + c;
-            if (j < g_n_apps) {
-                const AppEntry *e = &g_apps[j];
-                row.children[c] = Grow(1.0f,
-                    OnLongPress(on_drawer_add, (void *)e,
-                        OnTapData(launch_app, (void *)e,
-                            app_cell_content(e))));
-            } else {
-                row.children[c] = Spacer();
-            }
-        }
-        dgrid.children[gk++] = z_stack(Z_AXIS_HORIZONTAL, &row);
-    }
-    // The drawer is a MATERIAL over the WALLPAPER — not over the home.
-    //
-    // It slides up across the home grid, and the home is a field of bright icons.
-    // A translucent tint laid straight over that lets those icons read through the
-    // drawer's OWN icons: two overlapping app grids, which is worse than either
-    // surface alone. So the drawer repaints the wallpaper itself (opaque, so the
-    // home beneath is fully occluded) and frosts THAT. What shows through is the
-    // picture, which is what a phone's app library shows through to — never the
-    // screen it covered.
-    // Inset for the system bars: the drawer fills the whole screen too.
-    ZView drawer_content = VStack(
-        vgap(BAR_H - 12.0f),
-        grabber,
-        Grow(1.0f, Scroll(app, z_stack(Z_AXIS_VERTICAL, &dgrid),
-                          .axis = Z_AXIS_VERTICAL)),
-        vgap(HOMEBAR_H),
-        .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING);
-    ZView drawer = Offset(NULL, slide,
-        Fill(ZStack(
-            Fill(wallpaper(state)),
-            Fill(Rect(.color = Z_COLOR_MATERIAL_SHEET)),
-            Fill(drawer_content),
-            .align = Z_ALIGN_CENTER)));
 
     // Toast (P32): a spring-driven slide-up + fade on the SNAPPY token. The enter
     // spring is IDENTITY-keyed (not call-order) so it never disturbs the launcher's
@@ -2127,14 +2215,13 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                   fabsf(page_v - floorf(page_v + 0.5f)) > 0.001f;
     bool launching = state->launch_ref >= 0 &&
                      z_animated_get(state->launch_anim) > 0.001f;
-    if (drawer_v > 0.001f || state->rearrange || toast || paging || launching) {
+    if (state->rearrange || toast || paging || launching) {
         z_full_repaint(app);
     }
 
     ZStackOpts root = {.align = Z_ALIGN_CENTER};
     int k = 0;
     root.children[k++] = home;
-    root.children[k++] = drawer;
     if (toast) {
         root.children[k++] = toast;
     }

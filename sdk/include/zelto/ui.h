@@ -19,7 +19,7 @@
 
 #ifdef __cplusplus
 extern "C" {
-#endif
+#endif // ZELTO_UI_H
 
 // Opaque handles. A ZView is an arena-allocated node, cheap to create and
 // thrown away each rebuild; never freed by the app.
@@ -252,6 +252,20 @@ typedef struct ZTextField {
 // the field is empty. Takes `app` so the widget can reflect focus/caret state.
 ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder);
 #define TextField(appp, f, placeholder) z_text_field(appp, f, placeholder)
+
+// Focus a field from code (NULL blurs whatever is focused), and ask whether a
+// field currently holds focus. Tapping a TextField already does the first, so
+// most apps never call these — they exist for the app that has to REACT to its
+// own field's focus rather than just host it:
+//
+//   - The home screen is the one window the compositor sizes to the FULL output
+//     rather than the usable area (it draws behind the bars), so the keyboard's
+//     exclusive zone does NOT shrink it. Its search field has to inset the page
+//     by the keyboard's height itself, which means asking whether it is focused.
+//   - The same screen has to BLUR the field when you navigate away from it,
+//     otherwise the keyboard stays up over a page that has no field on it.
+void z_app_focus_field(ZApp *app, ZTextField *f);
+bool z_app_field_active(ZApp *app, const ZTextField *f);
 
 // ---------------------------------------------------------------------------
 // Input method (the on-screen keyboard's back end) — P21.
@@ -1442,6 +1456,6 @@ void z_task_close(ZApp *app, const ZTask *task);
 
 #ifdef __cplusplus
 }
-#endif
+#endif // ZELTO_UI_H
 
-#endif  // ZELTO_UI_H
+#endif // ZELTO_UI_H  // ZELTO_UI_H
