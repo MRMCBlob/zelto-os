@@ -81,30 +81,69 @@ typedef enum ZAxis {
     Z_AXIS_DEPTH,          // ZStack: back -> front (overlap)
 } ZAxis;
 
-// Type scale (logical px) — a semantic set of steps, à la the platform text
-// styles (Apple HIG / Material type scale). Pick by ROLE, not by pixel count, so
-// the OS retypes coherently from one place. The ladder is dense in the reading
-// band (Footnote→Body→Headline) where hierarchy is finest and coarser above it.
-// Body is 17 (the legibility floor for sustained reading); Caption2 (11) is the
+// THE SCREEN UNIT. Zelto's surface coordinate is a raw device pixel: the phone
+// output is 720x1440 and every metric in the OS is written in those pixels. The
+// design reference it was drawn against is a 390pt-wide handset, so one HIG POINT
+// is ~1.85 Zelto units (720/390 = 1.846) — which is exactly the proportion the
+// layout metrics carry: a 104px app icon is 14.4% of the width where iOS's 60pt
+// icon is 15.3%, and a 76px settings row is 5.3% of the height where iOS's 44pt
+// row is 5.2%.
+//
+// The type scale below did NOT carry it. Until P43 it was a 1:1 transcription of
+// the HIG POINT ramp (Body 17, Caption2 11) sitting inside pixel metrics — so
+// every label in the OS was drawn at ~54% of the size its container was built
+// for: a 17px body label centred in a 76px row, an 11px caption under a 104px
+// icon, a 13px footnote spanning a third of a 720px screen. Nothing was broken
+// enough to look like a bug, which is why it survived thirteen phases: every
+// surface was uniformly, quietly under-typed.
+//
+// The fix is here rather than in the metrics because it is one ratio in one file
+// against several hundred constants spread over every system binary — and because
+// the metrics are the half that is RIGHT (see the proportions above), several of
+// them contractual (BAR_H matches zcomp's exclusive zone, HOMEBAR_H matches the
+// gesture strip). So the ramp is authored in points, as a designer reads it, and
+// Z_TYPE converts to screen units at the single point of truth. Retuning the
+// whole system's type is now one numerator.
+//
+// Integer arithmetic, not a float multiply: an enum needs a constant expression.
+#define Z_TYPE_NUM 185
+#define Z_TYPE_DEN 100
+#define Z_TYPE(pt) ((pt) * Z_TYPE_NUM / Z_TYPE_DEN)
+
+// Type scale — a semantic set of steps, à la the platform text styles (Apple HIG
+// / Material type scale). Pick by ROLE, not by pixel count, so the OS retypes
+// coherently from one place. The ladder is dense in the reading band
+// (Footnote→Body→Headline) where hierarchy is finest and coarser above it. Body
+// is 17pt (the legibility floor for sustained reading); Caption2 (11pt) is the
 // smallest step. Emphasis is a separate axis — pair a step with Weight() (HIG
 // leans on size AND weight for hierarchy, so Headline is Body-sized + Semibold).
+// The comment after each step is the value in SCREEN UNITS, what the renderer
+// actually gets.
 typedef enum ZFont {
-    Z_FONT_CAPTION2 = 11,     // smallest: dense metadata
-    Z_FONT_CAPTION = 12,      // caption / overline
-    Z_FONT_FOOTNOTE = 13,     // secondary caption
-    Z_FONT_SUBHEAD = 15,      // subheading / dense body
-    Z_FONT_BODY = 17,         // primary reading size (HIG body)
-    Z_FONT_HEADLINE = 17,     // body-sized, meant with Weight(SEMIBOLD)
-    Z_FONT_CALLOUT = 20,      // emphasised body / compact title (Zelto's larger scale)
-    Z_FONT_TITLE2 = 24,       // section title
-    Z_FONT_TITLE = 28,        // screen title
-    Z_FONT_LARGE_TITLE = 40,  // hero / a screen's opening title
+    Z_FONT_CAPTION2 = Z_TYPE(11),      // 20 — smallest: dense metadata
+    Z_FONT_CAPTION = Z_TYPE(12),       // 22 — caption / overline
+    Z_FONT_FOOTNOTE = Z_TYPE(13),      // 24 — secondary caption
+    Z_FONT_SUBHEAD = Z_TYPE(15),       // 27 — subheading / dense body
+    Z_FONT_BODY = Z_TYPE(17),          // 31 — primary reading size (HIG body)
+    Z_FONT_HEADLINE = Z_TYPE(17),      // 31 — body-sized, meant with Weight(SEMIBOLD)
+    Z_FONT_CALLOUT = Z_TYPE(20),       // 37 — emphasised body / compact title
+    Z_FONT_TITLE2 = Z_TYPE(24),        // 44 — section title
+    Z_FONT_TITLE = Z_TYPE(28),         // 51 — screen title
+    Z_FONT_LARGE_TITLE = Z_TYPE(40),   // 74 — hero / a screen's opening title
     // Above the reading ladder entirely: a number that IS the screen. Only the
     // lock screen's clock uses it — that clock is not a title, it is the reason
     // the screen exists, and at Large Title it reads as a heading with nothing
     // under it. A step this far out belongs in the scale rather than as a cast
     // integer at one call site, so it retypes with everything else.
-    Z_FONT_DISPLAY = 92,
+    //
+    // This step is where the point/pixel confusion was easiest to see and hardest
+    // to name: it was written as a bare 92, and 92 is the POINT size of the iOS
+    // lock clock — the same transcription error as every step above it, but so far
+    // out on the ladder that the result still read as "big" beside type that was
+    // equally undersized. Measured against the screen it was not: the clock's
+    // digits stood 4.6% of the display's height where the phone it copies puts
+    // them at ~8.9%. Scaled like everything else it lands at 170.
+    Z_FONT_DISPLAY = Z_TYPE(92),       // 170 — the lock clock
 } ZFont;
 
 // Font weight — the second hierarchy axis. The bundled face is a single Regular;
@@ -409,6 +448,31 @@ ZView Foreground(ZColor color, ZView view);
 ZView Padding(float all, ZView view);
 ZView Frame(float width, float height, ZView view);
 ZView CornerRadius(float radius, ZView view);
+
+// Confine everything this view's SUBTREE paints to the view's own frame, rounded
+// by `radius` (0 = a plain rectangular clip). CornerRadius and Clip are the two
+// halves people reach for interchangeably and they are not the same thing:
+// CornerRadius rounds the node's OWN paint — its fill, its background, its image
+// mask — and says nothing about its children, which happily draw past the corner.
+// Clip is the mask, and it applies to the descendants.
+//
+// Reach for it when a child's silhouette has to be the PARENT's rather than its
+// own. The canonical case is a fill that grows inside a rounded slab: the
+// Control Center's brightness slab, a progress bar in a pill, artwork bled to a
+// card's edge. Rounding the child instead is the trap — it rounds all four
+// corners, including the ones in the middle of the slab where the fill's head is
+// supposed to be a straight cut, so a half-full slider looks like a lozenge
+// floating inside a slot.
+//
+//   Clip(Z_RADIUS_PANEL,
+//       Frame(w, h, ZStack(fill_grown_to_value, glyph)))
+//
+// The clip nests: a rounded clip inside another intersects with it (each masks
+// what the one above it left), so a clipped card inside a clipped scroll viewport
+// does the right thing. Cost is per-pixel and only along the rounded edge — the
+// straight interior takes the same path as an unclipped node.
+ZView Clip(float radius, ZView view);
+
 ZView Font(ZFont size, ZView view);
 ZView Grow(float weight, ZView view);
 

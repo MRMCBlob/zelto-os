@@ -124,6 +124,7 @@ Modifiers wrap a `ZView` and return a `ZView` (apply outermost-last):
 Padding(16, view);
 Background(Z_COLOR_SURFACE, view);
 CornerRadius(Z_RADIUS_MD, view);
+Clip(Z_RADIUS_MD, view);        // mask the SUBTREE to this view's rounded frame
 Shadow(Z_ELEVATION_1, view);
 Frame(width, height, view);
 Font(Z_FONT_TITLE, view);
@@ -137,6 +138,46 @@ Offset(animated_x, y, view);    // bind an animated value to a translation
 
 Tokens: `Z_COLOR_*`, `Z_FONT_*`, `Z_RADIUS_*`, `Z_ELEVATION_*`, `Z_SPACE_*`
 ([../../overview/design-language.md](../../overview/design-language.md)).
+
+### `CornerRadius` vs. `Clip`
+
+These are reached for interchangeably and are not the same thing.
+
+`CornerRadius` rounds a view's **own** paint — its fill, its background, its image mask —
+and says nothing about its children, which draw straight past the corner. `Clip` is the
+mask, and it applies to the **descendants**.
+
+Reach for `Clip` when a child's silhouette must be the parent's rather than its own: a
+fill that grows inside a rounded slab, a progress bar in a pill, artwork bled to a card's
+edge. Rounding the child instead is the trap — it rounds all four of the child's corners,
+including the ones out in the middle of the parent where the fill's head is meant to be a
+straight cut, so a half-full slider reads as a lozenge floating in a slot rather than as a
+level. (This is exactly what the tall `Slider` did until `Clip` existed.)
+
+A view that is both a surface and a container wants both:
+
+```c
+Background(Z_COLOR_SURFACE_3,
+    CornerRadius(Z_RADIUS_PANEL,        // the slab's own fill
+        Clip(Z_RADIUS_PANEL,            // ...and what its children may paint
+            ZStack(fill_grown_to_value, glyph))));
+```
+
+Clips nest and intersect, so a clipped card inside a clipped scroll viewport does the
+right thing. The cost is per-pixel and only along the rounded edge; a clip's straight
+interior takes the same path as an unclipped view.
+
+### The type scale is in POINTS
+
+`Z_FONT_*` steps are written as HIG **point** sizes and converted to Zelto's screen unit
+by `Z_TYPE()` in `zelto/ui.h`. The phone output is 720x1440 raw pixels against a 390pt
+design reference, so one point is ~1.85 screen units and `Z_FONT_BODY` (17pt) reaches the
+renderer as 31.
+
+This matters when you write a metric next to a type step. **Metrics are in screen units**
+— `Frame(104, 104, …)` is 104 pixels, not points — so pairing a raw 17 with a 104px icon
+gets you type at half the size the layout was built for. Always name the step; never
+write a pixel size into `Font()`.
 
 ## Callbacks & actions
 

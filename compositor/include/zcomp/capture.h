@@ -22,4 +22,11 @@ void zcomp_capture_take(ZcompToplevel *toplevel);
 // image. Called from the toplevel's unmap/destroy path.
 void zcomp_capture_toplevel_gone(ZcompToplevel *toplevel);
 
+// Resolve this window's manifest `no_snapshot=` declaration (through zsysd, which
+// owns the manifest table) and cache the answer on the toplevel. Call ONCE, from
+// the map handler — that is where zcomp first has the app_id, and it keeps the
+// query off the capture path. An unreachable broker means "allowed", matching
+// every other zsysd fallback in the system.
+void zcomp_capture_resolve_policy(ZcompToplevel *toplevel, const char *app_id);
+
 #endif  // ZCOMP_CAPTURE_H

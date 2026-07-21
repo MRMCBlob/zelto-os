@@ -85,6 +85,35 @@ To make the nested/headless compositor testable without a device or QEMU's QMP c
 These are harmless on a real device (the seat only sees a virtual device if a tool creates
 one) and are the desktop analog of `run-qemu.sh`'s QMP screendump + `input-send-event`.
 
+## Window capture (the App Switcher's thumbnails)
+
+`wlr-screencopy` captures an **output**, and a backgrounded window is by definition what
+is *not* on the output — so a switcher that captures on demand photographs itself. Instead
+`zcomp` snapshots each window at the **active → inactive edge** in
+`zcomp_update_activation()` (`toplevel.c`): the last instant the window's contents are
+what the user was looking at. Every Zelto app is a single `wl_surface`, so the snapshot is
+that surface's committed buffer, box-halved. The **compositor** owns the pixels — the
+client showing the card is a different, shorter-lived process, and the app may well have
+exited, which is the case the card exists for. Delivery is a sealed memfd over
+`zelto-toplevel-capture-v1`, keyed off the `zwlr_foreign_toplevel_handle_v1` the switcher
+already holds. See `compositor/src/capture.c`.
+
+**Two guards stop a picture being taken at all** (rather than taken and withheld — there
+is then no copy anywhere for a later bug to leak):
+
+- **The screen is held by a modal layer surface.** `server->focused_layer` is set exactly
+  while a layer surface holds EXCLUSIVE keyboard interactivity, which is what `zelto-lock`
+  does when it locks. Backgrounding an app under a lock screen must not mint a fresh
+  picture of its contents; the previous snapshot, taken while the user was actually
+  looking at it, stands.
+- **The app declared `no_snapshot=1`** in its manifest, resolved through `zsysd` once at
+  map and cached on the toplevel ([../packaging/manifest.md](../packaging/manifest.md)).
+
+Both are exercised by `test/test_capture_lock_suppression.sh`, which boots the simulator
+three times. Each run carries a **positive control from the same boot** — a window that
+*must* be captured — because "no snapshot for X" passes trivially if the boot never
+reached the state under test.
+
 ## See also
 
 - [sdk-internals.md](sdk-internals.md) · [services-and-ipc.md](services-and-ipc.md)

@@ -213,11 +213,23 @@ run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
 #
 # P42 retarget: Settings is a DRILL-DOWN now, so its first card no longer holds
 # the Airplane switch — it holds four detail rows. Aiming at the "Network" row
-# keeps both traps satisfied: a list row is dark SURFACE (the white veil shows on
-# it, unlike the near-white track of an ON switch), and 180 is the row's centre in
-# SCREEN space minus the 40px bar.
+# keeps both traps satisfied: a list row is dark SURFACE, so the white veil shows
+# on it (unlike the near-white track of an ON switch).
+#
+# P43 retarget, and the THIRD trap: a coordinate aimed at a row is really aimed at
+# everything ABOVE that row. The type rescale grew the "Settings" large title from
+# 40px to 74px, which pushed the whole card down 38px, and 140 — correct in P42 —
+# landed in the gap just above the card. It photographed a perfectly plausible
+# Settings screen with no veil on it at all, and the only thing that moved between
+# it and the baseline was the status-bar clock ticking over (measured: mean |delta|
+# 0.013, two changed tiles, both at y=0). This is the same failure P41 and P42 each
+# found once and is why the rule is MEASURE, never look:
+#   meta/pngdiff.py 34-app-settings.png 41-settings-press.png \
+#       --expect-box 40 183 640 76
+# The Network row is screen y 183..259 (card 183..490, four 77px rows), so its
+# centre is 221 on screen and 181 in the app's surface after the 40px bar.
 run_shot 41-settings-press "Settings: a detail row pressed (touch-down veil)" 8 \
-    SIM_APP=zelto-settings ZELTO_PRESS_X=360 ZELTO_PRESS_Y=140
+    SIM_APP=zelto-settings ZELTO_PRESS_X=360 ZELTO_PRESS_Y=181
 
 # ===========================================================================
 # SYSTEM OVERLAYS (shade / volume / keyboard / lock / recents / consent / banner)

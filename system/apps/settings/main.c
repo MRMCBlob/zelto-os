@@ -245,14 +245,41 @@ static ZView gap(float h) {
     return Frame(1.0f, h, Rect(.color = z_rgba(0, 0, 0, 0)));
 }
 
-// A header or footer line, inset to sit under the card's text column rather than
-// under the card's edge — the alignment is what makes the three parts read as one
-// group instead of as three stacked objects.
-static ZView inset_text(const char *s, ZFont size, ZColor ink, ZWeight w) {
+// One inset line of a header/footer. Takes an explicit LENGTH so a caller can
+// hand it a slice of a longer string without copying it (Text is a printf format,
+// and "%.*s" is the whole trick).
+static ZView inset_line(const char *s, int len, ZFont size, ZColor ink,
+                        ZWeight w) {
     return HStack(
         Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
-        Weight(w, Foreground(ink, Font(size, Text("%s", s)))),
+        Weight(w, Foreground(ink, Font(size, Text("%.*s", len, s)))),
         .spacing = 0, .align = Z_ALIGN_CENTER);
+}
+
+// A header or footer, inset to sit under the card's text column rather than
+// under the card's edge — the alignment is what makes the three parts read as one
+// group instead of as three stacked objects.
+//
+// Explicitly LINE-BROKEN on '\n' by the caller, because the toolkit has no text
+// wrapping: a Text node measures to one line at its intrinsic width and layout is
+// a single intrinsic-size pass, so a caption wider than the screen simply runs off
+// the right edge (which is what the P43 type rescale did to every prose footer
+// here — at 13px they fit, at 24px they do not). Real wrapping needs a
+// width-then-height layout pass and is not this phase's job; an author breaking
+// the line is honest, visible in the source, and cannot silently overflow.
+static ZView inset_text(const char *s, ZFont size, ZColor ink, ZWeight w) {
+    ZStackOpts col = {.spacing = 4.0f, .align = Z_ALIGN_LEADING};
+    int k = 0;
+    const char *p = s;
+    while (p && k < Z_MAX_CHILDREN) {
+        const char *nl = strchr(p, '\n');
+        int len = nl ? (int)(nl - p) : (int)strlen(p);
+        col.children[k++] = inset_line(p, len, size, ink, w);
+        p = nl ? nl + 1 : NULL;
+    }
+    // One line: return it directly rather than wrapped in a one-child stack, so
+    // the common case lays out exactly as it did before this existed.
+    return k == 1 ? col.children[0] : z_stack(Z_AXIS_VERTICAL, &col);
 }
 
 // One list row: a fixed height so every row in every group shares a baseline
@@ -550,8 +577,8 @@ static ZView screen_network(ZApp *app, void *props) {
     };
     ZView blocks[] = {
         section_block(NULL, group(rows, 2),
-            "Airplane Mode turns the radios off. Network calls fail while it is "
-            "on."),
+            "Airplane Mode turns the radios off.\n"
+            "Network calls fail while it is on."),
     };
     return settings_screen(app, "Network", blocks, 1);
 }
@@ -565,7 +592,8 @@ static ZView screen_display(ZApp *app, void *props) {
     };
     ZView blocks[] = {
         section_block(NULL, group(rows, 3),
-            "Brightness runs 1 to 5 and dims the screen with a scrim."),
+            "Brightness runs 1 to 5 and dims the\n"
+            "screen with a scrim."),
     };
     return settings_screen(app, "Display & Sound", blocks, 1);
 }
@@ -649,8 +677,8 @@ static ZView screen_root(ZApp *app, void *props) {
     };
     ZView blocks[] = {
         section_block(NULL, group(rows, 4),
-            "These settings are shared with Control Center. Changes apply live "
-            "and persist."),
+            "These settings are shared with Control Center.\n"
+            "Changes apply live and persist."),
     };
     return settings_screen(app, "Settings", blocks, 1);
 }

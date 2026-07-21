@@ -32,9 +32,12 @@
 #include "zcomp/capture.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <drm_fourcc.h>
@@ -59,6 +62,66 @@ typedef struct ZcompCapture {
     struct wl_resource *resource;
     ZcompToplevel *toplevel;        // NULL once the window is gone
 } ZcompCapture;
+
+// --- the manifest opt-out (no_snapshot=) -----------------------------------
+//
+// An app can declare `no_snapshot=1` and never be photographed. The declaration
+// lives in the manifest, and the compositor does not read manifests — nor should
+// it start. zsysd already parses them for permissions, share targets and links,
+// already merges the baked-in dir with the runtime-installed one, and already
+// rebuilds the table when the installer sends it {"op":"reload"}. Duplicating
+// that inside zcomp would mean a second parser, a second directory merge and a
+// filesystem watch, all inside the process that must never block. So zcomp asks,
+// with the same short synchronous connect seat.c uses for the media keys.
+//
+// Asked ONCE, at map. The capture edge runs inside a focus change — the frame an
+// app-switch animation starts on — and a blocking socket round-trip there would
+// put zsysd's health on the compositor's frame budget. At map the app_id is
+// already known and one stall is already inherent in launching a window.
+//
+// A failure to reach the broker resolves to ALLOWED, matching every other zsysd
+// fallback in the system. The opposite default (deny on error) would mean a
+// broker hiccup silently emptying the App Switcher, which is a visible breakage
+// of a working feature in exchange for protecting a flag almost nothing sets.
+void zcomp_capture_resolve_policy(ZcompToplevel *toplevel, const char *app_id) {
+    if (!toplevel || !app_id || !app_id[0]) {
+        return;
+    }
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    if (!runtime) {
+        runtime = "/run";
+    }
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/zsysd.sock", runtime);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return;
+    }
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return;
+    }
+    char req[192];
+    int n = snprintf(req, sizeof(req),
+                     "{\"op\":\"snapshot_policy\",\"app_id\":\"%s\"}\n", app_id);
+    if (n > 0 && write(fd, req, (size_t)n) == n) {
+        char buf[128] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        if (r > 0) {
+            buf[r] = '\0';
+            const char *v = strstr(buf, "\"allow\"");
+            if (v && (v = strchr(v, ':')) && (v = strchr(v, '"'))) {
+                toplevel->no_snapshot = (v[1] == '0');
+            }
+        }
+    }
+    close(fd);
+    if (toplevel->no_snapshot) {
+        wlr_log(WLR_INFO, "capture: %s declares no_snapshot; never captured",
+                app_id);
+    }
+}
 
 // --- taking the picture ----------------------------------------------------
 
@@ -146,6 +209,13 @@ void zcomp_capture_take(ZcompToplevel *toplevel) {
     }
     ZcompServer *server = toplevel->server;
 
+    // PRIVACY, the app's own choice: `no_snapshot=1` in its manifest, resolved
+    // once at map. Checked before anything is read, so an opted-out window's
+    // pixels are never copied anywhere at all.
+    if (toplevel->no_snapshot) {
+        return;
+    }
+
     // PRIVACY. Do not photograph a window while the screen is held by a modal
     // layer surface. server->focused_layer is set exactly while a layer surface
     // holds EXCLUSIVE keyboard interactivity (layer.c layer_sync_keyboard) —
@@ -153,7 +223,13 @@ void zcomp_capture_take(ZcompToplevel *toplevel) {
     // lock screen must not mint a fresh picture of its contents; the previous
     // snapshot (taken while the user was actually looking at it) stands.
     if (server && server->focused_layer) {
-        wlr_log(WLR_INFO, "capture: suppressed (screen held by a modal layer)");
+        // Name the window in the log. The suppression is only meaningfully
+        // testable as "THIS app was not photographed while THAT one was", and an
+        // anonymous line cannot carry that — which is why this went a whole phase
+        // code-reviewed but unexercised.
+        wlr_log(WLR_INFO, "capture: suppressed %s (screen held by a modal layer)",
+                toplevel->xdg_toplevel->app_id ? toplevel->xdg_toplevel->app_id
+                                               : "(no id)");
         return;
     }
 

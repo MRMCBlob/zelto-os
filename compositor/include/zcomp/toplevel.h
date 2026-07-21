@@ -42,6 +42,12 @@ typedef struct ZcompToplevel {
     // when the snapshot is taken.
     bool active;
 
+    // The app's manifest `no_snapshot=1` declaration, resolved through zsysd once
+    // at map (zcomp_capture_resolve_policy) and cached here. An app that opts out
+    // is never photographed at all — not "photographed and hidden" — so there is
+    // no picture of it anywhere for a later bug to leak.
+    bool no_snapshot;
+
     // The last snapshot of this window: ARGB8888, snap_w * snap_h, owned by the
     // compositor because the client that displays it is a different, shorter-
     // lived process than the app that drew it. NULL until first backgrounded.

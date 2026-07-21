@@ -82,17 +82,23 @@ ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts) {
         float h = opts->length > 0.0f ? opts->length : 320.0f;
         s->travel = h;
 
-        // The fill is a rounded rect anchored at the FOOT of the slab, grown to
-        // the value. It carries the slab's own radius so its head stays a
-        // continuous curve rather than a hard edge cutting across the slab.
+        // The fill is a SQUARE rect anchored at the FOOT of the slab, grown to the
+        // value; the slab clips it (below), so it takes the slab's rounding on the
+        // two corners it actually shares with it and stays a straight cut across
+        // the middle where its head is.
+        //
+        // It used to carry `.radius = radius` itself, for want of a subtree clip —
+        // which rounded all four of its corners, including the top two out in the
+        // middle of the slab, so a half-full slider read as a lozenge floating in
+        // a slot rather than as a level. Clip() (P43) is the primitive that was
+        // missing; the fill is now the plain shape it should always have been.
         float fill_h = h * v;
         float radius = Z_RADIUS_PANEL;
         // Grow(1, Spacer()), not Fill(Spacer()): in a vertical stack a filling
         // spacer takes the WHOLE height and the fill below it gets none.
         ZView stack = VStack(
             Grow(1.0f, Spacer()),
-            Frame(w, fill_h,
-                Rect(.color = Z_COLOR_PRIMARY, .radius = radius)),
+            Frame(w, fill_h, Rect(.color = Z_COLOR_PRIMARY)),
             .spacing = 0, .align = Z_ALIGN_CENTER);
 
         // The glyph sits at the foot, over whichever of track/fill reaches it.
@@ -104,11 +110,26 @@ ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts) {
                                   .spacing = 0, .align = Z_ALIGN_CENTER)
                          : Spacer();
 
+        // CornerRadius rounds the slab's OWN track fill; Clip rounds what its
+        // children paint. Both, because the slab is both a surface and a container.
+        //
+        // Fill() on each column is what ANCHORS them, and its absence was a real
+        // bug from P42 that only became visible once Clip stopped rounding the
+        // fill's head. A depth stack lays every child out at the child's own size
+        // and centres it; the Grow(1, Spacer()) that is supposed to push the fill
+        // down only pushes within the height its own VStack was given, and without
+        // Fill that height is just the fill itself. So the "level" was a band
+        // floating in the middle of the slab, rising and falling symmetrically
+        // about the centre — which reads as a plausible meter right up until you
+        // notice the bottom edge is not touching the bottom.
         return OnPanData(slider_pan, s,
             Frame(w, h,
                 Background(Z_COLOR_SURFACE_3,
                     CornerRadius(radius,
-                        ZStack(stack, foot, .align = Z_ALIGN_CENTER)))));
+                        Clip(radius,
+                            ZStack(Fill(stack),
+                                   opts->glyph ? Fill(foot) : foot,
+                                   .align = Z_ALIGN_CENTER))))));
     }
 
     // --- list-row shape ------------------------------------------------------
@@ -122,9 +143,11 @@ ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts) {
     float knob_x = -travel * 0.5f + travel * v;
 
     ZView track = Frame(w, t, Rect(.color = Z_COLOR_SURFACE_3, .radius = t * 0.5f));
-    // The filled portion is drawn from the leading edge; it is its own rect
-    // rather than a clipped child because the toolkit's CornerRadius rounds a
-    // node's own paint and does not clip a subtree.
+    // The filled portion is drawn from the leading edge as its own rounded rect
+    // rather than through Clip(), unlike the tall shape: on a 6px rail the radius
+    // is 3px and the fill's head is underneath a 24px knob, so the two differ by
+    // nothing visible. The tall shape's head is out in the open across a 150px
+    // slab, which is why that one is the case the clip exists for.
     ZView fill = HStack(
         Frame(knob * 0.5f + travel * v, t,
               Rect(.color = Z_COLOR_PRIMARY, .radius = t * 0.5f)),

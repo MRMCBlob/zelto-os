@@ -74,6 +74,7 @@ typedef struct Manifest {
     char share_targets[256];  // CSV of accepted MIME globs ("text/plain,image/*")
     char links[128];          // CSV of handled URL schemes ("zelto,myapp")
     char exec[256];           // launch command (path + args) for launch-if-needed
+    bool no_snapshot;         // `no_snapshot=1`: never photograph this window
 } Manifest;
 static Manifest g_manifests[MAX_MANIFESTS];
 static int g_n_manifests;
@@ -328,6 +329,8 @@ static void scan_manifest_dir(const char *dir) {
                 snprintf(m.links, sizeof(m.links), "%s", v);
             } else if (strcmp(k, "exec") == 0) {
                 snprintf(m.exec, sizeof(m.exec), "%s", v);
+            } else if (strcmp(k, "no_snapshot") == 0) {
+                m.no_snapshot = atoi(v) != 0;
             }
         }
         fclose(f);
@@ -1651,6 +1654,47 @@ static void handle_line(int slot, int fd, char *line) {
         }
         return;
     }
+    // snapshot_policy: may the compositor photograph this app's window for the
+    // App Switcher? Answers the manifest's `no_snapshot=1` (default: yes).
+    //
+    // WHY THIS LIVES HERE AND NOT IN ZCOMP. The flag is a manifest declaration,
+    // and zsysd is the process that reads manifests — it already holds this exact
+    // table for permissions, share targets and links, already merges the baked-in
+    // dir with the runtime-installed one, and already rebuilds it on the
+    // installer's {"op":"reload"}. Teaching zcomp to read manifests instead would
+    // duplicate the parser, the two-directory merge and the reload signal inside
+    // the compositor, and give the compositor a policy file to watch.
+    //
+    // WHY NOT A sys.* SETTINGS KEY. settings_set is ungated — any client can write
+    // any key — so publishing the deny-list as a setting would let one app clear
+    // another app's flag. A dedicated READ-ONLY op has no such write path.
+    //
+    // Answering per-app rather than shipping the whole list keeps the reply
+    // bounded, and zcomp asks once per window (at map, where it first learns the
+    // app_id) and caches the answer, so nothing queries on the capture path.
+    if (strcmp(op, "snapshot_policy") == 0) {
+        char sapp[96] = {0};
+        json_get(line, "app_id", sapp, sizeof(sapp));
+        bool allow = true;
+        for (int i = 0; i < g_n_manifests; i++) {
+            if (strcmp(g_manifests[i].id, sapp) == 0) {
+                allow = !g_manifests[i].no_snapshot;
+                break;
+            }
+        }
+        char reply[64];
+        int m = snprintf(reply, sizeof(reply), "{\"allow\":\"%d\"}\n", allow ? 1 : 0);
+        if (m > 0 && m < (int)sizeof(reply)) {
+            ssize_t w = write(fd, reply, (size_t)m);
+            (void)w;
+        }
+        if (!allow) {
+            fprintf(stderr, "[zsysd] snapshot_policy %s -> DENY (no_snapshot)\n",
+                    sapp);
+        }
+        return;
+    }
+
     // settings_subscribe: record this ctrl fd in the observer set (multiple).
     if (strcmp(op, "settings_subscribe") == 0) {
         settings_subscribe_fd(fd);

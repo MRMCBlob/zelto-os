@@ -394,6 +394,19 @@ ZView CornerRadius(float radius, ZView view) {
     return view;
 }
 
+// Clip(): mask the SUBTREE to this node's frame, rounded. `clip` is the same flag
+// a scroll viewport sets (it bounds which pixels are visited); clip_radius is the
+// corner mask the renderer then applies inside it. Deliberately NOT the same field
+// as `radius`: radius is what this node paints for itself, clip_radius is what it
+// imposes on its children, and a node routinely wants one without the other — a
+// slab that is a rounded surface AND clips its fill sets both, a bare clipping
+// frame with no paint of its own sets only the second.
+ZView Clip(float radius, ZView view) {
+    view->clip = true;
+    view->clip_radius = radius;
+    return view;
+}
+
 ZView Cover(ZView view) {
     // Aspect-fill an Image: scale so the frame is fully covered, center-cropping
     // the overflow (vs the default aspect-fit, which letterboxes). Only meaningful

@@ -213,8 +213,15 @@ static void blend_cover(ZCanvas *c, int x, int y, ZColor col, uint8_t cov) {
         y >= c->clip_y1 || cov == 0) {
         return;
     }
-    // Effective coverage = glyph alpha * source alpha.
+    // Effective coverage = glyph alpha * source alpha, less whatever a rounded
+    // Clip() takes off at this pixel (1.0 when none is active) — so a label that
+    // runs into a clipped container's corner is cut by the same antialiased mask
+    // as the fills around it, rather than surviving as a stray glyph edge.
     uint32_t a = (uint32_t)cov * col.a / 255u;
+    float rc = z_canvas_round_cov(c, x, y);
+    if (rc < 0.999f) {
+        a = (uint32_t)((float)a * rc + 0.5f);
+    }
     if (a == 0) {
         return;
     }

@@ -147,12 +147,17 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     // The action bar in a fixed-height slot (bar when focused, else empty).
     col.children[k++] =
         Frame(0.0f, 52.0f, bar ? bar : z_rect(&(ZRectOpts){.height = 1.0f}));
+    // ZStack, not a bare Text: Frame only sets a size, so a Text made its direct
+    // child lands at the frame's origin and hugs the top-left corner. A depth
+    // stack is what centres it.
     col.children[k++] = Frame(140.0f, 72.0f,
         Background(Z_COLOR_PRIMARY,
             CornerRadius(20,
-                Foreground(Z_COLOR_ON_PRIMARY,
-                    Font(Z_FONT_TITLE,
-                        Text("%lld", (long long)state->count))))));
+                ZStack(
+                    Foreground(Z_COLOR_ON_PRIMARY,
+                        Font(Z_FONT_TITLE,
+                            Text("%lld", (long long)state->count))),
+                    .align = Z_ALIGN_CENTER))));
     col.children[k++] = Background(Z_COLOR_PRIMARY,
         Button(add_note, "Add note"));
     col.children[k++] = rows_panel(state);

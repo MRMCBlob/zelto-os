@@ -350,6 +350,26 @@ if [ -n "${SIM_APP:-}" ]; then
     spawn "$(resolve_bin "$SIM_APP")"
 fi
 
+# Optional: launch an app N seconds INTO the run, rather than during boot
+# (SIM_LATE_APP="zelto-cards 6"). SIM_APP and SIM_EXTRA both spawn while the shell
+# is still coming up, which is fine for "have this on screen" but useless for
+# "make something happen once the system has settled into a state" — the window
+# maps before the state exists. A late launch is a focus change at a chosen
+# moment, which is how a test reaches an edge that only fires on one (the App
+# Switcher's capture is taken at the active->inactive edge; the lock-suppression
+# path needs that edge to land AFTER the screen has locked).
+if [ -n "${SIM_LATE_APP:-}" ]; then
+    set -- $SIM_LATE_APP
+    late_bin="$(resolve_bin "$1")"
+    late_delay="${2:-5}"
+    if [ -n "$late_bin" ]; then
+        echo "==> [late] will launch $(basename "$late_bin") after ${late_delay}s"
+        ( sleep "$late_delay"; exec "$late_bin" ) & PIDS+=($!)
+    else
+        echo "!! SIM_LATE_APP: no such binary: $1"
+    fi
+fi
+
 # Optional (shots harness): extra apps to leave running — a space-separated list of
 # binary names — so a populated Recents / task switcher can be captured. Each is an
 # ordinary xdg toplevel; they stack behind whatever overlay is spawned below.

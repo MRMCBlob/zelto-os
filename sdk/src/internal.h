@@ -89,6 +89,7 @@ struct ZNode {
 
     // Scroll / virtualised-list support.
     bool clip;            // clip this subtree to the node frame (viewport)
+    float clip_radius;    // Clip(): round that subtree clip's corners (0 = square)
     bool fill;            // in a parent's arrange, expand to the inner box
     bool abs_children;    // position children by their layout_y, not flow
     float layout_y;       // absolute y within an abs_children parent (rows)
@@ -381,11 +382,28 @@ bool z_image_adopt(const char *key, int w, int h, uint32_t *px);
 // A 32-bit ARGB (little-endian: B,G,R,A bytes) software target. clip_* is the
 // half-open region paint is restricted to (set to the full canvas for a full
 // repaint, or to a damage rect for partial repaint).
+
+// One entry of the ROUNDED clip stack (Clip()). The rectangular clip_* region
+// above bounds which pixels are even visited; this masks the corners inside it,
+// as antialiased coverage rather than a hard in/out test.
+typedef struct ZRoundClip {
+    int x0, y0, x1, y1;
+    float r;
+} ZRoundClip;
+
+// Depth of nested Clip()s a canvas can hold. Rounded clips nest at most a couple
+// deep in practice (a clipped card inside a clipped viewport); past this the
+// extra levels are ignored rather than overflowing, so a pathological tree
+// degrades to a squarer mask instead of corrupting memory.
+#define Z_MAX_ROUND_CLIPS 4
+
 typedef struct ZCanvas {
     uint32_t *pixels;
     int width, height;
     int stride_px;       // pixels per row
     int clip_x0, clip_y0, clip_x1, clip_y1;
+    ZRoundClip rclip[Z_MAX_ROUND_CLIPS];
+    int n_rclip;         // 0 on the common path: no rounded clip is active
     ZText *text;
 } ZCanvas;
 
@@ -393,6 +411,11 @@ typedef struct ZCanvas {
 void z_canvas_set_clip(ZCanvas *canvas, int x0, int y0, int x1, int y1);
 // Clear the current clip region to fully transparent.
 void z_canvas_clear_clip(ZCanvas *canvas);
+
+// Coverage in [0,1] that the active rounded clips leave at pixel (x,y) — 1.0
+// when none is active (checked with a single int compare, so the ordinary path
+// pays nothing). Every painter multiplies its own coverage by this.
+float z_canvas_round_cov(const ZCanvas *canvas, int x, int y);
 
 // Paint the laid-out tree into the canvas (within its current clip).
 void z_render(ZCanvas *canvas, ZView root);

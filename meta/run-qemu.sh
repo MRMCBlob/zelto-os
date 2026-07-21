@@ -323,126 +323,29 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
 
     # ---------------------------------------------------------------------
-    # P14 home screen + system navigation (NAV=1): a SINGLE-boot test that the
-    # grid home screen + bottom 3-button nav bar drive the existing window
-    # manager. The flow exercises every button against P6/P7 machinery:
-    #   1. Boot to the grid home screen (square icons) with a bottom nav bar
-    #      (Back / Home / Recents). The idle shade is collapsed (1px) so the
-    #      top row of icons is not covered.
-    #   2. Tap an app icon (A) -> app A maps in the usable area (above the nav).
-    #   3. Tap Home -> the launcher grid returns to front (foreign-toplevel
-    #      activate of os.zelto.launcher). Tap a second icon (B) -> app B maps.
-    #   4. Tap Recents -> the zelto-recents overlay lists A + B as cards.
-    #      Tap card A -> z_task_activate(A) + dismiss (A is now foreground).
-    #   5. Tap Recents again -> tap a card's X -> z_task_close drops that window.
-    # Coordinates are overridable to retune to the rendered layout from a captured
-    # frame (rerun with SKIP_BUILD=1 + overrides — first guesses miss). Boot is
-    # slow under TCG: keep SHOT_DELAY high.
+    # NAV=1 was DELETED in P43, not rewritten. It drove the P14 bottom 3-button
+    # nav bar (Back / Home / Recents) against the P6/P7 window manager, and every
+    # surface it aimed at is gone: system/nav went out in P40 stage 1 (navigation
+    # is the home-indicator gesture now) and the Recents card's X button went out
+    # in P40 stage 2 (a card is closed by flicking it up). P42 found the rot and
+    # marked it; this is the follow-through.
     #
-    # !! STALE SINCE P40 (found while replacing HOME_TEST/QUICK in P42; not flagged
-    # before). Two of the surfaces this drives are gone:
-    #   - the BOTTOM NAV BAR (Back/Home/Recents at y~768) was system/nav, deleted
-    #     in P40 stage 1. Navigation is the home-indicator gesture pill now
-    #     (system/homebar), so every `tap "$…_X" "$NAV_Y"` below lands on the app.
-    #   - the Recents card's red X close button went out in P40 stage 2; the App
-    #     Switcher closes a card by flicking it UP, so step 5 cannot be tapped.
-    # Steps 1-2 (launch an app from a tile) are still valid. Rewriting the rest
-    # means driving gestures, which QMP can do (see the drag() helper that QUICK=1
-    # used) but which needs a real TCG run to re-derive coordinates.
-    if [ "${NAV:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        # Grid icon centres (4 columns; the launcher sorts apps alphabetically).
-        # The app area starts below the 40px top bar, so y includes that offset.
-        TILE_AX="${TILE_AX:-170}"; TILE_AY="${TILE_AY:-165}"   # icon col 1, row 1 (app A)
-        TILE_BX="${TILE_BX:-483}"; TILE_BY="${TILE_BY:-165}"   # icon col 2, row 1 (app B)
-        # Bottom nav buttons (strip y ~ 736..800; centre ~768).
-        BACK_X="${BACK_X:-213}";    NAV_Y="${NAV_Y:-768}"
-        HOME_X="${HOME_X:-640}"
-        RECENTS_X="${RECENTS_X:-1067}"
-        # Recents overlay card centres (card is ~620px wide, centred).
-        CARD_AY="${CARD_AY:-300}"                # first (top) task card
-        CARD_CLOSE_X="${CARD_CLOSE_X:-900}"      # the card's red X button
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
-
-        have_socat=0
-        command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-
-        qmp() {
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
-        }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        nav_boot() {
-            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
-            rm -f "$QMP_SOCK"
-            qemu-system-aarch64 "${common[@]}" \
-                -append "$KCMD" \
-                -display none \
-                -serial mon:stdio \
-                -qmp "unix:$QMP_SOCK,server,nowait" &
-            QPID=$!
-        }
-        nav_kill() {
-            kill "$QPID" 2>/dev/null || true
-            wait "$QPID" 2>/dev/null || true
-        }
-
-        echo "==> [nav] boot to grid home screen + bottom nav bar"
-        nav_boot
-        sleep "$SHOT_DELAY"
-        shot frame-nav-home                 # grid icons + Back/Home/Recents bar
-        echo "==> [nav] tap app A icon -> maps above the nav bar"
-        tap "$TILE_AX" "$TILE_AY"
-        sleep 5; shot frame-nav-appA
-        echo "==> [nav] tap Home -> grid returns to front"
-        tap "$HOME_X" "$NAV_Y"
-        sleep 3; shot frame-nav-home2
-        echo "==> [nav] tap app B icon -> second app maps (A + B both running)"
-        tap "$TILE_BX" "$TILE_BY"
-        sleep 5; shot frame-nav-appB
-        echo "==> [nav] tap Recents -> overview lists running apps"
-        tap "$RECENTS_X" "$NAV_Y"
-        sleep 4; shot frame-nav-recents
-        echo "==> [nav] tap a Recents card -> switch to it + dismiss overlay"
-        tap "$HOME_X" "$CARD_AY"            # tap the top card body (centre-x)
-        sleep 4; shot frame-nav-switch
-        echo "==> [nav] tap Recents again -> close a window via its X"
-        tap "$RECENTS_X" "$NAV_Y"
-        sleep 4; shot frame-nav-recents2
-        tap "$CARD_CLOSE_X" "$CARD_AY"      # the card's red X
-        sleep 4; shot frame-nav-closed
-        nav_kill
-        echo "==> nav test done; frames in $OUT/frame-nav-*.png"
-        exit 0
-    fi
-
+    # It is deleted rather than rewritten because there is nothing left for it to
+    # assert that something else does not. Its subject was a UI that no longer
+    # exists; the machinery underneath — launch a tile, background the previous
+    # window, list both, activate one — is exercised by the shot catalogue (01
+    # home, 18/18a/18b the App Switcher, 49 the launch hand-off) deterministically
+    # and without a single pixel coordinate, and by every other QEMU harness that
+    # launches an app. A rewrite would have had to re-derive tap coordinates under
+    # TCG for a gesture-driven shell, which is precisely the thing that made all
+    # four of these harnesses rot in the first place.
+    #
+    # The rule this and QUICK (deleted in P42) encode: a harness earns its keep by
+    # being able to FAIL. One that hardcodes x/y stops testing its subject the
+    # moment the layout moves, yet still runs, still writes PNGs and still exits 0
+    # — so the rot is invisible until someone reviews frames by eye. See HOME_TEST
+    # and QSPERSIST below for the shape that replaced them: no coordinates at all,
+    # assertions off the SERIAL LOG, and a non-zero exit.
     # ---------------------------------------------------------------------
     # P42: home layout persistence (HOME_TEST=1). A TWO-BOOT test against the
     # same data.img proving the ONE thing only a real QEMU boot can prove — that
@@ -541,162 +444,133 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
 
     # ---------------------------------------------------------------------
-    # P17 system-wide pull-down shade (SHADE2=1): prove the quick-settings +
-    # notifications shade is now a real OVERLAY pull-down that works OVER any
-    # running app (not just the home screen, as in P16). A TWO-BOOT test against
-    # the same data.img:
-    #   Boot #1 — open the app drawer (swipe up) and launch Pinger so a normal app
-    #     is in the foreground. Tap "Post" -> the notification consent modal ->
-    #     Allow -> Pinger posts a notification and zelto-shade shows a heads-up
-    #     banner over Pinger. Now PULL THE SHADE DOWN from the top edge (a
-    #     down-swipe starting on the shade's thin grab strip just below the status
-    #     bar): the translucent panel slides down OVER Pinger showing the clock,
-    #     the Wi-Fi/Mute/Bright toggle chips, and the posted notification in the
-    #     list. Tap the Wi-Fi chip (it recolours + persists to the shade's prefs).
-    #     Close the shade (tap the see-through area below the panel). Sync + kill.
-    #   Boot #2 — FRESH QEMU, SAME disk: pull the shade down again (over the home
-    #     screen this time) -> the Wi-Fi chip is still in its flipped state (it was
-    #     read back from /var/zelto). This is the toggle-persists-across-reboot
-    #     proof. Coordinates are overridable to retune to the rendered layout from
-    #     a captured frame (rerun SKIP_BUILD=1 + overrides — first guesses miss).
-    #     Boot is slow under TCG: keep SHOT_DELAY high and give the springs +
-    #     consent generous time. The grab strip is a thin top-edge region, so the
-    #     pull-down swipe MUST start just below the 40px status bar (y ~ 60).
+    # P43: a quick setting survives a power cycle (QSPERSIST=1). A TWO-BOOT test
+    # against the same data.img, proving the one thing only a real QEMU boot can:
+    # that a system toggle changed at runtime is written through zsysd to the ext4
+    # /var/zelto and read back by a FRESH broker on the next boot.
     #
-    # !! STALE SINCE P40 STAGE 2 (found while replacing HOME_TEST/QUICK in P42; not
-    # flagged before). Both halves drive deleted UI:
-    #   - "open the app drawer (swipe up)" — the drawer is gone; the App Library is
-    #     the last page of the home carousel, reached by paging sideways.
-    #   - the unified shade split into a Control Center (pulled from the top RIGHT)
-    #     and a Notification Center (top LEFT), latched at Z_PAN_BEGIN off
-    #     `e->x < w/2`. A swipe down the CENTRE column (SWIPE_X=640 of 1280) is
-    #     exactly the ambiguous case, and the "Wi-Fi chip" it then taps is a round
-    #     toggle in a 3x2 grid at different coordinates.
-    # The Wi-Fi-toggle-persists-across-reboot proof is the valuable part and is not
-    # covered elsewhere; it needs the swipe re-aimed at the right half and the chip
-    # coordinates re-derived from a real TCG frame.
-    if [ "${SHADE2:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
-        # Pinger drawer tile: apps are alphabetical by name in a 4-col grid; on a
-        # fresh image Pinger is the 5th (row 2, col 1). Retune from the drawer frame.
-        PINGER_X="${PINGER_X:-180}"; PINGER_Y="${PINGER_Y:-317}"
-        POST_X="${POST_X:-640}"; POST_Y="${POST_Y:-392}"    # Pinger "Post" button
-        ALLOW_X="${ALLOW_X:-894}"; ALLOW_Y="${ALLOW_Y:-527}" # consent dialog Allow
-        # The pull-down: start on the grab strip just below the 40px bar, end low.
-        PULL_Y1="${PULL_Y1:-72}"; PULL_Y2="${PULL_Y2:-620}"
-        # Wi-Fi chip in the pulled-down panel (top row of three chips).
-        QS_WIFI_X="${QS_WIFI_X:-230}"; QS_WIFI_Y="${QS_WIFI_Y:-150}"
-        # The see-through area below the panel (tap to close the shade).
-        QS_CLOSE_X="${QS_CLOSE_X:-640}"; QS_CLOSE_Y="${QS_CLOSE_Y:-750}"
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
+    # This replaces SHADE2=1, which P42 found rotted and marked. SHADE2 opened the
+    # app drawer by swiping up (the drawer went out in P40 stage 2 — the App
+    # Library is the last page of the home carousel now), then pulled a UNIFIED
+    # quick-settings shade down the CENTRE column (P40 split it into a Control
+    # Center pulled from the top RIGHT and a Notification Center from the top
+    # LEFT, latched at Z_PAN_BEGIN off `e->x < w/2`, so the centre is exactly the
+    # ambiguous case), then tapped a "Wi-Fi chip" that is now a round toggle in a
+    # 3x2 grid at different coordinates. Three dead surfaces and one coin flip.
+    #
+    # THE VALUABLE PART SURVIVES, THE COORDINATES DO NOT. What SHADE2 was actually
+    # for — a quick setting flipped by the user persists across a reboot — is real
+    # and covered nowhere else. So it is driven here through the one input that
+    # CANNOT go stale: a KEY. The volume media key has no x/y to re-derive. zcomp
+    # binds it (compositor/src/seat.c handle_chord) and actuates it by writing
+    # sys.volume through the settings broker, which is the same brokered store,
+    # the same write-through to /var/zelto and the same fan-out the shade's toggles
+    # use. A layout change cannot move it.
+    #
+    #   Boot #1 — fresh boot on the disk. Send Volume Up twice (QMP send-key, a
+    #     qcode, no coordinates). zsysd logs each write to the serial console
+    #     ("[zsysd] settings_set sys.volume=N"); the last one is the value that
+    #     must survive. Sync + kill.
+    #   Boot #2 — a FRESH QEMU on the SAME disk, so a brand-new zsysd loads
+    #     settings.conf off ext4. Send Volume Up ONCE and read the value it logs.
+    #     It must be exactly boot 1's value PLUS ONE. That is the assertion, and
+    #     the reason it is an increment rather than a read: an increment can only
+    #     land on N+1 if the broker started from N, so it proves the READ-BACK
+    #     rather than merely proving that some value exists. A boot that lost the
+    #     setting restarts from the compiled-in default and lands somewhere else.
+    #
+    # No pointer input, no screenshots, no pixel assertions, and it exits non-zero.
+    if [ "${QSPERSIST:-0}" = "1" ]; then
+        SERIAL1="$OUT/qs-boot1.log"
+        SERIAL2="$OUT/qs-boot2.log"
+        mkdir -p "$OUT"
 
         have_socat=0
         command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-
+        if [ "$have_socat" != "1" ]; then
+            echo "!! socat is not installed; this harness cannot drive QMP at all."
+            echo "   Refusing to run rather than reporting a pass it did not earn."
+            exit 2
+        fi
         qmp() {
-            [ "$have_socat" = "1" ] || return 0
             printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
                 | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
         }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
+        # A media key, by QEMU qcode -> evdev KEY_VOLUMEUP -> the guest's xkb
+        # XF86AudioRaiseVolume -> zcomp's chord handler -> settings_set sys.volume.
+        volkey_up() {
+            qmp '{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"volumeup"}]}}'
         }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
-        # A multi-step vertical drag; the pan recognizer tracks the finger live, so
-        # step it (a single jump fires one CHANGED and misses the live track).
-        drag() {
-            local x="$1" y1="$2" y2="$3"
-            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
-            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
-            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
-            move "$x" "$y2"; sleep 0.4; btn up
-        }
-        # Pull the system shade down: press on the grab strip, NUDGE a little while
-        # still on the strip so the shade expands to full BEFORE the finger leaves
-        # it (then input stays over the now-full surface), then drag the rest down.
-        pull_shade() {
-            move "$SWIPE_X" "$PULL_Y1"; sleep 0.3; btn down; sleep 0.4
-            move "$SWIPE_X" 108; sleep 0.5       # nudge within the grab strip -> expand
-            move "$SWIPE_X" 330; sleep 0.4
-            move "$SWIPE_X" "$PULL_Y2"; sleep 0.5; btn up
-        }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        shade_boot() {
+
+        # Boot, capture the serial console to $1, run $2 (a function) once the
+        # shell is up, then shut down cleanly so the ext4 write lands.
+        qs_boot() {
+            local logfile="$1" after="$2"
+            rm -f "$logfile"
             QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
             rm -f "$QMP_SOCK"
             qemu-system-aarch64 "${common[@]}" \
                 -append "$KCMD" \
                 -display none \
-                -serial mon:stdio \
+                -serial "file:$logfile" \
                 -qmp "unix:$QMP_SOCK,server,nowait" &
             QPID=$!
-        }
-        shade_kill() {
+            sleep "$SHOT_DELAY"
+            "$after"
+            sleep 3
             sync
             kill "$QPID" 2>/dev/null || true
             wait "$QPID" 2>/dev/null || true
         }
 
-        echo "==> [shade2 boot 1/2] home; open drawer + launch Pinger"
-        shade_boot
-        sleep "$SHOT_DELAY"
-        shot frame-shade2-home
-        drag "$SWIPE_X" 690 110            # swipe up -> open the app drawer
-        sleep 4; shot frame-shade2-drawer  # read the Pinger tile y off this
-        echo "==> [shade2 1] tap Pinger -> it maps in the foreground"
-        tap "$PINGER_X" "$PINGER_Y"
-        sleep 5; shot frame-shade2-app     # Pinger before posting (Post button)
-        echo "==> [shade2 1] tap Post -> consent modal"
-        tap "$POST_X" "$POST_Y"
-        sleep 4; shot frame-shade2-consent
-        echo "==> [shade2 1] Allow -> Pinger posts; heads-up banner over Pinger"
-        tap "$ALLOW_X" "$ALLOW_Y"
-        sleep 4; shot frame-shade2-banner
-        echo "==> [shade2 1] PULL the shade DOWN over Pinger (top-edge swipe)"
-        pull_shade
-        sleep 5; shot frame-shade2-pulled  # panel over Pinger: clock+chips+notif
-        echo "==> [shade2 1] tap Wi-Fi chip -> flips + persists"
-        tap "$QS_WIFI_X" "$QS_WIFI_Y"
-        sleep 4; shot frame-shade2-toggled
-        echo "==> [shade2 1] tap below the panel -> close the shade"
-        tap "$QS_CLOSE_X" "$QS_CLOSE_Y"
-        sleep 2; shot frame-shade2-closed  # Pinger visible again, shade retracted
-        echo "==> [shade2 1] sync + shutdown (Wi-Fi toggle persisted)"
-        sleep 3
-        shade_kill
+        # The LAST sys.volume the broker reported writing on this boot, or "".
+        volume_from() {
+            sed -n 's/.*\[zsysd\] settings_set sys\.volume=\([0-9]*\).*/\1/p' \
+                "$1" 2>/dev/null | tail -1 | tr -d '\r'
+        }
 
-        echo "==> [shade2 boot 2/2] REBOOT same disk; pull shade -> Wi-Fi still off"
-        shade_boot
-        sleep "$SHOT_DELAY"
-        shot frame-shade2-reboot
-        pull_shade
-        sleep 5; shot frame-shade2-reboot-shade   # Wi-Fi chip still in flipped state
-        shade_kill
-        echo "==> shade2 test done; frames in $OUT/frame-shade2-*.png"
-        exit 0
+        boot1_keys() {
+            echo "==> [qs boot 1/2] Volume Up x2 (media key -> zcomp -> broker)"
+            volkey_up; sleep 1.5
+            volkey_up; sleep 1.5
+        }
+        boot2_keys() {
+            echo "==> [qs boot 2/2] Volume Up x1 -> must land on boot 1's value + 1"
+            volkey_up; sleep 1.5
+        }
+
+        echo "==> [qs boot 1/2] fresh boot; raise the volume through the broker"
+        qs_boot "$SERIAL1" boot1_keys
+        V1="$(volume_from "$SERIAL1")"
+        echo "    boot 1 sys.volume: ${V1:-<none>}"
+
+        echo "==> [qs boot 2/2] REBOOT the SAME disk; the broker must load it back"
+        qs_boot "$SERIAL2" boot2_keys
+        V2="$(volume_from "$SERIAL2")"
+        echo "    boot 2 sys.volume: ${V2:-<none>}"
+
+        rc=0
+        if [ -z "$V1" ]; then
+            echo "!! FAIL: boot 1 never wrote sys.volume — the media key did not"
+            echo "   reach the broker, so nothing was persisted to test (see $SERIAL1)"; rc=1
+        elif [ -z "$V2" ]; then
+            echo "!! FAIL: boot 2 never wrote sys.volume (see $SERIAL2)"; rc=1
+        elif [ "$V2" != "$((V1 + 1))" ]; then
+            echo "!! FAIL: the quick setting did not survive the reboot"
+            echo "     boot 1 left sys.volume=$V1"
+            echo "     boot 2's single Volume Up landed on $V2, expected $((V1 + 1))"
+            echo "   A fresh broker that had read /var/zelto would have started"
+            echo "   from $V1. This one did not."; rc=1
+        elif [ "$V1" -ge 10 ]; then
+            # The broker clamps at 10, so a run that started at the ceiling would
+            # "pass" by having nothing to increment. Refuse to call that a pass.
+            echo "!! FAIL: boot 1 ended at the volume ceiling ($V1); the increment"
+            echo "   assertion is vacuous there. Reset sys.volume and re-run."; rc=1
+        else
+            echo "==> PASS: sys.volume=$V1 persisted across a reboot (boot 2: $V2)"
+        fi
+        echo "==> quick-setting persistence test done; logs in $OUT/qs-boot*.log"
+        exit "$rc"
     fi
 
     # ---------------------------------------------------------------------

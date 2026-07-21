@@ -49,15 +49,32 @@ A 4 px base scale: `space.1`=4, `space.2`=8, `space.3`=12, `space.4`=16, `space.
 
 ### Type
 
-| Token | Use | Default |
-|---|---|---|
-| `font.largeTitle` | Screen titles | 34 / bold |
-| `font.title` | Section titles | 22 / semibold |
-| `font.body` | Body text | 17 / regular |
-| `font.callout` | Secondary | 15 / regular |
-| `font.caption` | Labels | 13 / regular |
+**The scale is written in POINTS; the screen is in PIXELS.** The handset output is
+720×1440 raw pixels against a 390pt design reference, so one point is ~1.85 screen units.
+The C toolkit spells that conversion out once, in `Z_TYPE()`
+([../api-reference/c/ui.md](../api-reference/c/ui.md)); the "px" column below is what the
+renderer actually receives. Every *layout* metric — frames, insets, icon sizes — is
+written directly in screen units, so a bare number next to a type step is not the same
+kind of number. Name the step; never write a pixel size into `Font()`.
 
-Text is shaped with HarfBuzz + FreeType; the default family is the Zelto system font.
+| Token | Use | Points | Screen px |
+|---|---|---|---|
+| `font.display` | The lock clock | 92 | 170 |
+| `font.largeTitle` | Screen titles | 40 / bold | 74 |
+| `font.title` | Section titles | 28 / semibold | 51 |
+| `font.title2` | Sub-sections | 24 | 44 |
+| `font.callout` | Emphasised body | 20 | 37 |
+| `font.body` | Body text | 17 / regular | 31 |
+| `font.headline` | Body + semibold | 17 | 31 |
+| `font.subhead` | Dense body | 15 | 27 |
+| `font.footnote` | Secondary caption | 13 | 24 |
+| `font.caption` | Labels | 12 | 22 |
+| `font.caption2` | Dense metadata | 11 | 20 |
+
+Emphasis is a separate axis: pair a step with a weight rather than reaching for the step
+above it (which is why `headline` is body-sized). Text is shaped with HarfBuzz +
+FreeType; the default family is the Zelto system font (Satoshi, a variable face, so
+weights are real rather than synthesised).
 
 ### Elevation
 

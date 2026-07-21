@@ -260,13 +260,20 @@ static ZView w_clock(ZApp *app, void *state) {
         strftime(day, sizeof(day), "%A", &tmv);
         strftime(date, sizeof(date), "%d %B", &tmv);
     }
+    // THREE lines inside a ONE-ROW cell (widgets are 2 cols x 1 row, so ~158px
+    // tall). That is the tightest type budget on the home screen, and it is the
+    // one place the P43 rescale overflowed: at Large Title the time alone stood
+    // 95px and pushed the date out through the bottom of the card. A widget is a
+    // dense surface — it earns its place by saying three things at a glance, not
+    // by saying one of them loudly — so it types a step down from what the same
+    // information would take on a full screen.
     return VStack(
         Weight(Z_WEIGHT_SEMIBOLD,
             Foreground(Z_COLOR_TEXT_MUTED,
-                Font(Z_FONT_FOOTNOTE, Text("%s", day)))),
+                Font(Z_FONT_CAPTION, Text("%s", day)))),
         Weight(Z_WEIGHT_BOLD,
-            Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", hhmm)))),
-        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_SUBHEAD, Text("%s", date))),
+            Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE2, Text("%s", hhmm)))),
+        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", date))),
         .spacing = 1, .align = Z_ALIGN_LEADING);
 }
 

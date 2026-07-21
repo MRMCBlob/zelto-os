@@ -49,6 +49,24 @@ targets ([../packaging/zap-format.md](../packaging/zap-format.md),
 Brokers typed `intents.request(...)` calls between apps, enforcing identity and
 permissions ([../platform/ipc-and-intents.md](../platform/ipc-and-intents.md)).
 
+### Manifest declarations, answered on behalf of others
+`zsysd` is the only process that parses `.app` manifests — it merges the baked-in
+`/usr/share/zelto/apps` with the runtime-installed directory and rebuilds the table when
+the installer sends it `{"op":"reload"}`. Anything else that needs a manifest fact asks
+rather than growing its own parser. `zcomp` does this for `no_snapshot=`, over the same
+socket it already uses for the media keys:
+
+```
+{"op":"snapshot_policy","app_id":"os.zelto.bank"}  →  {"allow":"0"}
+```
+
+Two shapes matter for anything added here. It is a **dedicated read-only op, not a
+`sys.*` settings key**: `settings_set` is ungated, so a restriction published as a setting
+could be cleared by the app it restrains. And the caller asks **once, at a moment it is
+already paying for** (`zcomp` at window map) and caches the answer, rather than on a hot
+path — a blocking round-trip inside a focus change puts `zsysd`'s health on the
+compositor's frame budget.
+
 ## APK bridge
 
 Integrates the Waydroid Android container into the shell:

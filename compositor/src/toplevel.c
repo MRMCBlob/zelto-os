@@ -114,6 +114,9 @@ static void handle_map(struct wl_listener *listener, void *data) {
     const char *app_id = toplevel->xdg_toplevel->app_id;
     toplevel->is_launcher =
         app_id && strcmp(app_id, ZCOMP_LAUNCHER_APP_ID) == 0;
+    // Resolve the manifest's no_snapshot= opt-out now, while we are already
+    // paying for a window launch, rather than at the capture edge (capture.c).
+    zcomp_capture_resolve_policy(toplevel, app_id);
     wl_list_insert(&server->toplevels, &toplevel->link);
     wlr_log(WLR_INFO, "toplevel mapped: %s%s",
             toplevel->xdg_toplevel->title ? toplevel->xdg_toplevel->title

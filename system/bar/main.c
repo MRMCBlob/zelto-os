@@ -27,6 +27,13 @@
 
 #define BAR_H 40
 
+// A FIXED horizontal gap. Not Frame(w, h, Spacer()): a Spacer carries grow, so
+// Frame'ing one still lets it eat every spare pixel in the stack and the "12px"
+// gap swallows the row. An empty (fully transparent) Rect has no grow.
+static ZView hgap(float w) {
+    return Frame(w, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0)));
+}
+
 typedef struct BarState {
     bool inited;
     bool wifi;
@@ -154,17 +161,30 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // legible over both; the text shadow covers a bright wallpaper.
     //
     // A long-press on the bar manually locks now (bumps sys.lock_now).
+    // The bar is the tightest box in the OS: BAR_H is a contract (it is the
+    // exclusive zone every app window is laid out against), so the type has to fit
+    // 40px rather than the box growing to fit the type. Caption (22px) is the step
+    // that does — and it is the right step by proportion too: a 22px label in a
+    // 40px strip is 12pt in a 20pt bar, which is exactly what the phone this
+    // copies puts there. Subhead, which this used before the P43 rescale, measures
+    // a 35px line box and was cropped top and bottom on every screen in the OS.
+    //
+    // Padding is 4, not 14: the uniform .padding is BOTH axes, and 14 leaves 12px
+    // of a 40px strip for the text. The horizontal inset it used to provide comes
+    // from explicit end gaps instead, so the two axes can differ.
     return OnLongPress(bar_longpress, NULL,
         HStack(
-            // No TextShadow: at 15px the dropped copy lands a pixel or two off the
-            // ink and just reads as a smeared double-strike, not as depth. Small
-            // text wants contrast, not a shadow.
+            hgap(12.0f),
+            // No TextShadow: the dropped copy lands a pixel or two off the ink and
+            // at this size just reads as a smeared double-strike, not as depth.
+            // Small text wants contrast, not a shadow.
             Weight(Z_WEIGHT_SEMIBOLD,
-                Foreground(Z_COLOR_TEXT, Font(Z_FONT_SUBHEAD,
+                Foreground(Z_COLOR_TEXT, Font(Z_FONT_CAPTION,
                     Text("%s", clock)))),
             Spacer(),
             z_stack(Z_AXIS_HORIZONTAL, &cluster),
-            .padding = 14, .spacing = 10, .align = Z_ALIGN_CENTER));
+            hgap(12.0f),
+            .padding = 4, .spacing = 10, .align = Z_ALIGN_CENTER));
 }
 
 Z_LAYER_APP(BarState, bar_body,
