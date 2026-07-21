@@ -98,7 +98,13 @@ typedef enum ZFont {
     Z_FONT_CALLOUT = 20,      // emphasised body / compact title (Zelto's larger scale)
     Z_FONT_TITLE2 = 24,       // section title
     Z_FONT_TITLE = 28,        // screen title
-    Z_FONT_LARGE_TITLE = 40,  // hero / clock
+    Z_FONT_LARGE_TITLE = 40,  // hero / a screen's opening title
+    // Above the reading ladder entirely: a number that IS the screen. Only the
+    // lock screen's clock uses it — that clock is not a title, it is the reason
+    // the screen exists, and at Large Title it reads as a heading with nothing
+    // under it. A step this far out belongs in the scale rather than as a cast
+    // integer at one call site, so it retypes with everything else.
+    Z_FONT_DISPLAY = 92,
 } ZFont;
 
 // Font weight — the second hierarchy axis. The bundled face is a single Regular;

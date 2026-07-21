@@ -321,6 +321,17 @@ if [ -n "${SIM_CONSENT:-}" ]; then
     spawn "$SYS/consent/zelto-consent" $SIM_CONSENT
 fi
 
+# Optional (shots harness): spawn the share sheet standalone with a space-separated
+# list of candidate app_ids — the sheet zsysd normally forks to resolve an intent,
+# captured directly. Its exit code is the pick, which nothing reads here. Set
+# ZELTO_SHARE_MIME / ZELTO_SHARE_PAYLOAD too (zsysd passes them in the child's
+# environment) to get the preview row the real sheet shows.
+if [ -n "${SIM_CHOOSER:-}" ]; then
+    sleep 1
+    # shellcheck disable=SC2086
+    spawn "$SYS/chooser/zelto-chooser" $SIM_CHOOSER
+fi
+
 # Headless + SHOT: give it a moment to render, grab a PNG with grim, then exit —
 # the agent/CI verification path. Otherwise block on zcomp (interactive window).
 if [ -n "${SHOT:-}" ]; then

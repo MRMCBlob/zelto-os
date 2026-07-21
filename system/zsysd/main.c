@@ -123,15 +123,25 @@ typedef struct Grant {
 } Grant;
 static Grant g_grants[MAX_GRANTS];
 
-// --- notification store + shade sink ---------------------------------------
+// --- notification store + sinks --------------------------------------------
 // zsysd's third duty: a notification store + router. A perm-gated notify_post
 // assigns a monotonic global id, stores the notification, and pushes a
-// notify_show to the shade sink. The shade (a libzelto app that sent
-// notify_subscribe) is recorded by its ctrl fd; only one sink (last wins). The
-// shade reports a body tap (notify_tap -> drop the banner; it routed the deep
-// link itself via z_open_url) or an action tap (notify_action -> route to the
-// poster's mailbox, then drop). Cancel removes a notification by id. The store
-// is in-memory only (lost on reboot); no history/grouping (heads-up only).
+// notify_show to every subscribed SINK. A sink is a libzelto surface that sent
+// notify_subscribe, recorded by its ctrl fd. A sink reports a body tap
+// (notify_tap -> drop the banner; it routed the deep link itself via z_open_url)
+// or an action tap (notify_action -> route to the poster's mailbox, then drop).
+// Cancel removes a notification by id. The store is in-memory only (lost on
+// reboot); no history/grouping (heads-up only).
+//
+// WHY A SET AND NOT LAST-WINS. This was one fd — "the shade sink" — because for
+// P10 the shade was the only surface that displayed notifications. The lock
+// screen shows them too (P41), and it is a SEPARATE process, so last-wins made
+// the two surfaces silently exclusive: whichever subscribed later took the sink
+// and the other never saw another notification again. Since init starts the lock
+// last, that would have been the shade — the heads-up banner, gone. A set fans
+// out to both, exactly like the settings-subscriber set below, and a drop of a
+// notification reaches every surface showing it. Any sink may report a tap; the
+// notification is dropped once and the hide is fanned out to all of them.
 typedef struct Notification {
     bool used;
     int64_t id;
@@ -145,7 +155,29 @@ typedef struct Notification {
 } Notification;
 static Notification g_notifs[MAX_NOTIFS];
 static int64_t g_next_notif_id = 1;
-static int g_shade_fd = -1;   // ctrl fd of the subscribed shade (-1 = none)
+static int g_sink_fds[MAX_CLIENTS];   // ctrl fds of the subscribed sinks
+static int g_n_sinks;
+
+// Register / drop a notification sink. Subscribing twice on one fd is a no-op, so
+// a surface that re-subscribes after a rebuild does not get double pushes.
+static void sink_subscribe_fd(int fd) {
+    for (int i = 0; i < g_n_sinks; i++) {
+        if (g_sink_fds[i] == fd) {
+            return;
+        }
+    }
+    if (g_n_sinks < MAX_CLIENTS) {
+        g_sink_fds[g_n_sinks++] = fd;
+    }
+}
+static void sink_unsubscribe_fd(int fd) {
+    for (int i = 0; i < g_n_sinks; i++) {
+        if (g_sink_fds[i] == fd) {
+            g_sink_fds[i] = g_sink_fds[--g_n_sinks];
+            return;
+        }
+    }
+}
 
 // --- settings store (zsysd's 4th duty) -------------------------------------
 // A single source of truth for system toggles. Values are strings (bools as
@@ -178,7 +210,7 @@ static Setting g_settings[MAX_SETTINGS];
 
 // Subscriber ctrl fds (the persistent connections that asked for settings_changed
 // pushes). A SET, not last-wins: several apps observe simultaneously. Cleared per
-// fd on its disconnect in the read loop (mirroring g_shade_fd).
+// fd on its disconnect in the read loop (mirroring the notification sink set).
 static int g_settings_subs[MAX_CLIENTS];
 static int g_n_settings_subs;
 
@@ -629,7 +661,14 @@ static void deliver_or_queue(const char *app_id, const char *kind,
 // Show the System-UI chooser over the candidate app_ids and block until the
 // user picks one. Mirrors show_consent's fork/exec + exit-code IPC: the chooser
 // exits with the 1-based index of the pick (0 = cancel / exec failure).
-static int run_chooser(char ids[][96], int n) {
+//
+// `mime` / `payload` describe WHAT is being shared, so the sheet can preview it
+// (both may be ""). They go through the ENVIRONMENT of the forked child, not
+// argv: argv is the candidate list and its indices ARE the IPC — the exit code
+// means "argv[N]" — so prepending anything to it would introduce an offset both
+// sides must agree on, and a disagreement delivers the share to the wrong app.
+static int run_chooser(char ids[][96], int n, const char *mime,
+                       const char *payload) {
     char *argv[2 + MAX_MANIFESTS];
     argv[0] = (char *)"zelto-chooser";
     for (int i = 0; i < n; i++) {
@@ -641,6 +680,8 @@ static int run_chooser(char ids[][96], int n) {
         return 0;
     }
     if (pid == 0) {
+        setenv("ZELTO_SHARE_MIME", mime ? mime : "", 1);
+        setenv("ZELTO_SHARE_PAYLOAD", payload ? payload : "", 1);
         execv(CHOOSER_BIN, argv);
         _exit(0);
     }
@@ -675,7 +716,7 @@ static void handle_intent_resolve(const char *line) {
         }
         // Share always shows the sheet (even a single candidate) — that chooser
         // is the user's confirmation of where the content goes.
-        int pick = run_chooser(cands, n);
+        int pick = run_chooser(cands, n, mime, payload);
         if (pick < 1 || pick > n) {
             fprintf(stderr, "[zsysd] share cancelled (pick=%d)\n", pick);
             return;
@@ -699,7 +740,8 @@ static void handle_intent_resolve(const char *line) {
         // A single handler skips the chooser (resolve directly by scheme).
         int idx = 1;
         if (n > 1) {
-            idx = run_chooser(cands, n);
+            // A deep link has no payload to preview — the URL is the subject.
+            idx = run_chooser(cands, n, "", url);
             if (idx < 1 || idx > n) {
                 fprintf(stderr, "[zsysd] open_url cancelled (pick=%d)\n", idx);
                 return;
@@ -748,15 +790,15 @@ static Notification *notif_find(int64_t id) {
     return NULL;
 }
 
-// Remove a notification from the store and hide its banner on the shade.
+// Remove a notification from the store and hide it on every sink.
 static void notif_drop(int64_t id) {
     Notification *n = notif_find(id);
     if (!n) {
         return;
     }
     n->used = false;
-    if (g_shade_fd >= 0) {
-        send_notify_hide(g_shade_fd, id);
+    for (int i = 0; i < g_n_sinks; i++) {
+        send_notify_hide(g_sink_fds[i], id);
     }
     publish_notif_count();
 }
@@ -764,7 +806,7 @@ static void notif_drop(int64_t id) {
 // notify_post: perm-gate (the consent prompt blocks here exactly like a
 // perm_request — the posting app waits synchronously on its transient conn),
 // assign a global id, store it, reply {"id":"N"} on this connection, and push a
-// notify_show to the shade sink. A denial replies {"id":"-1"}.
+// notify_show to every sink. A denial replies {"id":"-1"}.
 static void handle_notify_post(int fd, const char *line) {
     char app_id[96] = {0}, title[128] = {0}, body[192] = {0}, channel[64] = {0},
          tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0};
@@ -819,10 +861,10 @@ static void handle_notify_post(int fd, const char *line) {
         ssize_t w = write(fd, reply, (size_t)m);
         (void)w;
     }
-    fprintf(stderr, "[zsysd] notify_post app=%s id=%lld -> shade %s\n", app_id,
-            (long long)n->id, g_shade_fd >= 0 ? "yes" : "(no sink)");
-    if (g_shade_fd >= 0) {
-        send_notify_show(g_shade_fd, n);
+    fprintf(stderr, "[zsysd] notify_post app=%s id=%lld -> %d sink(s)\n", app_id,
+            (long long)n->id, g_n_sinks);
+    for (int i = 0; i < g_n_sinks; i++) {
+        send_notify_show(g_sink_fds[i], n);
     }
     publish_notif_count();
 }
@@ -1087,7 +1129,7 @@ static bool read_sysfs_battery(int *pct_out, bool *charging_out) {
 }
 
 // Store + push a notification straight from the OS (no app, no perm gate — the
-// system is the poster). Reuses the notify store + shade sink. Used for the
+// system is the poster). Reuses the notify store + sinks. Used for the
 // low-battery warning.
 static void post_system_notification(const char *title, const char *body) {
     Notification *n = NULL;
@@ -1109,8 +1151,8 @@ static void post_system_notification(const char *title, const char *body) {
     n->action_id[0] = n->action_title[0] = '\0';
     fprintf(stderr, "[zsysd] system notification id=%lld: %s\n",
             (long long)n->id, title);
-    if (g_shade_fd >= 0) {
-        send_notify_show(g_shade_fd, n);
+    for (int i = 0; i < g_n_sinks; i++) {
+        send_notify_show(g_sink_fds[i], n);
     }
     publish_notif_count();
 }
@@ -1541,10 +1583,12 @@ static void handle_line(int slot, int fd, char *line) {
     }
 
     // --- notifications ---
-    // Shade subscribes as the sink (last subscriber wins). Records its ctrl fd.
+    // A surface subscribes as a sink (the shade and the lock screen both do).
+    // Records its ctrl fd in the sink SET — not last-wins, see the store's notes.
     if (strcmp(op, "notify_subscribe") == 0) {
-        g_shade_fd = fd;
-        fprintf(stderr, "[zsysd] notify sink subscribed (slot %d)\n", slot);
+        sink_subscribe_fd(fd);
+        fprintf(stderr, "[zsysd] notify sink subscribed (slot %d, %d total)\n",
+                slot, g_n_sinks);
         return;
     }
     // notify_post is a synchronous round-trip (replies {"id":..} on this conn).
@@ -1764,9 +1808,7 @@ static void serve_once(int timeout_ms) {
             close(cfd);
             g_client_fd[slot] = -1;
             g_client_app[slot][0] = '\0';   // mailbox gone
-            if (cfd == g_shade_fd) {
-                g_shade_fd = -1;   // shade sink disconnected
-            }
+            sink_unsubscribe_fd(cfd);       // a notification sink went away
             settings_unsubscribe_fd(cfd);   // drop a settings observer too
             sensor_unsubscribe_fd(cfd);     // and any sensor/location streams
             continue;

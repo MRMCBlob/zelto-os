@@ -36,6 +36,23 @@ ONLY="${ONLY:-}"
 mkdir -p "$OUT"
 rm -rf "$TMP"; mkdir -p "$TMP"
 
+# Prune PNGs from shots this file no longer defines. Without this a shot that is
+# deleted or renamed leaves its last capture on disk forever, and the next person
+# to open out/shots/ reviews a surface that no longer exists. (The contact sheet
+# only lists what ran, so the stale file is invisible there — which is worse.)
+if [ -z "$ONLY" ]; then
+    for png in "$OUT"/*.png; do
+        [ -e "$png" ] || continue
+        name="$(basename "$png" .png)"
+        # NB: not anchored to the line start — a shot may be invoked as
+        # `SEED='...' run_shot 12-volume-hud ...` on one line, and anchoring here
+        # deletes a live shot's capture (which then silently reappears only
+        # because the same run re-takes it, so the bug hides itself).
+        grep -q "run_shot $name " "$HERE/shots.sh" || {
+            echo "==> pruning stale shot $name"; rm -f "$png"; }
+    done
+fi
+
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     echo "==> building host (x86_64)"
     [ -d "$BUILD" ] || meson setup "$BUILD" "$REPO_ROOT"
@@ -61,6 +78,12 @@ ZAP=""
 # script package first by setting $ZAP.
 run_shot() {
     local name="$1" caption="$2" delay="$3"; shift 3
+    # Register the shot in the gallery BEFORE the ONLY filter. The contact sheet is
+    # the review artifact, and it lists whatever PNGs are on disk (missing ones are
+    # skipped when it is written) — so a filtered re-run of one shot must still
+    # emit the WHOLE sheet. Registering after the filter meant `ONLY=x meta/shots.sh`
+    # rewrote index.html with a single card and threw the catalogue away.
+    GALLERY+=("$name|$caption")
     if [ -n "$ONLY" ] && [[ "$name" != *"$ONLY"* ]]; then SEED=""; ZAP=""; return 0; fi
 
     local dir="$TMP/$name"
@@ -108,7 +131,6 @@ run_shot() {
         ZELTO_DATA_DIR="$data" SIM_RUNTIME_DIR="$xdg" \
         "$REPO_ROOT/meta/run-sim.sh" >"$dir/log" 2>&1 || true
     if [ -f "$png" ]; then echo "    ok"; else echo "    !! MISSING (see $dir/log)"; fi
-    GALLERY+=("$name|$caption")
     SEED=""
     ZAP=""
 }
@@ -160,8 +182,19 @@ run_shot 10a-app-library-search "App Library search: filtered, keyboard raised" 
 # ZELTO_PRESS_AMT the spring value). The launcher is the full-screen surface here.
 run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
     ZELTO_PRESS_X=447 ZELTO_PRESS_Y=460
-run_shot 41-settings-press "Settings: Wi-Fi toggle pressed (veil over PRIMARY chip)" 8 \
-    SIM_APP=zelto-settings ZELTO_PRESS_X=611 ZELTO_PRESS_Y=101
+# The Airplane Mode SWITCH — row 1 of the first card after P41's regrouping.
+#
+# TWO traps here, both of which photograph as "nothing happened":
+#  1. It must be an OFF switch. The press veil is a WHITE wash and an ON switch
+#     wears the near-white Z_COLOR_PRIMARY track, so a press on Wi-Fi (which
+#     defaults ON) lands white-on-white. Shot 61 aims at the OFF Lock toggle for
+#     exactly this reason.
+#  2. ZELTO_PRESS_X/Y are SURFACE-local, and an app's surface starts BELOW the
+#     40px status bar — unlike the launcher (shot 40), which zcomp hands the whole
+#     output. So an app-targeted press is screen_y - BAR_H. Reading a y off a
+#     screenshot and pasting it here silently misses by 40px.
+run_shot 41-settings-press "Settings: Airplane Mode switch pressed (touch-down veil)" 8 \
+    SIM_APP=zelto-settings ZELTO_PRESS_X=638 ZELTO_PRESS_Y=165
 
 # ===========================================================================
 # SYSTEM OVERLAYS (shade / volume / keyboard / lock / recents / consent / banner)
@@ -186,7 +219,19 @@ run_shot 14-keyboard-symbols "On-screen keyboard, symbols layer" 6 \
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t2\nsys.idle_lock_s\t999\nsys.idle_off_s\t9999\n' \
     run_shot 15-lock-dimmed "Pre-lock dim scrim (idle past idle_dim_s)" 7
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\n' \
-    run_shot 16-lock-screen "Lock screen: clock + swipe-up-to-unlock" 9
+    run_shot 16-lock-screen "Lock screen: display clock high, notification cards" 9 \
+    ZELTO_LOCK_NOTIFS=3
+# With a passcode set the swipe reveals the keypad instead of unlocking, so the
+# lock screen carries the one line of warning it otherwise does without.
+SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\nsys.passcode\t1234\n' \
+    run_shot 16a-lock-passcode-hint "Lock screen with a passcode set (swipe reveals the keypad)" 9 \
+    ZELTO_LOCK_NOTIFS=2
+# The unlock gesture itself: the whole plate lifted 1:1 with the finger and fading
+# as it rises. Frozen by ZELTO_LOCK_DRAG (px, negative = up) — the drag IS the
+# transition, so a shot after the release would show an unlocked screen instead.
+SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\n' \
+    run_shot 16b-lock-unlock-drag "Lock screen lifted toward the unlock swipe (frozen -160px)" 9 \
+    ZELTO_LOCK_NOTIFS=3 ZELTO_LOCK_DRAG=-160
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t6\n' \
     run_shot 17-lock-off "Screen-off scrim (idle past idle_off_s while locked)" 11
 
@@ -204,6 +249,25 @@ run_shot 18b-switcher-close "App Switcher: centred card flicked up to close (fro
 # Permission consent modal (spawned standalone with app_id + perm).
 run_shot 19-consent "Permission consent dialog (Allow / Deny modal)" 7 \
     SIM_CONSENT="os.zelto.pinger notifications"
+# The SHARE SHEET. It had no shot at all before P41 — a whole system surface with
+# zero coverage, which is exactly how it stayed a desktop "Open with..." dialog
+# through five design phases. Spawned standalone over a sharing app with the
+# candidate app_ids zsysd would have resolved, plus the ZELTO_SHARE_* pair zsysd
+# passes it in the environment so the preview row has something to preview.
+run_shot 19a-share-sheet "Share sheet: preview, target row, actions (bottom sheet)" 8 \
+    SIM_APP=zelto-notes \
+    SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
+    ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens"
+run_shot 19b-share-sheet-enter "Share sheet mid rise + backdrop fade (frozen 0.5)" 8 \
+    SIM_APP=zelto-notes \
+    SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
+    ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens" \
+    ZELTO_CHOOSER_ENTER=0.5
+run_shot 19c-share-sheet-dismiss "Share sheet dragged down toward dismissal (frozen)" 8 \
+    SIM_APP=zelto-notes \
+    SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
+    ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens" \
+    ZELTO_CHOOSER_DRAG=120
 # Notification banner: pinger auto-posts, consent auto-allows -> shade heads-up.
 run_shot 20-banner "Heads-up notification banner (auto-posted + auto-granted)" 10 \
     SIM_APP=zelto-pinger ZELTO_PINGER_POST=1 ZELTO_CONSENT_AUTO=allow
@@ -231,8 +295,18 @@ run_shot 46-qs-crossfade "Control Center toggles mid on/off cross-fade (frozen 0
     ZELTO_SHADE_OPEN=cc ZELTO_QS_ANIM=0.5
 run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)" 8 \
     SIM_APP=zelto-settings ZELTO_QS_ANIM=0.5
-run_shot 48-nav-press "Bottom-nav Back button press flash (P31 feedback)" 6 \
-    ZELTO_PRESS_APP=nav_body ZELTO_PRESS_X=120 ZELTO_PRESS_Y=30
+# Press feedback on a SYSTEM OVERLAY rather than on an app. This used to aim at
+# the bottom nav bar's Back button — but P40 deleted system/nav/ for the home
+# gesture, so ZELTO_PRESS_APP=nav_body matched no surface and the shot silently
+# captured a bare home screen for two phases. The keyboard is the right heir: it
+# is a system surface, it is a dense field of identical targets where "which one
+# did I hit" is the whole question, and its caps are the one place in the OS where
+# the press veil has to read at a glance. Coordinates are KEYBOARD-LOCAL (the
+# surface is KBD_H tall, bottom-anchored above the home indicator): the home row's
+# "g", centre of the grid.
+run_shot 48-key-press "Keyboard: a key pressed (touch-down highlight veil)" 8 \
+    ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad \
+    ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=364 ZELTO_PRESS_Y=114
 
 # App-open continuity (P32 item 3b): the tapped tile drifts toward centre while the
 # rest of home fades — the launch hand-off, frozen mid-flight.
@@ -293,7 +367,7 @@ SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
 # a near-white PRIMARY disc — there would be nothing to see.
 run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset Lock toggle" 6 \
     ZELTO_SHADE_PULL=1.18 ZELTO_PRESS_APP=shade_body \
-    ZELTO_PRESS_X=360 ZELTO_PRESS_Y=192
+    ZELTO_PRESS_X=360 ZELTO_PRESS_Y=232
 
 # ===========================================================================
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
@@ -321,6 +395,13 @@ run_shot 31-app-notes    "App: Notes"    8 SIM_APP=zelto-notes
 run_shot 32-app-notepad  "App: Notepad"  8 SIM_APP=zelto-notepad
 run_shot 33-app-fetch    "App: Fetch"    8 SIM_APP=zelto-fetch
 run_shot 34-app-settings "App: Settings" 8 SIM_APP=zelto-settings
+# The TAIL of the same screen. A settings list is taller than the phone, so a
+# single shot of its top reviews half a design; ZELTO_SCROLL_TO parks the first
+# scroll cell at an ordinary (layout-clamped) position so the last group, its
+# footer and the action row are photographable. The over-pull hook cannot do this
+# — it rubber-bands, so it saturates a few hundred px in.
+run_shot 34a-app-settings-tail "App: Settings, scrolled to the last group" 8 \
+    SIM_APP=zelto-settings ZELTO_SCROLL_TO=1500
 run_shot 35-app-store    "App: Store"    8 SIM_APP=zelto-store
 run_shot 36-app-hello    "App: Rows (SDK sample)" 8 SIM_APP=zelto-hello
 run_shot 37-app-pinger   "App: Pinger"   8 SIM_APP=zelto-pinger
@@ -344,40 +425,40 @@ JSDEMO="$REPO_ROOT/system/apps/jsdemo/jsdemo.js"
 # onPan: the card dragged sideways, caught MID-drag (it springs home on release,
 # so a shot after the release would show nothing). Proves the JS closure is
 # driving the spring 1:1 from the finger.
-run_shot 59-script-pan "Script: card dragged by onPan (mid-drag, finger-tracked)" 7 \
+run_shot 70-script-pan "Script: card dragged by onPan (mid-drag, finger-tracked)" 7 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_DRAG="180 418 520 418 6000"
 
 # onLongPress: a hold in place past the threshold toggles "Pinned" (and suppresses
 # the tap the release would otherwise have produced).
-run_shot 60-script-longpress "Script: onLongPress pinned the card (tap suppressed)" 11 \
+run_shot 71-script-longpress "Script: onLongPress pinned the card (tap suppressed)" 11 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 418 900"
 
 # Navigator: a pushed screen, with its own hook state and the props it was pushed
 # with. Back (edge-swipe / Escape) pops it without the script's help.
-run_shot 61-script-nav "Script: Navigator pushed a second screen" 11 \
+run_shot 72-script-nav "Script: Navigator pushed a second screen" 11 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 916 100"
 
 # TextField: tapping the field focuses it and raises the system on-screen keyboard
 # (P21) — the app handles no keys at all.
-run_shot 62-script-textfield "Script: TextField focused, on-screen keyboard up" 12 \
+run_shot 73-script-textfield "Script: TextField focused, on-screen keyboard up" 12 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 557 100"
 
 # Networking: the script awaits the `network` grant (the system consent modal runs
 # on the live loop), then fetches over the async state machine. SIM_NET=1 serves
 # the endpoint locally; the card shows the real 200 + body.
-run_shot 63-script-net "Script: fetch() after awaiting the network grant" 14 \
+run_shot 74-script-net "Script: fetch() after awaiting the network grant" 14 \
     SIM_SCRIPT="$JSDEMO" SIM_NET=1 ZELTO_CONSENT_AUTO=allow \
     ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="190 697 100"
 
 # Notifications: posted by the script through the same broker a C app uses, with an
 # action button that routes back to it. Captured as the heads-up banner.
-run_shot 64-script-notify "Script: notification posted (heads-up banner + action)" 13 \
+run_shot 75-script-notify "Script: notification posted (heads-up banner + action)" 13 \
     SIM_SCRIPT="$JSDEMO" ZELTO_CONSENT_AUTO=allow \
     ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="524 697 100"
 
 # Settings: the script writes sys.mute and the broker echoes the change back to its
 # observer, which recolours the row — the same live fan-out the shade gets.
-run_shot 65-script-settings "Script: wrote sys.mute, observer echoed it back live" 11 \
+run_shot 76-script-settings "Script: wrote sys.mute, observer echoed it back live" 11 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="527 758 100"
 
 # Packaging: the Greeter is not in the image at all. It is packaged as a signed
@@ -386,7 +467,7 @@ run_shot 65-script-settings "Script: wrote sys.mute, observer echoed it back liv
 # /var/zelto, whose code was signature- and hash-verified before it ever ran. The
 # tap lands on its tile, which exists only because the install worked.
 ZAP="$REPO_ROOT/system/apps/greeter/zelto-greeter.app:$REPO_ROOT/system/apps/greeter/greeter.js" \
-run_shot 66-script-installed "Script: installed from a signed .zap, running from /var/zelto" 12 \
+run_shot 77-script-installed "Script: installed from a signed .zap, running from /var/zelto" 12 \
     ZCOMP_INPUT_DELAY=5000 ZCOMP_HOLD="447 460 100"
 
 # ===========================================================================

@@ -86,6 +86,7 @@
 
 #include "common/app_icons.h"
 #include "common/glyphs.h"
+#include "common/notif_card.h"
 
 #define MAX_BANNERS 8
 #define MAX_HISTORY 6   // recently-dismissed notifications kept for the panel list
@@ -339,56 +340,15 @@ static void tap_action(ZApp *app, void *state, void *data) {
     z_notify_report_action(b->id, b->action_id);
 }
 
-// One notification card: app id caption + title + body and, when present and the
-// card is interactive, an action button. The whole card is the body-tap target;
-// the action button is a deeper tap target nested inside (deepest handler wins).
-// A non-interactive (history) card carries no handlers and renders dimmer.
-//
-// In the Notification Center the card is a MATERIAL, not a solid: it floats over
-// the blurred wallpaper the way an iOS notification does, rather than sitting on
-// a panel. Over the app (a heads-up) it is the same mark, so a banner and its
-// entry in the Notification Center are visibly the same object.
+// One notification card: the SHARED mark (system/common/notif_card.h), which the
+// lock screen draws too, wrapped in this surface's own handlers. The whole card
+// is the body-tap target; the action button is a deeper tap target nested inside
+// (deepest handler wins). A non-interactive (history) card carries no handlers
+// and renders dimmer.
 static ZView notif_card(Banner *b, bool interactive) {
-    ZColor cap = interactive ? Z_COLOR_TEXT_MUTED
-                             : Z_COLOR_TEXT_FAINT;
-    ZColor bodyc = interactive ? Z_COLOR_TEXT
-                               : Z_COLOR_TEXT_MUTED;
-    ZColor bg = interactive ? Z_COLOR_MATERIAL_THICK
-                            : Z_COLOR_MATERIAL_REGULAR;
-
-    // The posting app's icon (resolved from app_id via its manifest, like
-    // Recents), falling back to the shared Placeholder if it has none or it won't
-    // load. App icons are square, so a plain aspect-fit Image is right here.
-    char ipath[256];
-    const char *icon =
-        (zelto_icon_for_app_id(b->app_id, ipath, sizeof(ipath)) &&
-         z_image_loads(ipath))
-            ? ipath
-            : zelto_placeholder_icon();
-
-    // The app's own name, not its reverse-DNS id: "os.zelto.pinger" is a database
-    // key, and printing it on the card is the surest sign a notification was laid
-    // out by an engineer. The manifest has the display name.
-    char name[96];
-    const char *who = zelto_name_for_app_id(b->app_id, name, sizeof(name))
-                          ? name
-                          : b->app_id;
-
-    ZStackOpts row = {.padding = 14, .spacing = 14, .align = Z_ALIGN_CENTER};
-    int k = 0;
-    row.children[k++] = Frame(38.0f, 38.0f,
-        CornerRadius(38.0f * Z_RADIUS_ICON, Image(icon)));
-    row.children[k++] = Grow(1.0f,
-        VStack(
-            Foreground(cap, Weight(Z_WEIGHT_MEDIUM,
-                Font(Z_FONT_CAPTION2, Text("%s", who)))),
-            Foreground(interactive ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED,
-                Weight(Z_WEIGHT_SEMIBOLD,
-                    Font(Z_FONT_HEADLINE, Text("%s", b->title)))),
-            Foreground(bodyc, Font(Z_FONT_SUBHEAD, Text("%s", b->body))),
-            .spacing = 2, .align = Z_ALIGN_LEADING));
+    ZView action = NULL;
     if (interactive && b->action_id[0]) {
-        row.children[k++] = OnTapData(tap_action, b,
+        action = OnTapData(tap_action, b,
             Background(Z_COLOR_PRIMARY,
                 CornerRadius(Z_RADIUS_CHIP,
                     Padding(12,
@@ -397,9 +357,8 @@ static ZView notif_card(Banner *b, bool interactive) {
                                 Font(Z_FONT_SUBHEAD,
                                     Text("%s", b->action_title))))))));
     }
-
-    ZView card = Shadow(interactive ? Z_ELEV_2 : Z_ELEV_1, Background(bg,
-        CornerRadius(Z_RADIUS_CARD, z_stack(Z_AXIS_HORIZONTAL, &row))));
+    ZView card = zelto_notif_card(b->app_id, b->title, b->body, action,
+                                  interactive);
     return interactive ? OnTapData(tap_body, b, card) : card;
 }
 

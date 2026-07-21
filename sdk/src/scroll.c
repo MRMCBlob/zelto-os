@@ -38,6 +38,17 @@ static ZScroll *next_scroll_cell(ZApp *app) {
                 sc->offset = z_rubber_band(-px, 400.0f);
                 sc->dragging = true;   // hold the over-pull so layout won't clamp it
             }
+            // ZELTO_SCROLL_TO=<px> parks the first scroll cell at an ordinary
+            // scroll position, clamped by layout like any other. The over-pull
+            // hook above cannot do this job: it rubber-bands, so it saturates
+            // after a few hundred px and the BOTTOM of a long screen (the last
+            // group of a settings list, the final row of a form) has no way to be
+            // photographed at all. Env-gated, so zero production effect.
+            const char *to = getenv("ZELTO_SCROLL_TO");
+            if (to && to[0]) {
+                float px = (float)atof(to);
+                sc->raw = sc->offset = px > 0.0f ? px : 0.0f;
+            }
         }
         if (s->scroll_count <= i) {
             s->scroll_count = i + 1;
