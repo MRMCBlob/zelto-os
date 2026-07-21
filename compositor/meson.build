@@ -51,6 +51,7 @@ if have_graphics
     'src/seat.c',
     'src/text_input.c',
     'src/backdrop.c',
+    'src/capture.c',
   )
 
   executable(

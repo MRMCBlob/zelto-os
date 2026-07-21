@@ -126,11 +126,28 @@ run_shot() {
     local png="$OUT/$name.png"
     rm -f "$png"
     echo "==> $name  (${delay}s)  — $caption"
-    env "$@" \
-        SKIP_BUILD=1 HEADLESS=1 SHOT="$png" SHOT_DELAY="$delay" \
-        ZELTO_DATA_DIR="$data" SIM_RUNTIME_DIR="$xdg" \
-        "$REPO_ROOT/meta/run-sim.sh" >"$dir/log" 2>&1 || true
-    if [ -f "$png" ]; then echo "    ok"; else echo "    !! MISSING (see $dir/log)"; fi
+    # Boot, and if the boot did not produce a usable frame, boot again.
+    #
+    # run-sim.sh now exits non-zero when the capture failed or came back blank
+    # (rather than exiting 0 with no PNG), so a bad boot is detectable here — and
+    # a catalogue with silent holes in it is a design review nobody can trust. One
+    # retry is enough for a transient; a shot that fails twice is a real defect in
+    # that surface and should be read as one, so it is reported and left missing.
+    local attempt
+    for attempt in 1 2; do
+        env "$@" \
+            SKIP_BUILD=1 HEADLESS=1 SHOT="$png" SHOT_DELAY="$delay" \
+            ZELTO_DATA_DIR="$data" SIM_RUNTIME_DIR="$xdg" \
+            "$REPO_ROOT/meta/run-sim.sh" >"$dir/log.$attempt" 2>&1 || true
+        if [ -s "$png" ]; then break; fi
+        [ "$attempt" = 1 ] && echo "    .. no frame; re-booting this shot once"
+    done
+    cp -f "$dir/log.$attempt" "$dir/log" 2>/dev/null || true
+    if [ -s "$png" ]; then
+        [ "$attempt" = 1 ] && echo "    ok" || echo "    ok (on retry $attempt)"
+    else
+        echo "    !! MISSING after $attempt boots (see $dir/log)"
+    fi
     SEED=""
     ZAP=""
 }
@@ -193,8 +210,14 @@ run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
 #     40px status bar — unlike the launcher (shot 40), which zcomp hands the whole
 #     output. So an app-targeted press is screen_y - BAR_H. Reading a y off a
 #     screenshot and pasting it here silently misses by 40px.
-run_shot 41-settings-press "Settings: Airplane Mode switch pressed (touch-down veil)" 8 \
-    SIM_APP=zelto-settings ZELTO_PRESS_X=638 ZELTO_PRESS_Y=165
+#
+# P42 retarget: Settings is a DRILL-DOWN now, so its first card no longer holds
+# the Airplane switch — it holds four detail rows. Aiming at the "Network" row
+# keeps both traps satisfied: a list row is dark SURFACE (the white veil shows on
+# it, unlike the near-white track of an ON switch), and 180 is the row's centre in
+# SCREEN space minus the 40px bar.
+run_shot 41-settings-press "Settings: a detail row pressed (touch-down veil)" 8 \
+    SIM_APP=zelto-settings ZELTO_PRESS_X=360 ZELTO_PRESS_Y=140
 
 # ===========================================================================
 # SYSTEM OVERLAYS (shade / volume / keyboard / lock / recents / consent / banner)
@@ -293,8 +316,13 @@ run_shot 45-toast-enter "Launcher toast mid slide-up+fade entrance (frozen 0.5)"
 # flash verified over a bottom-nav button (ZELTO_PRESS_APP scopes it to the nav).
 run_shot 46-qs-crossfade "Control Center toggles mid on/off cross-fade (frozen 0.5)" 6 \
     ZELTO_SHADE_OPEN=cc ZELTO_QS_ANIM=0.5
+# NB the ZELTO_SETTINGS_SCREEN=network. P42 turned Settings into a drill-down, so
+# the root screen is now an index of rows with chevrons and NO toggles on it at
+# all — this shot kept its hook, kept resolving, and quietly went back to
+# photographing a screen with nothing on it that could cross-fade. A toggle shot
+# has to name the screen the toggles moved to.
 run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)" 8 \
-    SIM_APP=zelto-settings ZELTO_QS_ANIM=0.5
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=network ZELTO_QS_ANIM=0.5
 # Press feedback on a SYSTEM OVERLAY rather than on an app. This used to aim at
 # the bottom nav bar's Back button — but P40 deleted system/nav/ for the home
 # gesture, so ZELTO_PRESS_APP=nav_body matched no surface and the shot silently
@@ -394,14 +422,19 @@ run_shot 30-app-cards    "App: Cards"    8 SIM_APP=zelto-cards
 run_shot 31-app-notes    "App: Notes"    8 SIM_APP=zelto-notes
 run_shot 32-app-notepad  "App: Notepad"  8 SIM_APP=zelto-notepad
 run_shot 33-app-fetch    "App: Fetch"    8 SIM_APP=zelto-fetch
-run_shot 34-app-settings "App: Settings" 8 SIM_APP=zelto-settings
-# The TAIL of the same screen. A settings list is taller than the phone, so a
-# single shot of its top reviews half a design; ZELTO_SCROLL_TO parks the first
-# scroll cell at an ordinary (layout-clamped) position so the last group, its
-# footer and the action row are photographable. The over-pull hook cannot do this
-# — it rubber-bands, so it saturates a few hundred px in.
-run_shot 34a-app-settings-tail "App: Settings, scrolled to the last group" 8 \
-    SIM_APP=zelto-settings ZELTO_SCROLL_TO=1500
+run_shot 34-app-settings "App: Settings, root list (drill-down rows)" 8 \
+    SIM_APP=zelto-settings
+# The DETAIL screens behind the root's chevrons (P42). Settings used to be one
+# flat scroll, so this pair used to be "the top of the list" and "the list
+# scrolled to its end" (ZELTO_SCROLL_TO=1500) — a shot that reviewed the same
+# screen twice. Now each subject is its own pushed screen, reached by an env hook
+# rather than a tap so the catalogue stays reproducible.
+run_shot 34a-settings-display "Settings: Display & Sound (brightness SLIDER)" 8 \
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=display
+run_shot 34b-settings-lock "Settings: Lock Screen detail (toggles + steppers)" 8 \
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=lock
+run_shot 34c-settings-wallpaper "Settings: Wallpaper picker detail screen" 8 \
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=wallpaper
 run_shot 35-app-store    "App: Store"    8 SIM_APP=zelto-store
 run_shot 36-app-hello    "App: Rows (SDK sample)" 8 SIM_APP=zelto-hello
 run_shot 37-app-pinger   "App: Pinger"   8 SIM_APP=zelto-pinger

@@ -33,6 +33,8 @@
 
 #include <zelto/ui.h>
 
+#include "common/settings_defaults.h"
+
 #define BAR_H 40
 // Per-level alpha step. Level 5 -> 0 (no dim); level 1 -> 4*STEP = 192 (~75%
 // black, the app still faintly visible). Strong enough to read off a screendump.
@@ -68,7 +70,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
 static ZView dim_body(ZApp *app, DimState *s) {
     if (!s->inited) {
         s->inited = true;
-        s->brightness = z_setting_get_int("sys.brightness", 3);
+        s->brightness =
+            z_setting_get_int("sys.brightness", ZELTO_DEFAULT_BRIGHTNESS);
     }
     // Subscribe once (ctrl_fd is up by the first build), like the shade.
     if (!s->subscribed) {

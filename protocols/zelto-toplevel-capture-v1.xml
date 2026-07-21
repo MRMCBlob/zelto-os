@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="zelto_toplevel_capture_v1">
+
+  <copyright>
+    Zelto OS. Public domain.
+  </copyright>
+
+  <description summary="window snapshots for a task switcher">
+    An App Switcher shows a card per backgrounded window, and the card should
+    show the WINDOW, not a generic app icon. No existing protocol can supply
+    that. wlr-screencopy-v1 captures a wlr_output — but a backgrounded window is
+    by definition not what is on the output, so capturing the output at the
+    moment the switcher opens photographs the switcher itself.
+
+    This protocol inverts the timing. The compositor snapshots a window when the
+    window LEAVES the foreground — the moment it still looks exactly as the user
+    left it — keeps that image, and hands it to whoever asks later. The switcher
+    therefore never captures anything; it only receives.
+
+    A capture object is keyed off the zwlr_foreign_toplevel_handle_v1 the client
+    already holds for the window, not off an app_id: app_id identifies an
+    application, and one application may own several windows.
+
+    The image arrives as a sealed, read-only file descriptor the client maps
+    directly. The compositor allocates a NEW fd for each snapshot rather than
+    rewriting one buffer, so a client that is mid-animation over a mapped
+    snapshot never has the pixels change underneath it.
+
+    A snapshot is a historical record, not a live view: it is by design STALE,
+    showing the window as it was when it was last on screen. A client should
+    show it anyway — a stale frame identifies a window far better than an icon —
+    and expect no updates except a further `snapshot` event.
+  </description>
+
+  <interface name="zelto_toplevel_capture_manager_v1" version="1">
+    <description summary="hand out capture objects for toplevels">
+      A global whose only job is to attach a capture object to a foreign
+      toplevel handle.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroying the manager does not affect capture objects already created.
+      </description>
+    </request>
+
+    <request name="get_capture">
+      <description summary="get the capture object for a toplevel">
+        Create a capture object for the window behind `toplevel`.
+
+        If the compositor already holds a snapshot of that window — the usual
+        case, because the window was backgrounded before the switcher opened —
+        it sends `snapshot` immediately. Otherwise the client hears nothing
+        until the window is next backgrounded, and should show its fallback
+        (the application's icon) in the meantime.
+      </description>
+      <arg name="id" type="new_id" interface="zelto_toplevel_capture_v1"/>
+      <arg name="toplevel" type="object"
+           interface="zwlr_foreign_toplevel_handle_v1"/>
+    </request>
+  </interface>
+
+  <interface name="zelto_toplevel_capture_v1" version="1">
+    <description summary="snapshots of one window">
+      Delivers snapshots of a single window as they are taken.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop receiving snapshots"/>
+    </request>
+
+    <event name="snapshot">
+      <description summary="a snapshot of the window is available">
+        `fd` is a read-only, sealed file descriptor containing `height` rows of
+        `stride` bytes. The client should mmap it PROT_READ / MAP_PRIVATE and
+        must close it when done.
+
+        The fd is sealed against writing and shrinking, so the compositor cannot
+        change or truncate it after the fact and the client can map it without
+        risking a SIGBUS. Each event carries a fresh fd; a previously delivered
+        one stays valid until the client closes it.
+
+        The image is usually a REDUCED-resolution copy of the window (a card in
+        a switcher is far smaller than the window), so `width`/`height` describe
+        the image and not the window. The aspect ratio is the window's, so a
+        client should scale to fit rather than assume a size.
+      </description>
+      <arg name="fd" type="fd" summary="sealed, read-only image data"/>
+      <arg name="width" type="int" summary="image width in pixels"/>
+      <arg name="height" type="int" summary="image height in pixels"/>
+      <arg name="stride" type="int" summary="bytes per row"/>
+      <arg name="format" type="uint"
+           summary="DRM fourcc pixel format (DRM_FORMAT_ARGB8888)"/>
+    </event>
+
+    <event name="gone">
+      <description summary="the window is gone">
+        The window this object captures has closed. No further snapshot events
+        will arrive. Any snapshot already delivered remains valid and mapped —
+        a switcher showing the card of an app that has just exited is exactly
+        the case the snapshot exists for — but the client should expect nothing
+        more and may destroy this object.
+      </description>
+    </event>
+  </interface>
+
+</protocol>

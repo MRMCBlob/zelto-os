@@ -366,6 +366,17 @@ const ZImage *z_image_get(const char *path);
 // Used by the layout pass to aspect-fit an Image that was given no fixed size.
 bool z_image_intrinsic(const char *path, int *w, int *h);
 
+// Put an ALREADY-DECODED bitmap into the cache under `key`, taking ownership of
+// `px` (premultiplied ARGB, w*h; freed by the cache, and freed immediately if
+// this fails). `key` is any stable string that cannot collide with a file path.
+//
+// This is how pixels that did not come from a file reach the renderer: a window
+// snapshot arrives from the compositor as a memfd (z_snapshot, app.c), and
+// adopting it here means the whole existing Image path — layout aspect-fit,
+// Cover, the source-over blit — works on it unchanged, with no new node kind.
+// Re-adopting the same key REPLACES the bitmap rather than adding an entry.
+bool z_image_adopt(const char *key, int w, int h, uint32_t *px);
+
 // --- Render ---------------------------------------------------------------
 // A 32-bit ARGB (little-endian: B,G,R,A bytes) software target. clip_* is the
 // half-open region paint is restricted to (set to the full canvas for a full

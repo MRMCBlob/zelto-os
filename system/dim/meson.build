@@ -4,6 +4,7 @@
 executable(
   'zelto-dim',
   files('main.c'),
+  include_directories : include_directories('..'),  # system/ for common/*.h
   dependencies : zelto_dep,
   install : true,
 )

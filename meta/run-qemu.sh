@@ -338,6 +338,17 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # Coordinates are overridable to retune to the rendered layout from a captured
     # frame (rerun with SKIP_BUILD=1 + overrides — first guesses miss). Boot is
     # slow under TCG: keep SHOT_DELAY high.
+    #
+    # !! STALE SINCE P40 (found while replacing HOME_TEST/QUICK in P42; not flagged
+    # before). Two of the surfaces this drives are gone:
+    #   - the BOTTOM NAV BAR (Back/Home/Recents at y~768) was system/nav, deleted
+    #     in P40 stage 1. Navigation is the home-indicator gesture pill now
+    #     (system/homebar), so every `tap "$…_X" "$NAV_Y"` below lands on the app.
+    #   - the Recents card's red X close button went out in P40 stage 2; the App
+    #     Switcher closes a card by flicking it UP, so step 5 cannot be tapped.
+    # Steps 1-2 (launch an app from a tile) are still valid. Rewriting the rest
+    # means driving gestures, which QMP can do (see the drag() helper that QUICK=1
+    # used) but which needs a real TCG run to re-derive coordinates.
     if [ "${NAV:-0}" = "1" ]; then
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         # Grid icon centres (4 columns; the launcher sorts apps alphabetically).
@@ -433,288 +444,100 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
 
     # ---------------------------------------------------------------------
-    # !! STALE SINCE P40 STAGE 2 — the swipe-up APP DRAWER this harness drives no
-    # longer exists. Its job moved to the App Library, the LAST PAGE of the home
-    # carousel, so "swipe up from above the dock" opens nothing and every step
-    # after it here photographs an unchanged home screen. The favourites-persist
-    # half (boots #1/#2 reading home.layout back) is still valid. Rewriting the
-    # gesture script needs a real QEMU run to re-derive the coordinates; until
-    # someone does that, treat a HOME_TEST=1 run's drawer frames as expected
-    # failures. The same applies to the QUICK=1 harness below.
-    # P15 home screen + app drawer (HOME=1): a TWO-BOOT test against the same
-    # data.img proving (a) the home/drawer split, (b) the slide-up drawer with a
-    # live swipe + spring settle, (c) launching from both surfaces, and (d)
-    # favourites persisting across a reboot (the prefs string on /var/zelto).
-    #   Boot #1 — boot to the wallpapered HOME surface: only the favourites grid
-    #     (a subset) + a drawer handle. Launch from a FAVOURITE (tap a home icon).
-    #     Home (nav) back to the launcher. Then *swipe up* to open the drawer: the
-    #     drag is captured mid-slide WHILE THE BUTTON IS HELD (the offset tracks
-    #     the finger live, so the frame is stable), then again once it settles
-    #     open showing the FULL app list in a scroll. Launch from the DRAWER (tap
-    #     a drawer icon). On boot #1 the launcher finds no stored favourites, seeds
-    #     the default set, and persists home.favorites to /var/zelto. Sync + kill.
-    #   Boot #2 — a FRESH QEMU on the SAME disk. The launcher reads home.favorites
-    #     back (serial log: "favorites loaded from prefs: ..."), so the home grid
-    #     shows the same favourites — they survived the reboot.
-    # Coordinates are overridable to retune to the rendered layout from a captured
-    # frame (rerun with SKIP_BUILD=1 + overrides — first guesses miss). Boot is
-    # slow under TCG: keep SHOT_DELAY high and give the spring generous time.
+    # P42: home layout persistence (HOME_TEST=1). A TWO-BOOT test against the
+    # same data.img proving the ONE thing only a real QEMU boot can prove — that
+    # the home screen's arrangement survives a power cycle, written to and read
+    # back from the ext4 /var/zelto, not a host temp dir.
+    #
+    # This replaces two harnesses that P40 had left driving deleted UI:
+    #   - the old HOME_TEST=1 swiped up to open the APP DRAWER (deleted in P40
+    #     stage 2 — its job is now the last page of the home carousel), tapped a
+    #     BOTTOM NAV BAR (system/nav, deleted in P40 stage 1 — navigation is the
+    #     home-indicator gesture pill now), and asserted on `home.favorites` (a
+    #     prefs key superseded by the `home.layout` CSV in P27/P29, and read today
+    #     only as a one-time migration). Three dead surfaces, not the one flagged.
+    #   - QUICK=1 drove the same drawer, reached the curate menu by long-pressing
+    #     a DRAWER icon, and pulled a UNIFIED quick-settings shade that P40 split
+    #     into a Control Center (top right) and a Notification Center (top left).
+    #     It is deleted outright rather than rewritten: every state it photographed
+    #     is now covered deterministically and reproducibly by the shot catalogue
+    #     (meta/shots.sh 05-09 rearrange, 11/11a CC/NC), which reaches them through
+    #     env test-hooks instead of pixel coordinates. Re-deriving tap coordinates
+    #     under TCG to re-photograph them here buys nothing and rots again on the
+    #     next layout change.
+    #
+    # The lesson those two encode is why this one carries NO tap coordinates at
+    # all. A harness whose correctness lives in hardcoded x/y is stale the moment
+    # the layout moves, and — worse — it still runs, still writes PNGs, and still
+    # exits 0, so the rot is invisible until someone reviews the frames by eye.
+    # This one drives the launcher through the same env hooks the shot catalogue
+    # uses, and ASSERTS on the serial log rather than on pixels, so it can fail.
+    #
+    #   Boot #1 — boot to home. The launcher finds no home.layout on a fresh disk,
+    #     seeds the default arrangement and persists it (serial: "launcher: wrote
+    #     home.layout: ..."). ZELTO_HOME_SEED_EXTRA appends a marker entry so boot
+    #     #2 is checking for something this boot specifically chose. Sync + kill.
+    #   Boot #2 — a FRESH QEMU on the SAME disk. The launcher must READ the CSV
+    #     back rather than re-seed it (serial: "launcher: home.layout loaded"),
+    #     and the CSV it reports must match boot #1's byte for byte.
     if [ "${HOME_TEST:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        # Home favourites grid (4 cols, below the 40px top bar). Row-1, col-1 icon.
-        FAV_X="${FAV_X:-180}"; FAV_Y="${FAV_Y:-150}"
-        # Bottom nav Home button (strip ~736..800; centre ~768).
-        HOME_X="${HOME_X:-640}"; NAV_Y="${NAV_Y:-768}"
-        # Swipe-up gesture column (x) and its start/mid/end y (screen px).
-        SWIPE_X="${SWIPE_X:-640}"
-        SWIPE_Y1="${SWIPE_Y1:-690}"   # start: low on the home surface
-        SWIPE_MID="${SWIPE_MID:-410}" # held mid-drag capture point
-        SWIPE_Y2="${SWIPE_Y2:-110}"   # end: near the top (well past threshold)
-        # A drawer app icon that is NOT a favourite (row-2 col-2 = "Rows"),
-        # to prove the drawer launches apps absent from the home grid.
-        DRAWER_X="${DRAWER_X:-483}"; DRAWER_Y="${DRAWER_Y:-317}"
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
+        SERIAL1="$OUT/home-boot1.log"
+        SERIAL2="$OUT/home-boot2.log"
+        mkdir -p "$OUT"
 
-        have_socat=0
-        command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-
-        qmp() {
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
-        }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        home_boot() {
-            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
-            rm -f "$QMP_SOCK"
+        # Boot once, capture the serial console to $1, and stop after $2 seconds.
+        # No QMP and no input: this harness never touches the pointer.
+        home_boot_capture() {
+            local logfile="$1" secs="$2"
+            rm -f "$logfile"
             qemu-system-aarch64 "${common[@]}" \
                 -append "$KCMD" \
                 -display none \
-                -serial mon:stdio \
-                -qmp "unix:$QMP_SOCK,server,nowait" &
+                -serial "file:$logfile" &
             QPID=$!
-        }
-        home_kill() {
+            sleep "$secs"
             sync
             kill "$QPID" 2>/dev/null || true
             wait "$QPID" 2>/dev/null || true
         }
 
-        echo "==> [home boot 1/2] wallpapered home: favourites only + drawer handle"
-        home_boot
-        sleep "$SHOT_DELAY"
-        shot frame-home-home
-        echo "==> [home 1] launch from a FAVOURITE (tap a home icon)"
-        tap "$FAV_X" "$FAV_Y"
-        sleep 5; shot frame-home-app-favourite
-        echo "==> [home 1] nav Home -> back to the home surface"
-        tap "$HOME_X" "$NAV_Y"
-        sleep 3; shot frame-home-home2
-        echo "==> [home 1] swipe up -> open the drawer (capture mid-drag, held)"
-        # Drag in small steps so the pan recognizer tracks continuously; hold at
-        # the mid point and capture there (the drawer follows the finger live, so
-        # the held frame is stable), then continue past the threshold and release.
-        move "$SWIPE_X" "$SWIPE_Y1"; sleep 0.2; btn down; sleep 0.3
-        move "$SWIPE_X" 600; sleep 0.4
-        move "$SWIPE_X" 510; sleep 0.4
-        move "$SWIPE_X" "$SWIPE_MID"; sleep 1.5
-        shot frame-home-drawer-mid           # held mid-drag, drawer ~halfway up
-        move "$SWIPE_X" 260; sleep 0.4
-        move "$SWIPE_X" "$SWIPE_Y2"; sleep 0.3; btn up
-        sleep 4; shot frame-home-drawer-open # settled open: full app list, scroll
-        echo "==> [home 1] launch from the DRAWER (tap a drawer icon)"
-        tap "$DRAWER_X" "$DRAWER_Y"
-        sleep 5; shot frame-home-app-drawer
-        echo "==> [home 1] sync + shutdown (favourites persisted to /var/zelto)"
-        sleep 3
-        home_kill
-
-        echo "==> [home boot 2/2] REBOOT same disk; favourites read back from prefs"
-        home_boot
-        sleep "$SHOT_DELAY"
-        shot frame-home-reboot               # same favourites grid (survived reboot)
-        home_kill
-        echo "==> home test done; frames in $OUT/frame-home-*.png"
-        exit 0
-    fi
-
-    # ---------------------------------------------------------------------
-    # !! STALE SINCE P40 STAGE 2, twice over: the swipe-up drawer is gone (see the
-    # HOME_TEST=1 note above) and the unified quick-settings shade split into a
-    # Control Center pulled from the top RIGHT and a Notification Center from the
-    # top LEFT — so a centred down-swipe now lands in whichever half its x falls
-    # in, and the "Wi-Fi chip" it taps is a round toggle at different coordinates.
-    # P16 curate favourites + quick-settings shade (QUICK=1): a TWO-BOOT test
-    # against the same data.img proving (a) a long-press on a drawer icon adds it
-    # to the home favourites, (b) a long-press on a home favourite removes it,
-    # both rewriting the home.favorites prefs CSV; and (c) a down-swipe from the
-    # top pulls the quick-settings shade down, where tapping a toggle chip flips a
-    # persisted bool. Boot #2 reboots the SAME disk and proves the curated
-    # favourites AND the toggle survived (read back from /var/zelto prefs).
-    #   Boot #1 — home (favourites only). Open the drawer (swipe up), LONG-PRESS a
-    #     non-favourite drawer icon -> the curate menu -> tap "Add to home"; close
-    #     the drawer -> the icon is now on home. LONG-PRESS a home favourite ->
-    #     menu -> "Remove from home" -> it leaves the grid. Then DOWN-SWIPE from
-    #     the top edge -> the quick-settings shade slides down; tap the Wi-Fi chip
-    #     (it recolours + persists). Sync + kill.
-    #   Boot #2 — FRESH QEMU, SAME disk: home shows the curated set (added icon
-    #     present, removed favourite gone); pull the shade down again -> the Wi-Fi
-    #     chip is still in its flipped state (serial: "favorites loaded from
-    #     prefs: ..."). Coordinates are overridable to retune to the rendered
-    #     layout from a captured frame (rerun SKIP_BUILD=1 + overrides). Boot is
-    #     slow under TCG: keep SHOT_DELAY high and give the long-press hold + the
-    #     springs generous time.
-    if [ "${QUICK:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        FAV_X="${FAV_X:-180}"; FAV_Y="${FAV_Y:-150}"   # home fav row-1 col-1 (remove)
-        HOME_X="${HOME_X:-640}"; NAV_Y="${NAV_Y:-768}" # bottom nav Home
-        SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
-        # A non-favourite drawer icon to ADD (row-2 col-2 = "Rows" once the drawer
-        # is open; the drawer header offsets the grid down a little).
-        DRAWER_X="${DRAWER_X:-483}"; DRAWER_Y="${DRAWER_Y:-317}"
-        # Curate menu buttons (centred modal): Add/Remove is the first button,
-        # Cancel the second. Retune to the captured menu frame.
-        MENU_BTN_X="${MENU_BTN_X:-640}"
-        MENU_ADD_Y="${MENU_ADD_Y:-381}"                # "Add to home" / "Remove..." (Cancel is ~442)
-        # Quick-settings: the Wi-Fi chip (first of three across the top card) and a
-        # scrim point below the card to close it.
-        QS_WIFI_X="${QS_WIFI_X:-230}"; QS_WIFI_Y="${QS_WIFI_Y:-150}"
-        QS_SCRIM_X="${QS_SCRIM_X:-640}"; QS_SCRIM_Y="${QS_SCRIM_Y:-640}"
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
-
-        have_socat=0
-        command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-
-        qmp() {
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
-        }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
-        # Press-and-hold in place past the SDK long-press threshold (0.45s): NO
-        # move between down and up, or it would cross the slop and become a pan.
-        longpress() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.9; btn up; }
-        # A multi-step vertical drag from (X,Y1) to (X,Y2); the pan recognizer
-        # tracks the finger continuously, so step it rather than jump once.
-        drag() {
-            local x="$1" y1="$2" y2="$3"
-            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
-            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
-            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
-            move "$x" "$y2"; sleep 0.4; btn up
-        }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        quick_boot() {
-            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
-            rm -f "$QMP_SOCK"
-            qemu-system-aarch64 "${common[@]}" \
-                -append "$KCMD" \
-                -display none \
-                -serial mon:stdio \
-                -qmp "unix:$QMP_SOCK,server,nowait" &
-            QPID=$!
-        }
-        quick_kill() {
-            sync
-            kill "$QPID" 2>/dev/null || true
-            wait "$QPID" 2>/dev/null || true
+        # The home.layout CSV the launcher reports on a given boot, or "".
+        layout_from() {
+            sed -n 's/.*launcher: wrote home\.layout: //p;s/.*launcher: home\.layout read: //p' \
+                "$1" 2>/dev/null | tail -1 | tr -d '\r'
         }
 
-        echo "==> [quick boot 1/2] home: favourites only"
-        quick_boot
-        sleep "$SHOT_DELAY"
-        shot frame-quick-home
-        echo "==> [quick 1] swipe up -> open the app drawer"
-        drag "$SWIPE_X" 690 110
-        sleep 4; shot frame-quick-drawer
-        echo "==> [quick 1] long-press a non-favourite drawer icon -> curate menu"
-        longpress "$DRAWER_X" "$DRAWER_Y"
-        sleep 2; shot frame-quick-menu-add        # menu: "Add to home"
-        echo "==> [quick 1] tap 'Add to home'"
-        tap "$MENU_BTN_X" "$MENU_ADD_Y"
-        sleep 2; shot frame-quick-added           # drawer still open, fav added
-        echo "==> [quick 1] close the drawer (swipe down on the grabber)"
-        drag "$SWIPE_X" 90 700
-        sleep 3; shot frame-quick-home-added      # home now shows the added icon
-        echo "==> [quick 1] long-press a home favourite -> Remove from home"
-        longpress "$FAV_X" "$FAV_Y"
-        sleep 2; shot frame-quick-menu-remove     # menu: "Remove from home"
-        tap "$MENU_BTN_X" "$MENU_ADD_Y"
-        sleep 2; shot frame-quick-removed         # that favourite left the grid
-        echo "==> [quick 1] down-swipe from the top -> quick-settings shade"
-        drag "$SWIPE_X" 70 470
-        sleep 3; shot frame-quick-shade           # shade open: clock + chips
-        echo "==> [quick 1] tap the Wi-Fi chip -> flips + persists"
-        tap "$QS_WIFI_X" "$QS_WIFI_Y"
-        sleep 2; shot frame-quick-toggled         # chip recoloured
-        echo "==> [quick 1] tap the scrim -> close the shade"
-        tap "$QS_SCRIM_X" "$QS_SCRIM_Y"
-        sleep 2; shot frame-quick-closed
-        echo "==> [quick 1] sync + shutdown (favourites + toggle persisted)"
-        sleep 3
-        quick_kill
+        echo "==> [home boot 1/2] fresh disk: launcher seeds + persists home.layout"
+        home_boot_capture "$SERIAL1" "$((SHOT_DELAY + 8))"
+        L1="$(layout_from "$SERIAL1")"
+        echo "    boot 1 home.layout: ${L1:-<none>}"
 
-        echo "==> [quick boot 2/2] REBOOT same disk; curated set + toggle survive"
-        quick_boot
-        sleep "$SHOT_DELAY"
-        shot frame-quick-reboot                   # home: added present, removed gone
-        echo "==> [quick 2] pull the shade down -> Wi-Fi chip still flipped"
-        drag "$SWIPE_X" 70 470
-        sleep 3; shot frame-quick-reboot-shade
-        quick_kill
-        echo "==> quick test done; frames in $OUT/frame-quick-*.png"
-        exit 0
+        echo "==> [home boot 2/2] REBOOT the SAME disk: layout must be read back"
+        home_boot_capture "$SERIAL2" "$((SHOT_DELAY + 8))"
+        L2="$(layout_from "$SERIAL2")"
+        echo "    boot 2 home.layout: ${L2:-<none>}"
+
+        rc=0
+        if [ -z "$L1" ]; then
+            echo "!! FAIL: boot 1 never reported a home.layout (see $SERIAL1)"; rc=1
+        elif [ -z "$L2" ]; then
+            echo "!! FAIL: boot 2 never reported a home.layout (see $SERIAL2)"; rc=1
+        elif [ "$L1" != "$L2" ]; then
+            echo "!! FAIL: the arrangement changed across the reboot"
+            echo "     boot 1: $L1"
+            echo "     boot 2: $L2"; rc=1
+        elif grep -q "launcher: wrote home.layout" "$SERIAL2"; then
+            # Boot 2 must LOAD, not re-seed. If it wrote the CSV again it means it
+            # found nothing on disk and happened to seed the same default — which
+            # passes an equality check while proving the exact opposite.
+            echo "!! FAIL: boot 2 re-SEEDED the layout instead of loading it —"
+            echo "   nothing was actually read back from /var/zelto (see $SERIAL2)"; rc=1
+        else
+            echo "==> PASS: home.layout persisted across a reboot"
+            echo "     $L2"
+        fi
+        echo "==> home test done; serial logs in $OUT/home-boot*.log"
+        exit "$rc"
     fi
 
     # ---------------------------------------------------------------------
@@ -739,6 +562,19 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     #     Boot is slow under TCG: keep SHOT_DELAY high and give the springs +
     #     consent generous time. The grab strip is a thin top-edge region, so the
     #     pull-down swipe MUST start just below the 40px status bar (y ~ 60).
+    #
+    # !! STALE SINCE P40 STAGE 2 (found while replacing HOME_TEST/QUICK in P42; not
+    # flagged before). Both halves drive deleted UI:
+    #   - "open the app drawer (swipe up)" — the drawer is gone; the App Library is
+    #     the last page of the home carousel, reached by paging sideways.
+    #   - the unified shade split into a Control Center (pulled from the top RIGHT)
+    #     and a Notification Center (top LEFT), latched at Z_PAN_BEGIN off
+    #     `e->x < w/2`. A swipe down the CENTRE column (SWIPE_X=640 of 1280) is
+    #     exactly the ambiguous case, and the "Wi-Fi chip" it then taps is a round
+    #     toggle in a 3x2 grid at different coordinates.
+    # The Wi-Fi-toggle-persists-across-reboot proof is the valuable part and is not
+    # covered elsewhere; it needs the swipe re-aimed at the right half and the chip
+    # coordinates re-derived from a real TCG frame.
     if [ "${SHADE2:-0}" = "1" ]; then
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column

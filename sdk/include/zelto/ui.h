@@ -259,6 +259,60 @@ typedef struct ZTextField {
 ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder);
 #define TextField(appp, f, placeholder) z_text_field(appp, f, placeholder)
 
+// ---------------------------------------------------------------------------
+// Slider — a value you DRAG, in the range 0..1.
+//
+// For anything continuous: brightness, volume, a scrub position. Not for a
+// choice (that is a switch) and not for a count (that is a stepper). A slider is
+// the right control exactly when the user does not know the number they want and
+// is going to hunt for it by watching the result.
+//
+// Like ZTextField, the state is a struct the APP owns — put it in the app's
+// state struct so it survives the per-frame rebuild. Write `value` to set the
+// control from outside (a brokered setting changing under you); read it, or the
+// `on_change` argument, to follow the finger.
+//
+//   static void on_bright(ZApp *app, void *state, float v) {
+//       z_setting_set_int("sys.brightness", 1 + (int)lroundf(v * 4));
+//   }
+//   s->bright.value = (level - 1) / 4.0f;
+//   s->bright.on_change = on_bright;
+//   ... Slider(app, &s->bright, .length = 300)
+//
+// Dragging is RELATIVE: the value moves with the finger from wherever it was, it
+// does not jump to the touch point. on_change fires continuously during the
+// drag; on_commit (optional) fires once on release, for a setting too expensive
+// to write on every frame.
+// ---------------------------------------------------------------------------
+typedef void (*ZSliderCb)(ZApp *app, void *state, float value);
+
+typedef struct ZSlider {
+    float value;                 // 0..1 — the app reads and writes this
+    ZSliderCb on_change;         // fired continuously while dragging (may be NULL)
+    ZSliderCb on_commit;         // fired once on release (may be NULL)
+
+    // Internal drag bookkeeping; the toolkit owns these. They live here rather
+    // than in a keyed cell because they must survive the rebuilds that happen
+    // during the drag itself.
+    float drag_base;
+    float travel;
+    bool dragging;
+    bool vertical;
+} ZSlider;
+
+typedef struct ZSliderOpts {
+    float length;      // px along the drag axis (track width, or slab height)
+    float thickness;   // px across it (track thickness, or slab width)
+    // The Control Center shape: a wide vertical slab whose FILL is the value,
+    // dragged up and down, instead of a thin rail with a knob. Use it when the
+    // control is the main subject of the screen rather than one row's worth.
+    bool tall;
+    ZView glyph;       // optional mark at the foot of a tall slider (may be NULL)
+} ZSliderOpts;
+
+ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts);
+#define Slider(appp, s, ...) z_slider(appp, s, &(ZSliderOpts){__VA_ARGS__})
+
 // Focus a field from code (NULL blurs whatever is focused), and ask whether a
 // field currently holds focus. Tapping a TextField already does the first, so
 // most apps never call these — they exist for the app that has to REACT to its
@@ -1459,6 +1513,26 @@ const ZTask *z_running_apps(ZApp *app, int *count);
 // Switch to / close a running app from the snapshot.
 void z_task_activate(ZApp *app, const ZTask *task);
 void z_task_close(ZApp *app, const ZTask *task);
+
+// A picture of a running app's WINDOW, as it looked when it was last on screen.
+//
+// Returns a key to pass straight to Image() / Cover(), or NULL when no picture
+// is available — which is the normal case for a window that has never been
+// backgrounded, for the first frame after asking (the image arrives
+// asynchronously and repaints the caller when it lands), and on any compositor
+// that does not implement zelto-toplevel-capture-v1. So a caller must ALWAYS
+// have a fallback; the app's icon is the intended one.
+//
+//   const char *shot = z_snapshot(app, task);
+//   ZView poster = shot ? Cover(Image(shot)) : Image(icon_for(task->app_id));
+//
+// The image is deliberately STALE — it shows the window as it was, not as it is,
+// because a backgrounded window is not being drawn. That is what makes it useful:
+// it identifies the window far better than an icon can. It is also a reduced-
+// resolution copy, so scale it to fit rather than assuming a size.
+//
+// Asking is what subscribes, so a client that never calls this costs nothing.
+const char *z_snapshot(ZApp *app, const ZTask *task);
 
 #ifdef __cplusplus
 }

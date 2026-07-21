@@ -24,6 +24,7 @@
 #include <wlr/util/log.h>
 
 #include "zcomp/backdrop.h"
+#include "zcomp/capture.h"
 #include "zcomp/layer.h"
 #include "zcomp/output.h"
 #include "zcomp/seat.h"
@@ -133,6 +134,13 @@ bool zcomp_server_init(ZcompServer *server) {
     // tint over the result. Only the compositor can see through a surface, so the
     // blur has to live here (backdrop.c).
     zcomp_backdrop_init(server);
+
+    // --- zelto-toplevel-capture-v1 (App Switcher window thumbnails) ---------
+    // wlr-screencopy can only capture an OUTPUT, and the windows a switcher
+    // shows are exactly the ones NOT on the output. So the compositor snapshots
+    // each window as it leaves the foreground and hands the image out later
+    // (capture.c).
+    zcomp_capture_init(server);
 
     // --- ext-idle-notify-v1 (idle/lock lifecycle) --------------------------
     // Advertise the idle-notifier global. The seat pumps activity into it on

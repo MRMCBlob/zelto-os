@@ -14,17 +14,23 @@
 
 #include <zelto/ui.h>
 
+#include "common/settings_defaults.h"
 #include "common/wallpaper.h"
 
 typedef struct SettingsState {
     bool inited;
     bool wifi, mute, bright, airplane;
     int64_t brightness;   // 1..5
+    // The Brightness row's slider. Retained (it holds the drag's origin value
+    // across the per-frame rebuild); its `value` is kept in step with
+    // `brightness` above, which the broker may change under us.
+    ZSlider bright_slider;
     // P20 lock screen / idle lifecycle.
     bool lock_enabled;
     int64_t dim_s, lock_s, off_s;
     bool passcode_set;
     int64_t lock_now;
+    bool nav_seeded;      // ZELTO_SETTINGS_SCREEN applied (once, on first build)
 
     // P25 wallpaper picker. The wallpaper dir listed once into wp_paths (kept in
     // state so the OnTapData pointer we hand each thumbnail stays valid across the
@@ -66,6 +72,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
     z_invalidate(app);
 }
 
+static void bright_slide(ZApp *app, void *state, float v);
+
 // First build: read every toggle from the broker (with defaults) and subscribe
 // for live updates, so the first frame reflects the shared state.
 static void ensure_init(ZApp *app, SettingsState *s) {
@@ -77,7 +85,8 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->mute = z_setting_get_int("sys.mute", 0) != 0;
     s->bright = z_setting_get_int("sys.bright", 1) != 0;
     s->airplane = z_setting_get_int("sys.airplane", 0) != 0;
-    s->brightness = z_setting_get_int("sys.brightness", 3);
+    s->brightness = z_setting_get_int("sys.brightness", ZELTO_DEFAULT_BRIGHTNESS);
+    s->bright_slider.on_change = bright_slide;
     s->lock_enabled = z_setting_get_int("sys.lock_enabled", 0) != 0;
     s->dim_s = z_setting_get_int("sys.idle_dim_s", 8);
     s->lock_s = z_setting_get_int("sys.idle_lock_s", 20);
@@ -126,19 +135,27 @@ static void t_airplane(ZApp *app, void *state) {
     z_setting_set_int("sys.airplane", s->airplane);
     z_invalidate(app);
 }
-static void bright_dec(ZApp *app, void *state) {
-    SettingsState *s = state;
-    if (s->brightness > 1) {
-        s->brightness--;
-    }
-    z_setting_set_int("sys.brightness", s->brightness);
-    z_invalidate(app);
+// Brightness is a SLIDER now, not a [-|+] stepper (P42). Brightness is not a
+// count you nudge, it is a level you hunt for by looking at the screen while you
+// move it — the stepper made "a bit dimmer" a two-tap round trip through a
+// control that showed you a number instead of the result.
+//
+// The brokered key stays an integer 1..5 (zelto-dim maps it to a scrim alpha),
+// so the 0..1 slider position is quantised on the way in and expanded on the way
+// out. That keeps the storage contract identical: nothing else in the system
+// learns that the control changed shape.
+static int64_t bright_from_slider(float v) {
+    int level = 1 + (int)(v * 4.0f + 0.5f);
+    return level < 1 ? 1 : (level > 5 ? 5 : level);
 }
-static void bright_inc(ZApp *app, void *state) {
+
+static void bright_slide(ZApp *app, void *state, float v) {
     SettingsState *s = state;
-    if (s->brightness < 5) {
-        s->brightness++;
+    int64_t level = bright_from_slider(v);
+    if (level == s->brightness) {
+        return;   // same step: don't spam the broker on every pixel of drag
     }
+    s->brightness = level;
     z_setting_set_int("sys.brightness", s->brightness);
     z_invalidate(app);
 }
@@ -341,6 +358,68 @@ static ZView stepper_row(const char *label, int64_t val, const char *unit,
         .spacing = 12, .align = Z_ALIGN_CENTER));
 }
 
+// The disclosure chevron: the mark that says "this row is a DOOR, not a
+// control". Every row in the grouped-list vocabulary reads left-to-right as
+// label / value / affordance, and this is the affordance that distinguishes a
+// row you tap to go somewhere from a row you tap to change something.
+static ZView chevron(void) {
+    static const float pts[] = {0.35f, 0.22f, 0.65f, 0.5f, 0.35f, 0.78f};
+    return Frame(16.0f, 16.0f,
+        Stroke(.points = pts, .count = 3, .thickness = 2.5f,
+               .color = Z_COLOR_TEXT_FAINT));
+}
+
+// Tapping a detail row pushes the screen it names.
+//
+// OnTapData binds ONE void* per view, and the natural thing to bind is the
+// screen function — but ISO C does not let a function pointer round-trip through
+// void* (the build is -Wpedantic -Werror, and rightly: it is undefined). So each
+// row points at a static ROUTE record instead, which is an ordinary object.
+//
+// Every screen takes the same props, the app state, held in a file-static
+// because a Navigator's ROOT screen is invoked with no props of its own.
+typedef struct SettingsRoute {
+    ZScreenFn screen;
+} SettingsRoute;
+
+static SettingsState *g_state;
+
+static void push_screen(ZApp *app, void *state, void *data) {
+    (void)state;
+    const SettingsRoute *r = data;
+    if (r && r->screen) {
+        z_nav_push(z_navigation(app), r->screen, g_state);
+    }
+}
+
+// A DETAIL ROW: label on the left, its current value in the muted detail column,
+// a chevron, and a tap that pushes a screen. This is the row the root list is
+// made of, and the value is the point of it — "Brightness  4  >" tells you the
+// state without drilling in, so the root stays a status read-out rather than a
+// bare table of contents.
+static ZView detail_row(const char *label, const char *value,
+                        const SettingsRoute *route) {
+    return OnTapData(push_screen, (void *)route,
+        list_row(HStack(
+            Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
+            Spacer(),
+            Foreground(Z_COLOR_TEXT_MUTED,
+                Font(Z_FONT_BODY, Text("%s", value ? value : ""))),
+            chevron(),
+            .spacing = 10, .align = Z_ALIGN_CENTER)));
+}
+
+// A label + slider row. Unlike the stepper this row has NO numeric read-out: the
+// slider's own fill is the value, and a level whose whole point is "how bright
+// does that look" does not gain anything from also being told it is a 4.
+static ZView slider_row(ZApp *app, const char *label, ZSlider *sl) {
+    return list_row(HStack(
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
+        Spacer(),
+        Slider(app, sl, .length = 300.0f, .thickness = 6.0f),
+        .spacing = 12, .align = Z_ALIGN_CENTER));
+}
+
 // A GROUP: the inset, rounded card that a run of settings rows lives in, with a
 // hairline between rows. This is the shape of every settings screen on every
 // phone — it turns a loose column of labels into a bounded, scannable region (Law
@@ -431,69 +510,96 @@ static ZView wp_grid(SettingsState *s) {
     return z_stack(Z_AXIS_VERTICAL, &grid);
 }
 
-static ZView settings_body(ZApp *app, SettingsState *state) {
-    ensure_init(app, state);
-
+// Every screen on this stack has the same shape: a large title, then a column of
+// groups, in a scroll. Factored out so a detail screen cannot drift from the root
+// — the whole point of the restructure is that they are the same kind of thing.
+//
+// The large title scrolls WITH the list (it is the list's first item, not a fixed
+// chrome bar). iOS's large title collapses into the navigation bar as you scroll;
+// with no navigation bar to collapse into, the honest version is to let it leave.
+static ZView settings_screen(ZApp *app, const char *title, ZView *blocks, int n) {
     ZStackOpts col = {.spacing = SEC_GAP, .align = Z_ALIGN_LEADING};
     int k = 0;
-    // A large title, the way a phone's settings screen opens. It scrolls with the
-    // list (it is the list's first item, not a fixed chrome bar) — the iOS large
-    // title collapses into the bar as you scroll, and the honest version of that
-    // with no navigation bar to collapse into is simply to let it leave.
     col.children[k++] = HStack(
         Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
         Weight(Z_WEIGHT_BOLD,
-            Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("Settings")))),
+            Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", title)))),
         .spacing = 0, .align = Z_ALIGN_CENTER);
+    for (int i = 0; i < n && k < Z_MAX_CHILDREN - 2; i++) {
+        col.children[k++] = blocks[i];
+    }
+    col.children[k++] = gap(24.0f);
 
-    // GROUPING IS THE DESIGN. The old screen was one card of five unrelated
-    // switches followed by another of five: Wi-Fi sat next to Brightness because
-    // they were both booleans, which is a programmer's taxonomy. These groups are
-    // by SUBJECT — what you came here to change — and each one's footer says what
-    // the group actually does, so no row has to explain itself.
-    ZView net_rows[] = {
-        toggle_row(app, 0x5E7104u, "Airplane Mode", state->airplane, t_airplane),
-        toggle_row(app, 0x5E7101u, "Wi-Fi", state->wifi, t_wifi),
+    return Background(Z_COLOR_BG,
+        Fill(Scroll(app,
+            VStack(
+                Frame(LIST_W, 0.0f, z_stack(Z_AXIS_VERTICAL, &col)),
+                .padding = 20, .spacing = 0, .align = Z_ALIGN_CENTER),
+            .axis = Z_AXIS_VERTICAL)));
+}
+
+// --- the detail screens -----------------------------------------------------
+// Each is one subject's worth of controls: exactly the groups that used to be
+// stacked into the single flat scroll, now reachable one drill at a time.
+
+static ZView screen_network(ZApp *app, void *props) {
+    SettingsState *s = props;
+    ZView rows[] = {
+        toggle_row(app, 0x5E7104u, "Airplane Mode", s->airplane, t_airplane),
+        toggle_row(app, 0x5E7101u, "Wi-Fi", s->wifi, t_wifi),
     };
-    col.children[k++] = section_block("NETWORK", group(net_rows, 2),
-        "Airplane Mode turns the radios off. Network calls fail while it is on.");
-
-    ZView disp_rows[] = {
-        stepper_row("Brightness", state->brightness, "", bright_dec, bright_inc),
-        toggle_row(app, 0x5E7103u, "Brightness Boost", state->bright, t_bright),
-        toggle_row(app, 0x5E7102u, "Silent", state->mute, t_mute),
+    ZView blocks[] = {
+        section_block(NULL, group(rows, 2),
+            "Airplane Mode turns the radios off. Network calls fail while it is "
+            "on."),
     };
-    col.children[k++] = section_block("DISPLAY & SOUND", group(disp_rows, 3),
-        "Brightness runs 1 to 5 and dims the screen with a scrim.");
+    return settings_screen(app, "Network", blocks, 1);
+}
 
-    // --- P25 wallpaper section ---
+static ZView screen_display(ZApp *app, void *props) {
+    SettingsState *s = props;
+    ZView rows[] = {
+        slider_row(app, "Brightness", &s->bright_slider),
+        toggle_row(app, 0x5E7103u, "Brightness Boost", s->bright, t_bright),
+        toggle_row(app, 0x5E7102u, "Silent", s->mute, t_mute),
+    };
+    ZView blocks[] = {
+        section_block(NULL, group(rows, 3),
+            "Brightness runs 1 to 5 and dims the screen with a scrim."),
+    };
+    return settings_screen(app, "Display & Sound", blocks, 1);
+}
+
+static ZView screen_wallpaper(ZApp *app, void *props) {
+    SettingsState *s = props;
     // The picker lives INSIDE a card like every other group, rather than floating
-    // on the background: a bare grid between two cards reads as a different screen
-    // that got pasted in.
-    ZView wp_card = state->wp_count > 0
+    // on the background: a bare grid between two cards reads as a different
+    // screen that got pasted in.
+    ZView card = s->wp_count > 0
         ? Background(Z_COLOR_SURFACE,
-              CornerRadius(Z_RADIUS_CARD, Padding(ROW_PAD, wp_grid(state))))
+              CornerRadius(Z_RADIUS_CARD, Padding(ROW_PAD, wp_grid(s))))
         : group((ZView[]){labelled("Wallpaper",
                     Foreground(Z_COLOR_TEXT_MUTED,
                         Font(Z_FONT_BODY, Text("None found"))))}, 1);
-    col.children[k++] = section_block("WALLPAPER", wp_card,
-        "Shown on the Home and Lock screens.");
-
-    // --- P20 lock screen section ---
-    ZView lock_rows[] = {
-        toggle_row(app, 0x5E7105u, "Lock Screen", state->lock_enabled, t_lock),
-        toggle_row(app, 0x5E7106u, "Passcode (1234)", state->passcode_set,
-                   t_passcode),
-        stepper_row("Dim After", state->dim_s, "s", dim_dec, dim_inc),
-        stepper_row("Lock After", state->lock_s, "s", lock_dec, lock_inc),
-        stepper_row("Screen Off After", state->off_s, "s", off_dec, off_inc),
+    ZView blocks[] = {
+        section_block(NULL, card, "Shown on the Home and Lock screens."),
     };
-    col.children[k++] = section_block("LOCK SCREEN", group(lock_rows, 5),
-        "Each delay is measured from your last touch.");
+    return settings_screen(app, "Wallpaper", blocks, 1);
+}
 
-    // The one ACTION on the screen. An action row is a full-width card with a
-    // centred label and no control: it does something now, rather than holding a
-    // state, and centring it is how iOS says so.
+static ZView screen_lock(ZApp *app, void *props) {
+    SettingsState *s = props;
+    ZView rows[] = {
+        toggle_row(app, 0x5E7105u, "Lock Screen", s->lock_enabled, t_lock),
+        toggle_row(app, 0x5E7106u, "Passcode (1234)", s->passcode_set,
+                   t_passcode),
+        stepper_row("Dim After", s->dim_s, "s", dim_dec, dim_inc),
+        stepper_row("Lock After", s->lock_s, "s", lock_dec, lock_inc),
+        stepper_row("Screen Off After", s->off_s, "s", off_dec, off_inc),
+    };
+    // The one ACTION here. An action row is a full-width card with a centred
+    // label and no control: it does something now rather than holding a state,
+    // and centring it is how iOS says so.
     ZView act = Background(Z_COLOR_SURFACE,
         CornerRadius(Z_RADIUS_CARD,
             Frame(0.0f, ROW_H,
@@ -502,19 +608,100 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
                         Foreground(Z_COLOR_TEXT,
                             Font(Z_FONT_BODY, Text("Lock Now")))),
                     .align = Z_ALIGN_CENTER))));
-    col.children[k++] = section_block(NULL, OnTap(lock_now, act),
-        "These settings are shared with Control Center. Changes apply live and "
-        "persist.");
-    col.children[k++] = gap(24.0f);
+    ZView blocks[] = {
+        section_block(NULL, group(rows, 5),
+            "Each delay is measured from your last touch."),
+        section_block(NULL, OnTap(lock_now, act), NULL),
+    };
+    return settings_screen(app, "Lock Screen", blocks, 2);
+}
 
-    // Scroll so the whole list stays reachable in the usable area (top bar +
-    // home indicator shrink it below the content height once every group is in).
-    return Background(Z_COLOR_BG,
-        Fill(Scroll(app,
-            VStack(
-                Frame(LIST_W, 0.0f, z_stack(Z_AXIS_VERTICAL, &col)),
-                .padding = 20, .spacing = 0, .align = Z_ALIGN_CENTER),
-            .axis = Z_AXIS_VERTICAL)));
+// --- the root ---------------------------------------------------------------
+// A SHORT list of doors, not a long list of switches.
+//
+// Settings used to be one flat scroll: every group in the app stacked into a
+// single column you paged through to find anything, which is a settings DUMP
+// rather than a settings app. A phone's Settings is a drill-down, and the reason
+// is that the root is then scannable in one screenful — you read four labels
+// instead of fifteen controls, and the thing you came for is one tap away
+// instead of somewhere in a scroll.
+//
+// Each row carries its subject's current state in the detail column, so the root
+// is still a status read-out: you can see Wi-Fi is on without opening Network.
+static ZView screen_root(ZApp *app, void *props) {
+    SettingsState *s = props ? props : g_state;
+
+    static const SettingsRoute r_network = {screen_network};
+    static const SettingsRoute r_display = {screen_display};
+    static const SettingsRoute r_wallpaper = {screen_wallpaper};
+    static const SettingsRoute r_lock = {screen_lock};
+
+    char bright[16];
+    snprintf(bright, sizeof(bright), "%lld", (long long)s->brightness);
+
+    ZView rows[] = {
+        detail_row("Network",
+                   s->airplane ? "Airplane" : (s->wifi ? "Wi-Fi" : "Off"),
+                   &r_network),
+        detail_row("Display & Sound", bright, &r_display),
+        detail_row("Wallpaper", s->wp_count > 0 ? "" : "None", &r_wallpaper),
+        detail_row("Lock Screen", s->lock_enabled ? "On" : "Off", &r_lock),
+    };
+    ZView blocks[] = {
+        section_block(NULL, group(rows, 4),
+            "These settings are shared with Control Center. Changes apply live "
+            "and persist."),
+    };
+    return settings_screen(app, "Settings", blocks, 1);
+}
+
+static ZView settings_body(ZApp *app, SettingsState *state) {
+    ensure_init(app, state);
+    g_state = state;
+
+    // Pull the slider back in line with the setting, EXCEPT while it is being
+    // dragged. The broker echoes every write back through on_changed, and it also
+    // changes brightness on its own (zsysd nudges it down on low battery), so the
+    // control has to follow the value — but doing that mid-drag would quantise
+    // the finger's position to the nearest of five steps and make the knob stick.
+    if (!state->bright_slider.dragging) {
+        state->bright_slider.value = (float)(state->brightness - 1) / 4.0f;
+    }
+
+    // Test hook: open straight onto a detail screen, so the shot catalogue can
+    // photograph one without injecting a tap. Every other state in the catalogue
+    // is reached by an env hook for the same reason — a screenshot that depends
+    // on a pointer landing in the right place is a screenshot that silently
+    // photographs the wrong screen when the layout moves.
+    //
+    // Built BEFORE the push: z_navigation(app) only exists once the Navigator
+    // has been constructed, so seeding the stack first would push onto nothing.
+    // The push lands on the next build, which a screenshot's settle delay covers.
+    ZView nav = Navigator(app, .root = screen_root);
+
+    if (!state->nav_seeded) {
+        state->nav_seeded = true;
+        const char *want = getenv("ZELTO_SETTINGS_SCREEN");
+        if (want && want[0]) {
+            ZScreenFn s = NULL;
+            if (strcmp(want, "network") == 0) {
+                s = screen_network;
+            } else if (strcmp(want, "display") == 0) {
+                s = screen_display;
+            } else if (strcmp(want, "wallpaper") == 0) {
+                s = screen_wallpaper;
+            } else if (strcmp(want, "lock") == 0) {
+                s = screen_lock;
+            }
+            if (s) {
+                z_nav_push(z_navigation(app), s, state);
+            }
+        }
+    }
+
+    // Back out of a detail screen with the system back gesture (edge-swipe) or
+    // Escape — the Navigator handles both, so no screen needs a back button.
+    return nav;
 }
 
 Z_APP_ID(SettingsState, settings_body, "os.zelto.settings")

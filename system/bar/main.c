@@ -23,6 +23,7 @@
 #include <zelto/ui.h>
 
 #include "common/glyphs.h"
+#include "common/settings_defaults.h"
 
 #define BAR_H 40
 
@@ -86,7 +87,8 @@ static ZView bar_body(ZApp *app, BarState *state) {
         // real radio port fills sys.signal from the modem the same way the P23
         // power source fills sys.battery_pct, and the bar needs no change.
         state->signal = z_setting_get_int("sys.signal", 4);
-        state->brightness = z_setting_get_int("sys.brightness", 3);
+        state->brightness =
+            z_setting_get_int("sys.brightness", ZELTO_DEFAULT_BRIGHTNESS);
         state->lock_enabled = z_setting_get_int("sys.lock_enabled", 0) != 0;
         state->lock_now = z_setting_get_int("sys.lock_now", 0);
         state->battery_pct = z_setting_get_int("sys.battery_pct", 100);

@@ -64,6 +64,37 @@ export ZCOMP_OUTPUT_SIZE="${SIM_SIZE:-720x1440}"
 orig_xdg="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_RUNTIME_DIR="${SIM_RUNTIME_DIR:-/tmp/zelto-sim/xdg}"
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+
+# Reap a previous run's compositor BEFORE touching its socket, and WAIT for it to
+# actually be gone.
+#
+# The order matters and used to be wrong. libwayland unlinks the socket path (and
+# its .lock) when the display is destroyed — so a zcomp that is still shutting
+# down will delete whatever file now sits at that path. If we clear the stale
+# sockets first and start the new compositor while the old one is still on its way
+# out, the old one's exit unlinks the NEW compositor's socket: every client
+# launched after that point dies with "cannot connect to Wayland display", and
+# grim burns all six of its retries against a socket that is never coming back.
+# The run still "succeeds" — it just produces a missing or half-populated frame.
+#
+# So: signal, poll until the process is really gone, escalate to KILL, and only
+# then remove socket files.
+reap_stale_zcomp() {
+    pgrep -f "$BUILD/compositor/zcomp" >/dev/null 2>&1 || return 0
+    echo "==> reaping a stale zcomp from a previous run"
+    pkill -f "$BUILD/compositor/zcomp" 2>/dev/null || true
+    for _ in $(seq 1 40); do            # up to 10s of graceful exit
+        pgrep -f "$BUILD/compositor/zcomp" >/dev/null 2>&1 || return 0
+        sleep 0.25
+    done
+    pkill -9 -f "$BUILD/compositor/zcomp" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        pgrep -f "$BUILD/compositor/zcomp" >/dev/null 2>&1 || return 0
+        sleep 0.25
+    done
+    echo "!! a previous zcomp will not die; this run may collide with it"
+}
+reap_stale_zcomp
 rm -f "$XDG_RUNTIME_DIR"/wayland-*       # clear a prior run's stale sockets
 
 if [ "${HEADLESS:-0}" = "1" ]; then
@@ -118,7 +149,6 @@ export ZELTO_SIM_GYRO="${ZELTO_SIM_GYRO:-0.02,0.00,0.03}"
 export ZELTO_SIM_MAG="${ZELTO_SIM_MAG:-0,-30,-40}"
 export ZELTO_SIM_LIGHT="${ZELTO_SIM_LIGHT:-320}"
 rm -f "$XDG_RUNTIME_DIR/zsysd.sock"     # drop a stale broker socket from a prior run
-pkill -f "$BUILD/compositor/zcomp" 2>/dev/null || true   # reap a stale sim compositor
 
 PIDS=()
 cleanup() { kill "${ZPID:-}" "${PIDS[@]}" 2>/dev/null || true; }
@@ -236,6 +266,28 @@ spawn() { [ -x "$1" ] && { "$@" & PIDS+=($!); }; }
 # auto-allow every prompt for an unattended screenshot); default to the real one.
 export ZELTO_CONSENT_BIN="${ZELTO_CONSENT_BIN:-$SYS/consent/zelto-consent}"
 spawn "$SYS/zsysd/zsysd"
+
+# Wait for the broker to be LISTENING before starting anything that reads a
+# setting from it.
+#
+# Every System-UI client opens with a z_setting_get, and if the broker's socket is
+# not bound yet that call falls back to a compiled-in default — silently, because
+# a default looks exactly like a configured value. That is how a shot booted with
+# zelto-lock at lock_enabled=0 and photographed an unlocked home screen for a lock
+# test. libzelto now waits for the broker itself (sdk/src/app.c zsysd_connect), so
+# this is belt-and-braces; it is here because the harness should be the place the
+# race is VISIBLE rather than absorbed, and because it keeps the boot log ordered.
+wait_for_zsysd() {
+    for _ in $(seq 1 100); do            # up to 10s
+        [ -S "$XDG_RUNTIME_DIR/zsysd.sock" ] && return 0
+        sleep 0.1
+    done
+    echo "!! zsysd never bound $XDG_RUNTIME_DIR/zsysd.sock — clients will run on"
+    echo "   compiled-in defaults and this boot is NOT representative"
+    return 1
+}
+wait_for_zsysd || true
+
 spawn "$SYS/bar/zelto-bar"
 # The home indicator's switcher gesture fork/execs the recents overlay by
 # absolute path, which on the device is /usr/bin/zelto-recents. Uninstalled here,
@@ -365,6 +417,24 @@ if [ -n "${SHOT:-}" ]; then
             echo "   grim attempt $attempt: display not ready, retrying"
             sleep 1.5
         done
+        # A frame is not proof of a boot. If the shell never came up, grim happily
+        # captures zcomp's flat teal clear colour and writes a perfectly valid PNG
+        # — which then sits in the catalogue looking like a deliberate design.
+        # A real Zelto frame has a wallpaper, a status bar and text in it, so it
+        # compresses poorly; a flat fill compresses to almost nothing. Judge on
+        # that, and say so loudly rather than exiting 0 on a blank screen.
+        if [ -s "$SHOT" ]; then
+            bytes=$(stat -c%s "$SHOT" 2>/dev/null || echo 0)
+            if [ "$bytes" -lt 20000 ]; then
+                echo "!! $SHOT is only ${bytes}B — that is a BLANK/flat frame, not a"
+                echo "   booted shell. Treating this capture as failed."
+                rm -f "$SHOT"
+                exit 1
+            fi
+        else
+            echo "!! grim never produced a frame after 6 attempts"
+            exit 1
+        fi
     else
         echo "!! grim not installed (apt install grim); cannot screenshot"
     fi

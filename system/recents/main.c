@@ -31,10 +31,18 @@
 //   - tap a card : z_task_activate(that window) + dismiss (the overlay quits so
 //                  the activated app shows). Tap the backdrop / Escape: dismiss.
 //
-// WHAT IS ON A CARD. iOS puts a live snapshot of the app there. The compositor
-// can screencopy an output, not an arbitrary toplevel, so there is nothing to
-// snapshot yet; the card shows the app's icon large on its own surface — a poster,
-// not a screenshot. When per-toplevel capture exists, only switch_card changes.
+// WHAT IS ON A CARD. A picture of the WINDOW, as it looked when you last left
+// it (P42). wlr-screencopy can only capture an OUTPUT, and a backgrounded window
+// is by definition not on the output, so this needed a protocol of its own:
+// zcomp photographs each window at the moment it stops being the foreground one
+// and keeps the image, and z_snapshot() hands it over here (compositor/src/
+// capture.c, protocols/zelto-toplevel-capture-v1.xml).
+//
+// The picture is deliberately STALE — the window is not being drawn while it is
+// backgrounded — which is exactly what makes it useful: you recognise the thing
+// you were doing. A window that has never been backgrounded has no picture yet,
+// and neither does anything running on a compositor without the protocol, so the
+// old icon poster is still here as a live fallback rather than an error path.
 //
 // The home launcher is filtered out of the deck (it is Home, one flick away), so
 // the switcher shows only app windows. See docs/platform/app-lifecycle.md.
@@ -215,7 +223,7 @@ static void on_deck_pan(ZApp *app, void *state, const ZPanEvent *e) {
 // The name is the manifest DISPLAY name ("Fetch"), not the window title, which
 // for a libzelto app is its body-function symbol ("fetch_body"), and not the
 // app_id, which is a database key.
-static ZView switch_card(const ZTask *t, float cw, float ch) {
+static ZView switch_card(ZApp *app, const ZTask *t, float cw, float ch) {
     char name[128];
     const char *title =
         (t->app_id && zelto_name_for_app_id(t->app_id, name, sizeof(name)))
@@ -242,19 +250,34 @@ static ZView switch_card(const ZTask *t, float cw, float ch) {
                                                            : "Paused"))),
             .spacing = 8, .align = Z_ALIGN_CENTER));
 
-    // The poster. Its corner radius is the SHEET radius, not the card radius: at
-    // this size a 16px corner reads as a rectangle with the corners filed off,
-    // while the sheet radius is the continuous curve every other full-screen
-    // surface in the system uses.
+    // The card face. A picture of the WINDOW when the compositor has one — which
+    // is the whole point of a switcher: you recognise the thing you were doing,
+    // not which app you were doing it in. z_snapshot returns NULL until the
+    // compositor has actually photographed that window (it does so when the
+    // window leaves the foreground) and on any compositor without
+    // zelto-toplevel-capture-v1, so the icon poster below is a live fallback,
+    // not an error path — every card renders it at least once, on the frame
+    // before the picture arrives.
+    //
+    // Cover, not fit: the snapshot has the SCREEN's aspect and the card is a
+    // slightly different shape, so aspect-fit would letterbox it inside its own
+    // rounded plate. Cover crops to fill, which is what a window preview should
+    // do. Its corner radius is the SHEET radius, not the card radius: at this
+    // size a 16px corner reads as a rectangle with the corners filed off, while
+    // the sheet radius is the continuous curve every other full-screen surface
+    // in the system uses.
+    const char *shot = z_snapshot(app, t);
     float art = cw * 0.44f;
+    ZView face =
+        shot ? Frame(cw, ch, Cover(Image(shot)))
+             : Frame(cw, ch,
+                   ZStack(
+                       Frame(art, art,
+                           CornerRadius(art * Z_RADIUS_ICON, Image(icon))),
+                       .align = Z_ALIGN_CENTER));
     ZView poster = Shadow(Z_ELEV_3,
         Background(Z_COLOR_SURFACE,
-            CornerRadius(Z_RADIUS_SHEET,
-                Frame(cw, ch,
-                    ZStack(
-                        Frame(art, art,
-                            CornerRadius(art * Z_RADIUS_ICON, Image(icon))),
-                        .align = Z_ALIGN_CENTER)))));
+            CornerRadius(Z_RADIUS_SHEET, face)));
 
     return OnTapData(on_pick, (void *)t,
         VStack(header, poster, .spacing = HEADER_GAP, .align = Z_ALIGN_LEADING));
@@ -338,7 +361,8 @@ static ZView recents_body(ZApp *app, RecentsState *s) {
         // highlight, so contrast IS the selection.
         float dy = (i == s->focus) ? lift : 0.0f;
         ZView cell = OffsetXY(dx, dy,
-            Frame(card_w, unit_h, switch_card(g_cards[i], card_w, card_h)));
+            Frame(card_w, unit_h,
+                  switch_card(app, g_cards[i], card_w, card_h)));
         if (i == s->focus) {
             if (lprog > 0.001f) {
                 cell = Opacity(1.0f - lprog, cell);   // fades out as it leaves

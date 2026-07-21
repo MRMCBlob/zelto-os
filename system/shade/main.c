@@ -87,6 +87,7 @@
 #include "common/app_icons.h"
 #include "common/glyphs.h"
 #include "common/notif_card.h"
+#include "common/settings_defaults.h"
 
 #define MAX_BANNERS 8
 #define MAX_HISTORY 6   // recently-dismissed notifications kept for the panel list
@@ -116,10 +117,15 @@
 // right — a control you reach for reflexively should not need a full-screen drag.
 // The Notification Center is a list of unknown length, so it does take a fraction.
 #define CC_MARGIN 12.0f
-#define CC_H 300.0f
+// Two toggle rows (~100 each) + the tall slider pair + the gaps between them.
+// Grown in P42 when brightness and volume became real sliders instead of a round
+// toggle and nothing at all; still CONTENT height, not a fraction of the screen.
+#define CC_H 560.0f
 #define NC_FRAC 0.85f
 #define CC_BTN 68.0f      // the round toggle's diameter
 #define CC_GLYPH 30.0f    // the mark inside it
+#define CC_SLIDER_W 150.0f  // the tall brightness/volume slab
+#define CC_SLIDER_H 260.0f
 
 // Which panel a pull is bringing down.
 enum { PANEL_NONE = 0, PANEL_CC, PANEL_NC };
@@ -173,6 +179,15 @@ typedef struct ShadeState {
     // Control Center toggles, loaded once from the broker and persisted on flip.
     bool qs_loaded;
     bool qs_wifi, qs_mute, qs_bright, qs_airplane, qs_lock, qs_motion;
+
+    // The two CONTINUOUS controls (P42). Brightness (sys.brightness, 1..5) and
+    // volume (sys.volume, 0..10) are levels, not switches, and they are the two
+    // controls a Control Center exists to put a thumb on. Their brokered integer
+    // values are mirrored here and the sliders' 0..1 positions derived from them.
+    int64_t qs_brightness;
+    int64_t qs_volume;
+    ZSlider bright_slider;
+    ZSlider volume_slider;
 } ShadeState;
 
 // The pull value is stored RAW (a drag may push it past either end); this maps it
@@ -205,6 +220,9 @@ static void ensure_qs(ShadeState *s) {
     s->qs_airplane = z_setting_get_int("sys.airplane", 0) != 0;
     s->qs_lock = z_setting_get_int("sys.lock_enabled", 0) != 0;
     s->qs_motion = z_setting_get_int("sys.reduce_motion", 0) != 0;
+    s->qs_brightness =
+        z_setting_get_int("sys.brightness", ZELTO_DEFAULT_BRIGHTNESS);
+    s->qs_volume = z_setting_get_int("sys.volume", ZELTO_DEFAULT_VOLUME);
 }
 
 // A setting changed somewhere (this surface or the Settings app): re-read the
@@ -227,6 +245,11 @@ static void on_qs_setting(ZApp *app, const char *key, const char *value,
         s->qs_lock = v;
     } else if (strcmp(key, "sys.reduce_motion") == 0) {
         s->qs_motion = v;
+    } else if (strcmp(key, "sys.brightness") == 0) {
+        // Not a bool: these two are levels. atoi, not the != 0 above.
+        s->qs_brightness = atoll(value);
+    } else if (strcmp(key, "sys.volume") == 0) {
+        s->qs_volume = atoll(value);
     }
     z_invalidate(app);
 }
@@ -402,6 +425,35 @@ static void toggle_motion(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
+// The two continuous controls. Both quantise the slider's 0..1 position back to
+// the integer the broker stores, and both short-circuit when the step has not
+// changed — a drag fires on_change on every frame, and writing the same value to
+// the broker fifty times a second would fan it out to every subscriber that many
+// times.
+static void slide_bright(ZApp *app, void *state, float v) {
+    ShadeState *s = state;
+    int64_t level = 1 + (int64_t)(v * 4.0f + 0.5f);
+    level = level < 1 ? 1 : (level > 5 ? 5 : level);
+    if (level == s->qs_brightness) {
+        return;
+    }
+    s->qs_brightness = level;
+    z_setting_set_int("sys.brightness", level);
+    z_invalidate(app);
+}
+
+static void slide_volume(ZApp *app, void *state, float v) {
+    ShadeState *s = state;
+    int64_t vol = (int64_t)(v * 10.0f + 0.5f);
+    vol = vol < 0 ? 0 : (vol > 10 ? 10 : vol);
+    if (vol == s->qs_volume) {
+        return;
+    }
+    s->qs_volume = vol;
+    z_setting_set_int("sys.volume", vol);
+    z_invalidate(app);
+}
+
 // The colours one toggle wears right now. The fill CROSS-FADES between off
 // (SURFACE_3) and on (PRIMARY) on a spring-backed value (P32) rather than
 // hard-swapping, and the INK travels with it: an "on" toggle is a LIGHT disc
@@ -459,6 +511,19 @@ static ZView cc_cell(ZAction on_tap, CcTint t, ZView mark, const char *label) {
 // stack (P19), brightness drives the dim scrim, lock arms the lock screen,
 // reduce-motion collapses every spring. There are no decorative toggles here.
 static ZView cc_grid(ZApp *app, ShadeState *s) {
+    // Bind the handlers once, and pull each slider back in line with its brokered
+    // value EXCEPT while it is being dragged — the broker echoes our own writes
+    // back, and re-deriving the position from a quantised level mid-drag would
+    // make the fill jump between steps under the finger.
+    s->bright_slider.on_change = slide_bright;
+    s->volume_slider.on_change = slide_volume;
+    if (!s->bright_slider.dragging) {
+        s->bright_slider.value = (float)(s->qs_brightness - 1) / 4.0f;
+    }
+    if (!s->volume_slider.dragging) {
+        s->volume_slider.value = (float)s->qs_volume / 10.0f;
+    }
+
     CcTint wifi = cc_tint(app, 0x7135F1u, s->qs_wifi);
     CcTint mute = cc_tint(app, 0x7135F2u, s->qs_mute);
     CcTint bright = cc_tint(app, 0x7135F3u, s->qs_bright);
@@ -483,7 +548,29 @@ static ZView cc_grid(ZApp *app, ShadeState *s) {
                 zelto_glyph_motion(CC_GLYPH, motion.ink), "Motion"),
         .spacing = 10, .align = Z_ALIGN_CENTER);
 
-    return VStack(row1, row2, .spacing = 22, .align = Z_ALIGN_CENTER);
+    // The two TALL sliders, below the toggles. This is the pair iOS leads its
+    // Control Center with, and until P42 Zelto had neither: brightness was a
+    // round on/off toggle (which cannot express a level at all) and volume was
+    // not here. They are the tall shape rather than a thin rail because at this
+    // size the control IS the target — you grab the slab anywhere and push.
+    //
+    // Flanked by GROWING spacers rather than relying on the parent VStack's
+    // cross-axis align: the two toggle rows above are full-width (their cells are
+    // Grow(1)), so the column is as wide as the sheet, and a content-sized row
+    // dropped into it sits at the leading edge instead of under the toggles.
+    ZView sliders = HStack(
+        Grow(1.0f, Spacer()),
+        Slider(app, &s->bright_slider,
+               .tall = true, .length = CC_SLIDER_H, .thickness = CC_SLIDER_W,
+               .glyph = zelto_glyph_sun(CC_GLYPH, Z_COLOR_TEXT_MUTED)),
+        Slider(app, &s->volume_slider,
+               .tall = true, .length = CC_SLIDER_H, .thickness = CC_SLIDER_W,
+               .glyph = zelto_glyph_speaker(CC_GLYPH, Z_COLOR_TEXT_MUTED,
+                                            s->qs_volume == 0)),
+        Grow(1.0f, Spacer()),
+        .spacing = 18, .align = Z_ALIGN_CENTER);
+
+    return VStack(row1, row2, sliders, .spacing = 22, .align = Z_ALIGN_CENTER);
 }
 
 // --- Notification Center ----------------------------------------------------

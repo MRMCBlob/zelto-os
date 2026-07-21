@@ -456,6 +456,11 @@ static void ensure_home_layout(void) {
     if (layout && layout[0]) {
         char buf[1024];
         snprintf(buf, sizeof(buf), "%s", layout);
+        // Echo what was READ before parsing it. The count alone cannot tell a
+        // loaded arrangement apart from a freshly seeded one of the same size,
+        // which is exactly the distinction the reboot-persistence harness
+        // (meta/run-qemu.sh HOME_TEST=1) has to make from the serial log.
+        fprintf(stderr, "launcher: home.layout read: %s\n", buf);
         g_n_home = 0;
         for (char *tok = strtok(buf, ","); tok && g_n_home < MAX_HOME;
              tok = strtok(NULL, ",")) {

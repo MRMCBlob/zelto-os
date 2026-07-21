@@ -11,6 +11,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 
+#include "zcomp/capture.h"
 #include "zcomp/server.h"
 
 // app_id the launcher sets (libzelto Z_APP_ID). Lets Home reveal it.
@@ -27,6 +28,7 @@ static void zcomp_update_activation(ZcompServer *server,
     ZcompToplevel *t;
     wl_list_for_each(t, &server->toplevels, link) {
         bool active = (t == focused);
+        bool was_active = t->active;
         wlr_xdg_toplevel_set_activated(t->xdg_toplevel, active);
         if (t->ftl_handle) {
             wlr_foreign_toplevel_handle_v1_set_activated(t->ftl_handle, active);
@@ -34,6 +36,17 @@ static void zcomp_update_activation(ZcompServer *server,
         wlr_log(WLR_INFO, "activation: %s -> %s",
                 t->xdg_toplevel->app_id ? t->xdg_toplevel->app_id : "(no id)",
                 active ? "ACTIVE" : "inactive");
+
+        // The active -> inactive EDGE is the moment to snapshot this window for
+        // the App Switcher: it still holds exactly what the user was looking at,
+        // and one instant later it may be occluded, resized or gone. Edge, not
+        // level — this loop runs on every focus change and touches every window,
+        // so capturing on `!active` would re-photograph every background window
+        // each time any of them was switched to. See capture.c.
+        t->active = active;
+        if (was_active && !active) {
+            zcomp_capture_take(t);
+        }
     }
 }
 
@@ -179,6 +192,10 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 static void handle_destroy(struct wl_listener *listener, void *data) {
     (void)data;
     ZcompToplevel *toplevel = wl_container_of(listener, toplevel, destroy);
+    // Tell any client still watching this window that it is gone, and free the
+    // stored picture. Beside the ftl_handle teardown by design: the snapshot and
+    // the foreign-toplevel handle are the same window's two public faces.
+    zcomp_capture_toplevel_gone(toplevel);
     wl_list_remove(&toplevel->map.link);
     wl_list_remove(&toplevel->unmap.link);
     wl_list_remove(&toplevel->commit.link);
@@ -214,6 +231,7 @@ void zcomp_handle_new_xdg_surface(struct wl_listener *listener, void *data) {
     }
     toplevel->server = server;
     toplevel->xdg_toplevel = xdg_surface->toplevel;
+    wl_list_init(&toplevel->captures);
     // Apps live in the dedicated `apps` sub-tree (between the bottom and top
     // shell layers), so raising within it can never lift a window over the bar.
     toplevel->scene_tree =
