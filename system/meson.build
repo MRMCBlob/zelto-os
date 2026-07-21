@@ -10,7 +10,7 @@ subdir('installer')
 
 if zelto_dep.found()
   subdir('bar')
-  subdir('nav')
+  subdir('homebar')
   subdir('launcher')
   subdir('apps/cards')
   subdir('apps/notes')

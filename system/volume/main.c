@@ -42,7 +42,15 @@
 // input in while shown (so the drag reaches the panel; taps below fall through).
 #define VOL_DISMISS_THRESH 36.0f
 #define VOL_DISMISS_DIST 110.0f
-#define VOL_INPUT_BAND 220
+#define VOL_INPUT_BAND 320
+
+// The left-edge capsule. Tall and thin, held off the edge by a margin so it
+// reads as floating over the app rather than welded to the screen border, and
+// started below the status bar so it never fouls the clock.
+#define VOL_PILL_W 34.0f
+#define VOL_PILL_H 170.0f
+#define VOL_PILL_LEFT 14.0f
+#define VOL_PILL_TOP 56.0f
 
 typedef struct VolState {
     bool inited;
@@ -149,34 +157,62 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
 
 // A speaker glyph: a small body + cone, tinted muted (danger) or normal.
 static ZView speaker(bool mute) {
-    ZColor c = mute ? Z_COLOR_DANGER : Z_COLOR_TEXT;
-    return Frame(20.0f, 20.0f,
-        HStack(Frame(6.0f, 10.0f, Rect(.color = c, .radius = 2)),
-               Frame(10.0f, 18.0f, Rect(.color = c, .radius = 3)),
+    ZColor c = mute ? Z_COLOR_DANGER : Z_COLOR_ON_PRIMARY;
+    return Frame(18.0f, 18.0f,
+        HStack(Frame(5.0f, 9.0f, Rect(.color = c, .radius = 2)),
+               Frame(9.0f, 16.0f, Rect(.color = c, .radius = 3)),
                .spacing = 0, .align = Z_ALIGN_CENTER));
 }
 
-// The rocker panel: speaker + a horizontal track whose fill tracks the level
-// (empty when muted). A depth stack overlays the fill on the track groove.
+// The rocker: a VERTICAL capsule pinned to the left edge, the level rising from
+// its bottom, with the speaker glyph riding inside the base.
+//
+// It used to be a wide horizontal card floating in the middle of the screen —
+// the shape a desktop OSD uses, and the single most intrusive thing the system
+// drew: it landed on top of whatever you were reading every time your thumb
+// brushed a volume key. A tall thin capsule against the edge you are already
+// pressing puts the readout NEXT TO the control that changes it, and leaves the
+// centre of the screen — the part you are actually looking at — alone.
+//
+// The capsule is a MATERIAL, not a solid card: the compositor blurs what is
+// behind it (z_backdrop) and this tints it, so it reads as a pane of frosted
+// glass over the app rather than a slab dropped on top of it. The fill is
+// PRIMARY (the near-white "lit" token), which is the level indicator's whole job
+// — it is the one thing in the capsule that must read at a glance.
 static ZView rocker(VolState *s) {
     int64_t vol = s->volume < 0 ? 0 : (s->volume > VOL_MAX ? VOL_MAX : s->volume);
-    float track_w = 220.0f;
-    float fill_w = s->mute ? 0.0f : track_w * (float)vol / (float)VOL_MAX;
-    if (!s->mute && fill_w < 4.0f) {
-        fill_w = 4.0f;
+    float fill_h = s->mute ? 0.0f
+                           : VOL_PILL_H * (float)vol / (float)VOL_MAX;
+    // Never let a non-zero level collapse to nothing: the fill has to stay
+    // visible as a sliver or "quiet" is indistinguishable from "muted".
+    if (!s->mute && fill_h < VOL_PILL_W) {
+        fill_h = VOL_PILL_W;
     }
-    ZView fill = s->mute
-        ? (ZView)Spacer()
-        : Frame(fill_w, 10.0f, Rect(.color = Z_COLOR_ACCENT, .radius = 5));
-    ZView track = ZStack(
-        Frame(track_w, 10.0f, Rect(.color = Z_COLOR_SURFACE_3, .radius = 5)),
-        HStack(fill, Spacer(), .spacing = 0),
-        .align = Z_ALIGN_CENTER);
 
-    return Shadow(Z_ELEV_3, CornerRadius(20.0f, Background(Z_COLOR_SURFACE,
-        Padding(16.0f,
-            HStack(speaker(s->mute), track,
-                   .spacing = 16, .align = Z_ALIGN_CENTER)))));
+    // Bottom-anchored fill: a spacer eats the empty head of the capsule so the
+    // level grows UPWARD from the base, the way a gauge does.
+    ZView column = VStack(
+        Spacer(),
+        s->mute ? (ZView)Spacer()
+                : Frame(VOL_PILL_W, fill_h,
+                        Rect(.color = Z_COLOR_PRIMARY,
+                             .radius = VOL_PILL_W * 0.5f)),
+        .spacing = 0, .align = Z_ALIGN_CENTER);
+
+    // The glyph sits in the base of the capsule, over the fill — so it inverts
+    // against the lit level (ON_PRIMARY ink) exactly as iOS's does.
+    ZView glyph = VStack(Spacer(), speaker(s->mute),
+                         Frame(1.0f, 10.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+                         .spacing = 0, .align = Z_ALIGN_CENTER);
+
+    float radius = VOL_PILL_W * 0.5f;
+    return Shadow(Z_ELEV_3,
+        CornerRadius(radius,
+            Background(Z_COLOR_MATERIAL_THICK,
+                ZStack(
+                    Frame(VOL_PILL_W, VOL_PILL_H, column),
+                    Frame(VOL_PILL_W, VOL_PILL_H, glyph),
+                    .align = Z_ALIGN_CENTER))));
 }
 
 static ZView vol_body(ZApp *app, VolState *s) {
@@ -238,15 +274,19 @@ static ZView vol_body(ZApp *app, VolState *s) {
         z_layer_set_input_none(app);
         return Fill(Spacer());
     }
-    // Catch input only in the top band the panel occupies, so the drag reaches it
-    // while taps below still fall through to the app. Centre the panel horizontally,
-    // a little below the status bar. A tint over transparent (and a moving/fading
-    // subtree) needs a full repaint.
-    z_layer_set_input_region(app, 0, 0, z_app_width(app), VOL_INPUT_BAND);
+    // Catch input only in the left column the capsule occupies, so the drag
+    // reaches it while every tap outside still falls through to the app — the
+    // HUD is a readout, and it must not swallow the screen it floats over. A
+    // tint over transparent (and a moving/fading subtree) needs a full repaint.
+    z_layer_set_input_region(app, 0, 0,
+                             (int)(VOL_PILL_LEFT + VOL_PILL_W + 24.0f),
+                             VOL_INPUT_BAND);
     z_full_repaint(app);
     float e = z_animated_get(s->enter);
     float d = z_animated_get(s->drag);
-    float slide = (1.0f - e) * -26.0f;   // slides down into place from above
+    // Slides in from the LEFT EDGE it lives on, rather than dropping from above:
+    // a panel should enter from the side it belongs to.
+    float slide = (1.0f - e) * -(VOL_PILL_LEFT + VOL_PILL_W);
     // An upward drag (d < 0) carries the panel 1:1 and fades it toward dismissal; a
     // downward drag resists elastically (dismiss is upward, so down is "wrong way").
     float dy = d < 0.0f ? d : z_rubber_band(d, (float)z_app_height(app));
@@ -254,11 +294,17 @@ static ZView vol_body(ZApp *app, VolState *s) {
     if (prog > 1.0f) {
         prog = 1.0f;
     }
+    // The entrance now travels on X (in from the edge) and the dismiss drag on Y,
+    // so the two compose instead of fighting over one axis.
     ZView panel = Opacity(e * (1.0f - prog),
-                          OffsetXY(0.0f, slide + dy, rocker(s)));
+                          OffsetXY(slide, dy, rocker(s)));
+    // NB: the fixed gaps are empty Rects, NOT Frame(w,h,Spacer()) — a Spacer
+    // carries grow and Frame only sets a size, so a "14px" gap built that way
+    // eats every spare pixel in the stack and shoves the capsule off-screen.
     return OnPan(on_vol_pan, Fill(VStack(
-        Frame(0.0f, 80.0f, Spacer()),
-        HStack(Spacer(), panel, Spacer(), .spacing = 0),
+        Frame(1.0f, VOL_PILL_TOP, Rect(.color = z_rgba(0, 0, 0, 0))),
+        HStack(Frame(VOL_PILL_LEFT, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+               panel, Spacer(), .spacing = 0),
         Spacer(),
         .spacing = 0)));
 }

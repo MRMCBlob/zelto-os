@@ -195,20 +195,39 @@ typedef struct {
     ZColor color;
 } DrawCtx;
 
+// Blend one coverage-weighted glyph pixel over the destination, in the SAME
+// premultiplied-alpha, destination-alpha-PRESERVING space as the rest of the
+// renderer (render.c's blend_coverage / fill_round_rect).
+//
+// This used to force the output alpha to 0xff and treat the destination as
+// straight-alpha RGB. On an opaque surface that is invisible — dst alpha is
+// already 255 — but on a TRANSPARENT one (the status bar paints no background,
+// so it starts at 0x00000000) it wrecked the glyphs: a partly-covered edge pixel
+// blended white toward rgb 0 and was then stamped fully opaque, so every
+// antialiased edge came out as a solid mid-grey speck. The clock rendered as a
+// stippled outline instead of text. Preserving dst alpha and premultiplying the
+// source keeps the edge pixels partly transparent, which is what antialiasing
+// over a see-through surface means.
 static void blend_cover(ZCanvas *c, int x, int y, ZColor col, uint8_t cov) {
     if (x < c->clip_x0 || y < c->clip_y0 || x >= c->clip_x1 ||
         y >= c->clip_y1 || cov == 0) {
         return;
     }
-    uint32_t *dst = &c->pixels[y * c->stride_px + x];
-    uint32_t d = *dst;
-    uint32_t dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff, db = d & 0xff;
     // Effective coverage = glyph alpha * source alpha.
     uint32_t a = (uint32_t)cov * col.a / 255u;
-    uint32_t r = (col.r * a + dr * (255 - a)) / 255u;
-    uint32_t g = (col.g * a + dg * (255 - a)) / 255u;
-    uint32_t b = (col.b * a + db * (255 - a)) / 255u;
-    *dst = 0xff000000u | (r << 16) | (g << 8) | b;
+    if (a == 0) {
+        return;
+    }
+    uint32_t *dst = &c->pixels[y * c->stride_px + x];
+    uint32_t d = *dst;
+    uint32_t da = (d >> 24) & 0xff, dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff,
+             db = d & 0xff;
+    uint32_t inv = 255u - a;
+    uint32_t oa = a + da * inv / 255u;
+    uint32_t r = (col.r * a + dr * inv) / 255u;
+    uint32_t g = (col.g * a + dg * inv) / 255u;
+    uint32_t b = (col.b * a + db * inv) / 255u;
+    *dst = (oa << 24) | (r << 16) | (g << 8) | b;
 }
 
 static void draw_glyph(ZText *t, unsigned glyph, float x_off, float y_off,

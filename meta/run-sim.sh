@@ -237,11 +237,11 @@ spawn() { [ -x "$1" ] && { "$@" & PIDS+=($!); }; }
 export ZELTO_CONSENT_BIN="${ZELTO_CONSENT_BIN:-$SYS/consent/zelto-consent}"
 spawn "$SYS/zsysd/zsysd"
 spawn "$SYS/bar/zelto-bar"
-# The nav bar's Recents button fork/execs the recents overlay by absolute path,
-# which on the device is /usr/bin/zelto-recents. Uninstalled here, so point it at
-# the build-host binary (nav reads ZELTO_RECENTS_BIN).
+# The home indicator's switcher gesture fork/execs the recents overlay by
+# absolute path, which on the device is /usr/bin/zelto-recents. Uninstalled here,
+# so point it at the build-host binary (homebar reads ZELTO_RECENTS_BIN).
 export ZELTO_RECENTS_BIN="$SYS/recents/zelto-recents"
-spawn "$SYS/nav/zelto-nav"
+spawn "$SYS/homebar/zelto-homebar"
 spawn "$SYS/keyboard/zelto-keyboard"
 spawn "$SYS/shade/zelto-shade"
 spawn "$SYS/dim/zelto-dim"

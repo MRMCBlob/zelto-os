@@ -224,7 +224,9 @@ static ZView w_clock(ZApp *app, void *state) {
     char date[32] = "";
     time_t t = time(NULL);
     struct tm tmv;
-    if (gmtime_r(&t, &tmv)) {
+    // LOCAL time, not UTC — the home widget and the status-bar clock have to
+    // agree, and both have to agree with the wall clock the user is holding.
+    if (localtime_r(&t, &tmv)) {
         snprintf(hhmm, sizeof(hhmm), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
         strftime(day, sizeof(day), "%A", &tmv);
         strftime(date, sizeof(date), "%d %B", &tmv);
@@ -489,7 +491,7 @@ static void ensure_home_layout(void) {
 // the launcher draws may land under either bar, so the grid starts below BAR_H and
 // the bottom reserve covers the dock AND the nav bar's height.
 #define BAR_H 40.0f              // status bar (zcomp exclusive zone)
-#define NAV_H 64.0f              // Back/Home/Recents bar (must match system/nav)
+#define HOMEBAR_H 34.0f          // home-indicator strip (must match system/homebar)
 
 // A FIXED vertical gap. Note it cannot be Frame(w, h, Spacer()): a Spacer carries
 // grow, and Frame only sets a size — the node keeps eating every spare pixel in
@@ -505,8 +507,8 @@ static ZView vgap(float h) {
 #define GRID_TOP (BAR_H + 20.0f)
 #define MAX_ROWS 20              // per-page occupancy height cap
 #define MAX_PAGES 8              // carousel cap
-// page dots + grab handle + dock, then the nav bar under all of it.
-#define BOTTOM_RESERVE (208.0f + NAV_H)
+// page dots + dock, then the home-indicator strip under all of it.
+#define BOTTOM_RESERVE (208.0f + HOMEBAR_H)
 #define ICON_SIZE 104.0f
 // The corner is a FRACTION of the icon (Z_RADIUS_ICON — Apple's icon-grid
 // proportion), not a fixed px, so the tile keeps its shape at every size it is
@@ -1927,8 +1929,8 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         bstack.children[bk++] = page_dots(npages, page_v);
     }
     bstack.children[bk++] = bottom_content;
-    // The surface now runs under the nav bar, so hold the dock clear of it.
-    bstack.children[bk++] = vgap(NAV_H);
+    // The surface runs under the home indicator, so hold the dock clear of it.
+    bstack.children[bk++] = vgap(HOMEBAR_H);
     ZView bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
 
     // The lifted ghost: the held item's content, drawn on top via its shared
@@ -2051,7 +2053,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         grabber,
         Grow(1.0f, Scroll(app, z_stack(Z_AXIS_VERTICAL, &dgrid),
                           .axis = Z_AXIS_VERTICAL)),
-        vgap(NAV_H),
+        vgap(HOMEBAR_H),
         .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING);
     ZView drawer = Offset(NULL, slide,
         Fill(ZStack(

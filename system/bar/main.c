@@ -159,7 +159,10 @@ static ZView bar_body(ZApp *app, BarState *state) {
     char clock[8] = "--:--";
     time_t t = time(NULL);
     struct tm tmv;
-    if (gmtime_r(&t, &tmv)) {
+    // LOCAL time, not UTC: this is the clock the user reads. gmtime_r here put the
+    // status bar an offset out of step with the home screen's clock widget and the
+    // lock screen, both of which have always used localtime_r.
+    if (localtime_r(&t, &tmv)) {
         snprintf(clock, sizeof(clock), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
 
