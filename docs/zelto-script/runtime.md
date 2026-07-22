@@ -10,7 +10,8 @@ shipped **JS Demo** app (`system/apps/jsdemo/`) is written entirely in it.
 
 | Available today | Not yet |
 |---|---|
-| ES modules: `zelto`, `zelto/ui`, `zelto/storage`, `zelto/net`, `zelto/notifications`, `zelto/settings`, `zelto/intents`, `zelto/permissions`, plus the app's own relative imports | Sensors, media, camera, background tasks — the system APIs the C SDK does not have yet either |
+| ES modules: `zelto`, `zelto/ui`, `zelto/storage`, `zelto/net`, `zelto/notifications`, `zelto/settings`, `zelto/intents`, `zelto/permissions`, `zelto/sensors`, plus the app's own relative imports | Media, camera, background tasks — the system APIs the C SDK does not have yet either |
+| Sensors + location: `zelto/sensors` (accelerometer/gyroscope/orientation/…, GPS), and the **andemu** Android-compat route ([android-compat.md](android-compat.md)) that maps `android.*` onto it | Real sensor HAL (values are simulated today), `always` background location |
 | Hooks: `useState`, `useEffect`, `useMemo`, `useCallback`, `useRef`, `useAnimatedValue`, `useTextField` | `List`/`Grid` virtualisation, widgets, `z_db_*` (SQLite) and the file APIs |
 | Views: stacks, `Text`, `Button`, `Rect`, `Image`, `Spacer`, `Scroll`, `TextField`, `Navigator`, chainable modifiers, the full design-token palette | `Stroke`, `Shadow`-driven custom drawing, `Widget` |
 | Gestures + motion: `onTap`, `onPan`, `onLongPress`, spring-backed animated values with the named motion tokens (Reduce Motion honoured) | Multi-touch, pinch/rotate |

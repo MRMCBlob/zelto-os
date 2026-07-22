@@ -122,6 +122,11 @@ void zs_fields_changed(ZApp *app, void *state);
 extern const JSCFunctionListEntry zs_sys_funcs[];
 extern const int zs_sys_funcs_count;
 
+// The sensors/location half of "zelto:native" (sensors.c), registered into the
+// same module by ui.c.
+extern const JSCFunctionListEntry zs_sensor_funcs[];
+extern const int zs_sensor_funcs_count;
+
 // The JS source of the built-in `zelto/*` modules (builtins.c). Returns NULL if
 // `name` is not a built-in.
 const char *zs_builtin_module(const char *name);

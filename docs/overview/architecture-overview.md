@@ -16,8 +16,8 @@ Zelto OS is a layered system. Components in **bold** are written and owned by Ze
 |   - Android: ART (inside Waydroid container)              |
 +-----------------------------------------------------------+
 |  **System UI / Shell  (wlr-layer-shell clients)**         |
-|   status bar, notif shade, launcher, app switcher,        |
-|   lock screen, quick settings  (built with libzelto)      |
+|   status bar, Control/Notification Center, launcher,       |
+|   app switcher, lock screen   (built with libzelto)        |
 +-----------------------------------------------------------+
 |  **zcomp - Wayland compositor (wlroots, C)**              |
 |   surface mgmt, GPU compositing, animation, input,        |
@@ -47,7 +47,7 @@ Zelto OS is a layered system. Components in **bold** are written and owned by Ze
 | **zcomp** | C | Wayland compositor on [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots). Owns the display (DRM/KMS), GPU compositing (EGL/GLES; Vulkan later), input (libinput), the animation engine, vsync, and damage tracking. Hosts both Zelto app surfaces and Android (Waydroid) surfaces. |
 | **libzelto** | C | The native UI SDK. Declarative view tree, layout engine (stacks + flex), retained GPU scene graph, spring animation, gesture recognition, text shaping (HarfBuzz + FreeType), theming. Native apps are Wayland clients that link this. |
 | **Zelto Script VM** | C + JS | An embedded [QuickJS](https://bellard.org/quickjs/) engine that exposes `libzelto` and the system APIs to a JS-like language. Performance-critical code drops to C modules. |
-| **System UI** | Zelto Script / C | The shell: status bar, notification shade, launcher/home, app switcher, lock screen, quick settings. Implemented as privileged `wlr-layer-shell` clients that dogfood `libzelto`. |
+| **System UI** | Zelto Script / C | The shell: status bar, Control Center + Notification Center (two top-edge pull-downs), launcher/home, app switcher, lock screen. Implemented as privileged `wlr-layer-shell` clients that dogfood `libzelto`. |
 | **zsysd** | C | Core system daemon: app lifecycle coordination, the permission broker, and the package manager (install/verify `.zap`). |
 | **APK bridge** | C | Controls the Waydroid container; maps Zelto permissions to/from Android permissions; decorates and themes Android windows; routes lifecycle and notifications between the two worlds. |
 | Services | reuse | NetworkManager/iwd (network), logind/UPower (power), a notification daemon, and a settings store. |

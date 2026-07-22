@@ -74,6 +74,10 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 #define Z_COLOR_SURFACE    z_rgba(0x1c, 0x1c, 0x1e, 0xff)  // raised panel
 #define Z_COLOR_SURFACE_2  z_rgba(0x2c, 0x2c, 0x2e, 0xff)  // card / row
 #define Z_COLOR_SURFACE_3  z_rgba(0x3a, 0x3a, 0x3c, 0xff)  // input / key / chip
+// One step lighter again, for a control that must stand OFF a surface which is
+// itself already raised — the character caps on the keyboard's dark material,
+// where SURFACE_3 sits too close to the field of keys to read as a key.
+#define Z_COLOR_SURFACE_4  z_rgba(0x55, 0x55, 0x59, 0xff)  // key cap on a panel
 #define Z_COLOR_BORDER     z_rgba(0x38, 0x38, 0x3a, 0xff)  // hairline / divider
 
 // The interactive fill. Not a hue — a light, "lit" surface. Text and glyphs on it
@@ -138,9 +142,57 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // rather than circular arcs — the curvature ramps in instead of starting abruptly,
 // which is why an iOS icon looks "rounder" than a same-radius CSS box. See
 // sdk/src/render.c (corner_coverage) and the compositor's matching mask.
+// P45 MEASURED THIS LADDER, because P44 flagged it as the same shape of number
+// as the type scale and the safe areas and then left it alone on the grounds
+// that it "reads as hand-authored rather than transcribed" — an assertion about
+// intent, which is exactly the move P43 made about the metrics and got wrong.
+//
+// THE MEASUREMENT SAYS P44 WAS RIGHT, and here is the test that settles it. If
+// these were points spent as pixels (the P43/P44 bug) the raw values would be
+// the numbers off a spec sheet — round in POINTS — and dividing by 1.85 would
+// recover them. It is the other way round: 10/16/22/32 are round and evenly
+// stepped (+6, +6, +10) in SCREEN UNITS, and in points they are 5.4, 8.6, 11.9,
+// 17.3 — round nowhere. A transcribed table looks the opposite. So this ladder
+// was authored directly in screen units and is NOT the transcription bug.
+// Z_RADIUS_ICON being a FRACTION is the corroboration: whoever wrote that line
+// was thinking about resolution independence on the one radius that needed it.
+//
+// BUT HAND-AUTHORED IS NOT THE SAME AS RIGHT, and the ladder's real fault is
+// not its scale — it is that it is UNDER-RESOLVED. The anchor for judging it is
+// the one radius in the OS that is calibrated rather than chosen: an app icon,
+// whose corner is 0.2237 x 104 = 23.3 units on the home grid. That anchor is
+// worth more than any spec sheet here because an icon sits in the SAME FRAME as
+// the widgets and cards being judged, so the comparison is side-by-side on one
+// screen rather than against a remembered number. Measured against it:
+//
+//     CHIP  10 = 0.43 x the icon corner   (a key: about right)
+//     CARD  16 = 0.69 x                   (a list row: slightly tight, ~15%)
+//     PANEL 22 = 0.95 x                   ← INVERTED, see below
+//     SHEET 32 = 1.38 x                   (a pulled sheet: the open question)
+//
+// PANEL WAS THE ONE THAT MATTERED, and the evidence needs no external number: a
+// home-screen widget's corner was 22 units while the app icons sitting directly
+// beside it on the same screen have corners of 23.3. The big soft card was
+// fractionally SQUARER than the small tiles next to it. Every phone this idiom
+// comes from makes the widget visibly rounder than the icon.
+//
+// The fix is not to retune PANEL, because PANEL was doing FOUR jobs whose
+// correct radii differ by more than 2x: a home widget, the Control Center
+// slider slab, a "Done" button (which at this size is really a capsule), and
+// the consent ALERT. One token cannot be right for all four, and moving it
+// would have fixed the widget by breaking the alert. So the widget — the case
+// with the in-frame proof — gets its own token, and PANEL keeps the value that
+// suits the alert it is now mostly used by.
+//
+// STILL OPEN, DELIBERATELY NOT CHANGED: SHEET (32) on a full-width pulled
+// surface, and CARD (16) at ~15% under. Neither has an in-frame anchor the way
+// the widget did, and both would have been changed on a half-remembered spec
+// value — which is the failure mode this comment exists to stop repeating.
 #define Z_RADIUS_CHIP     10.0f   // a small control: a QS chip, a key, a badge
 #define Z_RADIUS_CARD     16.0f   // a card, a list row, a notification
-#define Z_RADIUS_PANEL    22.0f   // a widget, the dock
+#define Z_RADIUS_PANEL    22.0f   // an alert / a small raised panel
+#define Z_RADIUS_WIDGET   40.0f   // a home-screen widget card — MUST read rounder
+                                  // than the app icons beside it (see above)
 #define Z_RADIUS_SHEET    32.0f   // a big pulled surface: the shade, a modal sheet
 #define Z_RADIUS_ICON     0.2237f // APP ICONS ONLY: a FRACTION of the icon's width
                                   // (Apple's icon grid: the corner is proportional

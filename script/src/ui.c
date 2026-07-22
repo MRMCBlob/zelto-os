@@ -999,6 +999,7 @@ static const char *const zs_token_names[] = {
 static int native_module_init(JSContext *ctx, JSModuleDef *m) {
     JS_SetModuleExportList(ctx, m, zs_native_funcs, ZS_NATIVE_FUNC_COUNT);
     JS_SetModuleExportList(ctx, m, zs_sys_funcs, zs_sys_funcs_count);
+    JS_SetModuleExportList(ctx, m, zs_sensor_funcs, zs_sensor_funcs_count);
     export_tokens(ctx, m);
     return 0;
 }
@@ -1013,6 +1014,7 @@ void zs_init_native_module(JSContext *ctx) {
     if (!m) { return; }
     JS_AddModuleExportList(ctx, m, zs_native_funcs, ZS_NATIVE_FUNC_COUNT);
     JS_AddModuleExportList(ctx, m, zs_sys_funcs, zs_sys_funcs_count);
+    JS_AddModuleExportList(ctx, m, zs_sensor_funcs, zs_sensor_funcs_count);
     for (size_t i = 0; i < sizeof(zs_token_names) / sizeof(zs_token_names[0]); i++) {
         JS_AddModuleExport(ctx, m, zs_token_names[i]);
     }

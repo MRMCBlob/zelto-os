@@ -114,6 +114,43 @@ const ZImage *z_image_get(const char *path) {
     return e;
 }
 
+bool z_image_adopt(const char *key, int w, int h, uint32_t *px) {
+    if (!key || !px || w <= 0 || h <= 0) {
+        free(px);
+        return false;
+    }
+    // Replace in place when the key is already cached. A window snapshot is
+    // refreshed every time its app is backgrounded, and the key is stable per
+    // window, so this is the common path — evicting and re-inserting would let
+    // the LRU drop some OTHER card's picture on every app switch.
+    ZImage *e = cache_find(key);
+    if (e) {
+        free(e->px);
+        e->px = px;
+        e->w = w;
+        e->h = h;
+        e->ok = true;
+        return true;
+    }
+    if (g_cache_count >= Z_IMAGE_CACHE_MAX) {
+        cache_evict_oldest();
+    }
+    e = calloc(1, sizeof(*e));
+    if (!e) {
+        free(px);
+        return false;
+    }
+    e->path = strdup(key);
+    e->px = px;
+    e->w = w;
+    e->h = h;
+    e->ok = true;
+    e->next = g_cache_head;
+    g_cache_head = e;
+    g_cache_count++;
+    return true;
+}
+
 bool z_image_loads(const char *path) {
     const ZImage *e = z_image_get(path);
     return e && e->ok;

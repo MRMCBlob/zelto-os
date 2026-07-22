@@ -15,7 +15,7 @@
 // catches NO input (falls through to the app / nav bar). Shown, it reserves KBD_H
 // (the compositor shrinks the app so the focused field stays visible above the
 // keyboard — a real exclusive zone, no per-app work), catches input, and slides
-// up. The "hide" key just parks it locally (the field keeps focus + its text).
+// up. There is no "hide" key: the keyboard leaves when the field blurs.
 //
 // LAYERING. TOP layer (like the status/nav bars), created after the nav bar so it
 // composites above it (a phone keyboard sits over the nav). The lock screen and
@@ -28,8 +28,7 @@
 
 #include <zelto/ui.h>
 
-#define KBD_H 300     // keyboard strip height (px)
-#define KEY_H 56      // one key's height
+#include "common/safe_areas.h"
 
 typedef struct KbdState {
     bool inited;
@@ -93,39 +92,24 @@ static void on_enter(ZApp *app, void *state) {
     (void)state;
     z_im_commit_text(app, "\n");
 }
-// Paste (P22): read the system clipboard and commit it into the focused field. A
-// keyboard layer surface never holds keyboard focus, so it can't read the core
-// wl_data_device selection; z_clipboard_get goes through wlr-data-control, which
-// delivers the selection focus-independently, then z_im_commit_text inserts it at
-// the field's caret via input-method — so the copied text crosses process
-// boundaries with no cooperation from the target app.
-static void kbd_paste_cb(ZApp *app, const char *text, void *ud) {
-    (void)ud;
-    if (text && text[0]) {
-        z_im_commit_text(app, text);
-    }
-}
-static void on_paste(ZApp *app, void *state) {
-    (void)app; (void)state;
-    z_clipboard_get(kbd_paste_cb, NULL);
-}
-// The "hide" key parks the keyboard locally (the field keeps focus + text).
-static void on_hide_key(ZApp *app, void *state) {
-    on_hide(app, state);
-}
 
 // --- key views --------------------------------------------------------------
-// Flanking the glyph with Spacers centres it on the key's *main* (horizontal)
-// axis — .align only governs the cross (vertical) axis, so without them the
-// label hugs the left edge.
-static ZView cap(ZView inner, float grow) {
-    return Grow(grow,
-        Shadow(Z_ELEV_1,
-            Background(Z_COLOR_SURFACE_3,
-                CornerRadius(Z_RADIUS_CHIP,
-                    Frame(0.0f, (float)KEY_H,
-                        HStack(Spacer(), inner, Spacer(),
-                               .align = Z_ALIGN_CENTER))))));
+// A key cap. Flanking the mark with Spacers centres it on the key's *main*
+// (horizontal) axis — .align only governs the cross (vertical) axis, so without
+// them the mark hugs the left edge.
+//
+// Character caps are the LIGHTEST surface in the system (SURFACE_4): on a heavy
+// dark material, a field of forty SURFACE_3 caps reads as one grey slab with
+// hairlines in it. The things you aim at have to be the light ones, and the
+// modifiers a step below them.
+static ZView key_cap(ZView inner, ZAction act, float grow, ZColor bg) {
+    ZView face = Shadow(Z_ELEV_1,
+        Background(bg,
+            CornerRadius(Z_RADIUS_CHIP,
+                Frame(0.0f, (float)ZELTO_KEY_H,
+                    HStack(Spacer(), inner, Spacer(),
+                           .align = Z_ALIGN_CENTER)))));
+    return Grow(grow, act ? OnTap(act, face) : face);
 }
 static ZView glyph(const char *label) {
     return Weight(Z_WEIGHT_MEDIUM,
@@ -137,85 +121,155 @@ static ZView glyph_on(const char *label, ZColor ink) {
         Foreground(ink, Font(Z_FONT_SUBHEAD, Text("%s", label))));
 }
 
+// The modifier marks. These were the words "shift", "del" and "enter", which is
+// what a keyboard looks like when nobody has drawn it: three English words in the
+// middle of a grid of single letters, each one wider than the key it sits on and
+// each one needing to be READ. They are marks now — the same three every phone
+// keyboard has drawn for fifteen years — built from the toolkit's round-capped
+// polyline in the unit box, so they scale with the cap and ship no bitmaps.
+// The marks are drawn in the unit box, so only the frame around them carries a
+// size — and that size used to be 22, chosen against a 56-unit key cap. A cap is
+// ZELTO_KEY_H (Apple's 42pt) now, so the frame is a point size too: ~20pt is the
+// keyboard glyph on the phone this copies. The two non-square marks keep the
+// aspect they were drawn at.
+#define MARK_H ((float)Z_PT(20))                 // 37
+#define MARK_W_DELETE (MARK_H * 26.0f / 22.0f)   // the drawn glyph's aspect
+#define MARK_W_RETURN (MARK_H * 24.0f / 22.0f)
+#define MARK_STROKE ((float)Z_PT(2))             // 3 — the ink, at the glyph's scale
+
+static ZView mark_shift(ZColor ink) {
+    static const float arrow[] = {0.50f, 0.12f, 0.88f, 0.50f, 0.68f, 0.50f,
+                                  0.68f, 0.82f, 0.32f, 0.82f, 0.32f, 0.50f,
+                                  0.12f, 0.50f};
+    return Frame(MARK_H, MARK_H,
+        Stroke(.points = arrow, .count = 7, .thickness = MARK_STROKE, .color = ink,
+               .closed = true));
+}
+static ZView mark_delete(ZColor ink) {
+    static const float body[] = {0.36f, 0.20f, 0.94f, 0.20f, 0.94f, 0.80f,
+                                 0.36f, 0.80f, 0.06f, 0.50f};
+    static const float x1[] = {0.54f, 0.37f, 0.80f, 0.63f};
+    static const float x2[] = {0.80f, 0.37f, 0.54f, 0.63f};
+    return Frame(MARK_W_DELETE, MARK_H,
+        ZStack(
+            Frame(MARK_W_DELETE, MARK_H,
+                Stroke(.points = body, .count = 5, .thickness = MARK_STROKE,
+                       .color = ink, .closed = true)),
+            Frame(MARK_W_DELETE, MARK_H,
+                Stroke(.points = x1, .count = 2, .thickness = MARK_STROKE, .color = ink)),
+            Frame(MARK_W_DELETE, MARK_H,
+                Stroke(.points = x2, .count = 2, .thickness = MARK_STROKE, .color = ink)),
+            .align = Z_ALIGN_CENTER));
+}
+static ZView mark_return(ZColor ink) {
+    static const float hook[] = {0.86f, 0.22f, 0.86f, 0.60f, 0.22f, 0.60f};
+    static const float head[] = {0.42f, 0.42f, 0.22f, 0.60f, 0.42f, 0.78f};
+    return Frame(MARK_W_RETURN, MARK_H,
+        ZStack(
+            Frame(MARK_W_RETURN, MARK_H,
+                Stroke(.points = hook, .count = 3, .thickness = MARK_STROKE,
+                       .color = ink)),
+            Frame(MARK_W_RETURN, MARK_H,
+                Stroke(.points = head, .count = 3, .thickness = MARK_STROKE,
+                       .color = ink)),
+            .align = Z_ALIGN_CENTER));
+}
+
 // A single character key (letter or symbol), tap commits it.
 static ZView char_key(KbdState *s, char c) {
     char up = (s->shift && c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
     char lbl[2] = {up, '\0'};
-    return OnTapData(on_char, (void *)(intptr_t)c, cap(glyph(lbl), 1.0f));
+    return OnTapData(on_char, (void *)(intptr_t)c,
+        key_cap(glyph(lbl), NULL, 1.0f, Z_COLOR_SURFACE_4));
 }
 
-// A row of character keys from a NUL-terminated string.
-static ZView char_row(KbdState *s, const char *chars) {
-    ZStackOpts row = {.spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f};
+// A half-key gutter at the end of a row (the a-s-d-f row is inset by half a key
+// on both sides, so its nine keys sit UNDER the gaps of the ten above them). It
+// is a grow-weighted empty cap with no fill, not a Spacer inside a Frame.
+static ZView half_gutter(void) {
+    return Grow(0.5f, Rect(.color = z_rgba(0, 0, 0, 0)));
+}
+
+// A row of character keys from a NUL-terminated string, optionally inset by half
+// a key at both ends (the home row).
+static ZView char_row(KbdState *s, const char *chars, bool inset) {
+    ZStackOpts row = {.spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
+                      .grow = 1.0f};
     int k = 0;
-    for (const char *p = chars; *p && k < Z_MAX_CHILDREN; p++) {
+    if (inset) {
+        row.children[k++] = half_gutter();
+    }
+    for (const char *p = chars; *p && k < Z_MAX_CHILDREN - 1; p++) {
         row.children[k++] = char_key(s, *p);
+    }
+    if (inset) {
+        row.children[k++] = half_gutter();
     }
     return z_stack(Z_AXIS_HORIZONTAL, &row);
 }
 
-// A special (action) key: a labelled tappable cap. Action labels are words, not
-// characters, so they take the smaller type step — a 20px "space" next to a 20px
-// "q" makes the word look like it is shouting.
-static ZView action_key(const char *label, ZAction act, float grow, ZColor bg,
-                        ZColor ink) {
-    return Grow(grow,
-        OnTap(act,
-            Shadow(Z_ELEV_1,
-                Background(bg,
-                    CornerRadius(Z_RADIUS_CHIP,
-                        Frame(0.0f, (float)KEY_H,
-                            HStack(Spacer(), glyph_on(label, ink), Spacer(),
-                                   .align = Z_ALIGN_CENTER)))))));
+// A modifier key carrying a MARK. Its fill is a step below a character cap, so
+// the letters — the things you are actually aiming at — stay the light ones.
+static ZView mark_key(ZView mark, ZAction act, float grow, ZColor bg) {
+    return key_cap(mark, act, grow, bg);
+}
+
+// A modifier key carrying a WORD (only "123" / "ABC" and "space" survive; the
+// rest are marks now). Words take the smaller type step — a 20px "space" next to
+// a 20px "q" makes the word look like it is shouting.
+static ZView word_key(const char *label, ZAction act, float grow, ZColor bg,
+                      ZColor ink) {
+    return key_cap(glyph_on(label, ink), act, grow, bg);
 }
 
 static ZView keyboard_grid(KbdState *s) {
-    // A special key sits BELOW a character key in the hierarchy: darker fill, so
-    // the letters — the things you are actually aiming at — are the light ones.
-    ZColor sp = Z_COLOR_SURFACE;
-    ZColor spi = Z_COLOR_TEXT_MUTED;
+    ZColor sp = Z_COLOR_SURFACE_3;      // a modifier cap
+    ZColor spi = Z_COLOR_TEXT;          // its ink
     // Shift latched: a LIGHT key with dark ink, the way a phone shows it (this is
-    // the same "lit" treatment as an active quick-settings chip).
+    // the same "lit" treatment as an active Control Center toggle).
     ZColor shift_bg = s->shift ? Z_COLOR_PRIMARY : sp;
     ZColor shift_ink = s->shift ? Z_COLOR_ON_PRIMARY : spi;
 
-    ZView row1 = char_row(s, s->symbols ? "1234567890" : "qwertyuiop");
-    ZView row2 = char_row(s, s->symbols ? "@#$%&-+()/" : "asdfghjkl");
+    ZView row1 = char_row(s, s->symbols ? "1234567890" : "qwertyuiop", false);
+    ZView row2 = char_row(s, s->symbols ? "@#$%&-+()/" : "asdfghjkl",
+                          !s->symbols);
 
-    // Row 3: a mode key (shift on letters, ABC on symbols), 7 char keys, backspace.
-    ZStackOpts r3 = {.spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f};
+    // Row 3: shift (letters only), the last char keys, delete.
+    ZStackOpts r3 = {.spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
+                     .grow = 1.0f};
     int k = 0;
-    if (s->symbols) {
-        r3.children[k++] = action_key("ABC", on_symbols, 1.6f, sp, spi);
-    } else {
-        r3.children[k++] = action_key("shift", on_shift, 1.6f, shift_bg,
-                                      shift_ink);
+    if (!s->symbols) {
+        r3.children[k++] = mark_key(mark_shift(shift_ink), on_shift, 1.6f,
+                                    shift_bg);
     }
-    const char *r3c = s->symbols ? "*\"':;!?" : "zxcvbnm";
+    const char *r3c = s->symbols ? ".,?!'\";:" : "zxcvbnm";
     for (const char *p = r3c; *p; p++) {
         r3.children[k++] = char_key(s, *p);
     }
-    r3.children[k++] = action_key("del", on_backspace, 1.6f, sp, spi);
+    r3.children[k++] = mark_key(mark_delete(spi), on_backspace, 1.6f, sp);
     ZView row3 = z_stack(Z_AXIS_HORIZONTAL, &r3);
 
-    // Row 4: symbols toggle, space (wide), paste (system clipboard), enter, hide.
-    // Space keeps the LIGHTER character-key fill, because it is a character key.
-    // Paste was green — a semantic colour spent on a clipboard key, which reads as
-    // "success" for no reason. It is an ordinary action key.
+    // Row 4: the layer key, space, return. The "paste" and "hide" keys are gone.
+    // Paste was a keyboard key doing a TEXT FIELD's job — the field's own
+    // selection menu already pastes (sdk/src/app.c field_paste_cb), which is where
+    // you are looking when you want it, and where iOS puts it. "hide" was a button
+    // whose whole purpose was to undo the thing you did to get the keyboard up:
+    // the keyboard hides when the field blurs, and there is a home gesture for
+    // leaving. Space keeps the LIGHTER character-key fill, because it IS a
+    // character key.
     ZView row4 = HStack(
-        action_key(s->symbols ? "ABC" : "?123", on_symbols, 1.6f, sp, spi),
-        action_key("space", on_space, 4.2f, Z_COLOR_SURFACE_3, Z_COLOR_TEXT),
-        action_key("paste", on_paste, 1.8f, sp, spi),
-        action_key("enter", on_enter, 1.6f, sp, spi),
-        action_key("hide", on_hide_key, 1.4f, sp, spi),
-        .spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f);
+        word_key(s->symbols ? "ABC" : "123", on_symbols, 1.7f, sp, spi),
+        word_key("space", on_space, 5.6f, Z_COLOR_SURFACE_4, Z_COLOR_TEXT),
+        mark_key(mark_return(spi), on_enter, 2.0f, sp),
+        .spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER, .grow = 1.0f);
 
     // A heavy material: the app behind shows only as a hint. See kbd_body for why
     // this one is a tint rather than a compositor blur.
     return Fill(
         Background(Z_COLOR_MATERIAL_THICK,
             VStack(row1, row2, row3, row4,
-                   .spacing = 8.0f, .padding = 8.0f, .grow = 1.0f)));
+                   .spacing = (float)ZELTO_KEY_GAP,
+                   .padding = (float)ZELTO_KEY_PAD, .grow = 1.0f)));
 }
 
 // --- body -------------------------------------------------------------------
@@ -239,7 +293,7 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
 
     // Reserve our height only while shown (app shrinks to keep the field above
     // the keyboard); catch input only while shown (else taps fall through).
-    z_layer_set_exclusive_zone(app, s->visible ? KBD_H : 0);
+    z_layer_set_exclusive_zone(app, s->visible ? ZELTO_KBD_H : 0);
     if (s->visible) {
         z_layer_set_input_region(app, 0, 0, 0, 0);   // whole surface (input on)
     } else {
@@ -254,7 +308,7 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
 
     // Slide: v animates 0->1; parked slides the whole grid off the bottom edge.
     float v = z_animated_get(s->anim);
-    float slide = (1.0f - v) * (float)KBD_H;
+    float slide = (1.0f - v) * (float)ZELTO_KBD_H;
     z_full_repaint(app);   // a big translated subtree wants a full repaint
     return Offset(NULL, slide, keyboard_grid(s));
 }
@@ -266,5 +320,5 @@ Z_LAYER_APP(KbdState, kbd_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .height = KBD_H,
+            .height = ZELTO_KBD_H,
             .keyboard = false)

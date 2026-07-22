@@ -5,6 +5,7 @@
 executable(
   'zelto-volume',
   files('main.c'),
+  include_directories : include_directories('..'),  # system/ for common/safe_areas.h
   dependencies : zelto_dep,
   install : true,
 )

@@ -19,7 +19,7 @@
 
 #ifdef __cplusplus
 extern "C" {
-#endif
+#endif // ZELTO_UI_H
 
 // Opaque handles. A ZView is an arena-allocated node, cheap to create and
 // thrown away each rebuild; never freed by the app.
@@ -81,24 +81,94 @@ typedef enum ZAxis {
     Z_AXIS_DEPTH,          // ZStack: back -> front (overlap)
 } ZAxis;
 
-// Type scale (logical px) — a semantic set of steps, à la the platform text
-// styles (Apple HIG / Material type scale). Pick by ROLE, not by pixel count, so
-// the OS retypes coherently from one place. The ladder is dense in the reading
-// band (Footnote→Body→Headline) where hierarchy is finest and coarser above it.
-// Body is 17 (the legibility floor for sustained reading); Caption2 (11) is the
+// THE SCREEN UNIT. Zelto's surface coordinate is a raw device pixel: the phone
+// output is 720x1440 and every metric in the OS is written in those pixels. The
+// design reference it was drawn against is a 390pt-wide handset, so one HIG POINT
+// is ~1.85 Zelto units (720/390 = 1.846) — which is exactly the proportion the
+// layout metrics carry: a 104px app icon is 14.4% of the width where iOS's 60pt
+// icon is 15.3%, and a 76px settings row is 5.3% of the height where iOS's 44pt
+// row is 5.2%.
+//
+// The type scale below did NOT carry it. Until P43 it was a 1:1 transcription of
+// the HIG POINT ramp (Body 17, Caption2 11) sitting inside pixel metrics — so
+// every label in the OS was drawn at ~54% of the size its container was built
+// for: a 17px body label centred in a 76px row, an 11px caption under a 104px
+// icon, a 13px footnote spanning a third of a 720px screen. Nothing was broken
+// enough to look like a bug, which is why it survived thirteen phases: every
+// surface was uniformly, quietly under-typed.
+//
+// The ramp is therefore authored in points, as a designer reads it, and Z_PT
+// converts to screen units at the single point of truth. Retuning the whole
+// system's type is one numerator.
+//
+// P43 ALSO GENERALISED FROM TWO METRICS AND GOT IT WRONG, which is why Z_PT
+// exists as a name of its own. The two proportions above are real, but they are
+// the metrics that were DERIVED from the screen (the icon falls out of a 4-column
+// grid on 720 units; the settings row's total falls out of a 44 + 2x16 padding
+// that happens to sum to 76). The metrics LIFTED FROM APPLE'S SPEC TABLES had
+// exactly the type scale's bug and kept it a phase longer: a 34-unit home
+// indicator where the spec says 34 POINTS (2.4% of the display against Apple's
+// 4.0%), a 40-unit status bar that is proportionally the CLASSIC 20pt one on a
+// design that had otherwise dropped the home button, a keyboard whose keys stood
+// 30pt tall against a 44pt touch-target minimum. P44 moved those onto Z_PT too;
+// see system/common/safe_areas.h.
+//
+// So: a number copied off a spec sheet is in POINTS and goes through Z_PT. A
+// number derived from the screen (a fraction of the width, a cell that divides a
+// grid) is already in screen units and must NOT. Nothing else in the OS is a
+// bare pixel constant by choice.
+//
+// Integer arithmetic, not a float multiply: an enum needs a constant expression.
+#define Z_TYPE_NUM 185
+#define Z_TYPE_DEN 100
+
+// A HIG point in screen units. Rounds down; the half-unit that costs is below
+// what the renderer resolves.
+#define Z_PT(pt) ((pt) * Z_TYPE_NUM / Z_TYPE_DEN)
+
+// The type ramp's spelling of the same conversion — a step is points, always.
+#define Z_TYPE(pt) Z_PT(pt)
+
+// A standard list row's TOTAL height — Apple's 44pt table row, which is also the
+// HIG minimum touch target and therefore the floor for anything tappable. It is
+// a TOOLKIT metric (List's default row, a settings row), not a safe area: the
+// cross-process contracts with the compositor live in system/common/safe_areas.h.
+#define Z_ROW_H Z_PT(44)
+
+// Type scale — a semantic set of steps, à la the platform text styles (Apple HIG
+// / Material type scale). Pick by ROLE, not by pixel count, so the OS retypes
+// coherently from one place. The ladder is dense in the reading band
+// (Footnote→Body→Headline) where hierarchy is finest and coarser above it. Body
+// is 17pt (the legibility floor for sustained reading); Caption2 (11pt) is the
 // smallest step. Emphasis is a separate axis — pair a step with Weight() (HIG
 // leans on size AND weight for hierarchy, so Headline is Body-sized + Semibold).
+// The comment after each step is the value in SCREEN UNITS, what the renderer
+// actually gets.
 typedef enum ZFont {
-    Z_FONT_CAPTION2 = 11,     // smallest: dense metadata
-    Z_FONT_CAPTION = 12,      // caption / overline
-    Z_FONT_FOOTNOTE = 13,     // secondary caption
-    Z_FONT_SUBHEAD = 15,      // subheading / dense body
-    Z_FONT_BODY = 17,         // primary reading size (HIG body)
-    Z_FONT_HEADLINE = 17,     // body-sized, meant with Weight(SEMIBOLD)
-    Z_FONT_CALLOUT = 20,      // emphasised body / compact title (Zelto's larger scale)
-    Z_FONT_TITLE2 = 24,       // section title
-    Z_FONT_TITLE = 28,        // screen title
-    Z_FONT_LARGE_TITLE = 40,  // hero / clock
+    Z_FONT_CAPTION2 = Z_TYPE(11),      // 20 — smallest: dense metadata
+    Z_FONT_CAPTION = Z_TYPE(12),       // 22 — caption / overline
+    Z_FONT_FOOTNOTE = Z_TYPE(13),      // 24 — secondary caption
+    Z_FONT_SUBHEAD = Z_TYPE(15),       // 27 — subheading / dense body
+    Z_FONT_BODY = Z_TYPE(17),          // 31 — primary reading size (HIG body)
+    Z_FONT_HEADLINE = Z_TYPE(17),      // 31 — body-sized, meant with Weight(SEMIBOLD)
+    Z_FONT_CALLOUT = Z_TYPE(20),       // 37 — emphasised body / compact title
+    Z_FONT_TITLE2 = Z_TYPE(24),        // 44 — section title
+    Z_FONT_TITLE = Z_TYPE(28),         // 51 — screen title
+    Z_FONT_LARGE_TITLE = Z_TYPE(40),   // 74 — hero / a screen's opening title
+    // Above the reading ladder entirely: a number that IS the screen. Only the
+    // lock screen's clock uses it — that clock is not a title, it is the reason
+    // the screen exists, and at Large Title it reads as a heading with nothing
+    // under it. A step this far out belongs in the scale rather than as a cast
+    // integer at one call site, so it retypes with everything else.
+    //
+    // This step is where the point/pixel confusion was easiest to see and hardest
+    // to name: it was written as a bare 92, and 92 is the POINT size of the iOS
+    // lock clock — the same transcription error as every step above it, but so far
+    // out on the ladder that the result still read as "big" beside type that was
+    // equally undersized. Measured against the screen it was not: the clock's
+    // digits stood 4.6% of the display's height where the phone it copies puts
+    // them at ~8.9%. Scaled like everything else it lands at 170.
+    Z_FONT_DISPLAY = Z_TYPE(92),       // 170 — the lock clock
 } ZFont;
 
 // Font weight — the second hierarchy axis. The bundled face is a single Regular;
@@ -159,9 +229,36 @@ typedef struct ZRectOpts {
 ZView z_rect(const ZRectOpts *opts);
 #define Rect(...) z_rect(&(ZRectOpts){__VA_ARGS__})
 
-// A line of text (printf-style).
+// A line of text (printf-style). ONE line: it measures to its natural width and
+// does not wrap (layout is a single intrinsic-size pass). For a run of prose
+// wider than its column — a caption, a description, a paragraph — use WrapText,
+// which breaks it to a known width.
 ZView z_text(const char *fmt, ...);
 #define Text(...) z_text(__VA_ARGS__)
+
+// Prose wrapped to a fixed pixel WIDTH. Unlike Text, this is not printf: pass a
+// ready string (it is the paragraph as written, '\n's included — a newline is a
+// hard break, and a blank line is kept as a paragraph gap). It splits into as
+// many Text lines as needed, measuring with the real font so no line exceeds
+// `.width`; a word too long to fit alone is broken mid-word rather than allowed
+// to run off the edge.
+//
+// It needs the app because it measures at BUILD time, before the tree the layout
+// pass would measure exists — that is the whole reason it can wrap when Text
+// cannot. `.width` is required; the rest take the Text defaults. Capped at
+// Z_MAX_CHILDREN lines (a screenful of a single paragraph; longer prose belongs
+// in a Scroll, and each WrapText inside it wraps its own block).
+typedef struct ZWrapOpts {
+    float width;       // REQUIRED: the column width in screen units
+    ZFont size;        // 0 = Z_FONT_BODY
+    ZWeight weight;    // 0 = Regular
+    ZColor color;      // .a == 0 = inherit (Z_COLOR_TEXT)
+    float line_gap;    // extra px between lines (0 = snug)
+} ZWrapOpts;
+
+ZView z_text_wrap(ZApp *app, const char *s, const ZWrapOpts *opts);
+#define WrapText(appp, s, ...) \
+    z_text_wrap(appp, s, &(ZWrapOpts){__VA_ARGS__})
 
 // An image: a PNG or SVG loaded from `path` and drawn aspect-fit inside the
 // node's frame (letterboxed, never stretched). The decode is cached by path, so
@@ -254,6 +351,74 @@ ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder);
 #define TextField(appp, f, placeholder) z_text_field(appp, f, placeholder)
 
 // ---------------------------------------------------------------------------
+// Slider — a value you DRAG, in the range 0..1.
+//
+// For anything continuous: brightness, volume, a scrub position. Not for a
+// choice (that is a switch) and not for a count (that is a stepper). A slider is
+// the right control exactly when the user does not know the number they want and
+// is going to hunt for it by watching the result.
+//
+// Like ZTextField, the state is a struct the APP owns — put it in the app's
+// state struct so it survives the per-frame rebuild. Write `value` to set the
+// control from outside (a brokered setting changing under you); read it, or the
+// `on_change` argument, to follow the finger.
+//
+//   static void on_bright(ZApp *app, void *state, float v) {
+//       z_setting_set_int("sys.brightness", 1 + (int)lroundf(v * 4));
+//   }
+//   s->bright.value = (level - 1) / 4.0f;
+//   s->bright.on_change = on_bright;
+//   ... Slider(app, &s->bright, .length = 300)
+//
+// Dragging is RELATIVE: the value moves with the finger from wherever it was, it
+// does not jump to the touch point. on_change fires continuously during the
+// drag; on_commit (optional) fires once on release, for a setting too expensive
+// to write on every frame.
+// ---------------------------------------------------------------------------
+typedef void (*ZSliderCb)(ZApp *app, void *state, float value);
+
+typedef struct ZSlider {
+    float value;                 // 0..1 — the app reads and writes this
+    ZSliderCb on_change;         // fired continuously while dragging (may be NULL)
+    ZSliderCb on_commit;         // fired once on release (may be NULL)
+
+    // Internal drag bookkeeping; the toolkit owns these. They live here rather
+    // than in a keyed cell because they must survive the rebuilds that happen
+    // during the drag itself.
+    float drag_base;
+    float travel;
+    bool dragging;
+    bool vertical;
+} ZSlider;
+
+typedef struct ZSliderOpts {
+    float length;      // px along the drag axis (track width, or slab height)
+    float thickness;   // px across it (track thickness, or slab width)
+    // The Control Center shape: a wide vertical slab whose FILL is the value,
+    // dragged up and down, instead of a thin rail with a knob. Use it when the
+    // control is the main subject of the screen rather than one row's worth.
+    bool tall;
+    ZView glyph;       // optional mark at the foot of a tall slider (may be NULL)
+} ZSliderOpts;
+
+ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts);
+#define Slider(appp, s, ...) z_slider(appp, s, &(ZSliderOpts){__VA_ARGS__})
+
+// Focus a field from code (NULL blurs whatever is focused), and ask whether a
+// field currently holds focus. Tapping a TextField already does the first, so
+// most apps never call these — they exist for the app that has to REACT to its
+// own field's focus rather than just host it:
+//
+//   - The home screen is the one window the compositor sizes to the FULL output
+//     rather than the usable area (it draws behind the bars), so the keyboard's
+//     exclusive zone does NOT shrink it. Its search field has to inset the page
+//     by the keyboard's height itself, which means asking whether it is focused.
+//   - The same screen has to BLUR the field when you navigate away from it,
+//     otherwise the keyboard stays up over a page that has no field on it.
+void z_app_focus_field(ZApp *app, ZTextField *f);
+bool z_app_field_active(ZApp *app, const ZTextField *f);
+
+// ---------------------------------------------------------------------------
 // Input method (the on-screen keyboard's back end) — P21.
 //
 // The keyboard app (zelto-keyboard) is the system's single input-method client.
@@ -335,6 +500,31 @@ ZView Foreground(ZColor color, ZView view);
 ZView Padding(float all, ZView view);
 ZView Frame(float width, float height, ZView view);
 ZView CornerRadius(float radius, ZView view);
+
+// Confine everything this view's SUBTREE paints to the view's own frame, rounded
+// by `radius` (0 = a plain rectangular clip). CornerRadius and Clip are the two
+// halves people reach for interchangeably and they are not the same thing:
+// CornerRadius rounds the node's OWN paint — its fill, its background, its image
+// mask — and says nothing about its children, which happily draw past the corner.
+// Clip is the mask, and it applies to the descendants.
+//
+// Reach for it when a child's silhouette has to be the PARENT's rather than its
+// own. The canonical case is a fill that grows inside a rounded slab: the
+// Control Center's brightness slab, a progress bar in a pill, artwork bled to a
+// card's edge. Rounding the child instead is the trap — it rounds all four
+// corners, including the ones in the middle of the slab where the fill's head is
+// supposed to be a straight cut, so a half-full slider looks like a lozenge
+// floating inside a slot.
+//
+//   Clip(Z_RADIUS_PANEL,
+//       Frame(w, h, ZStack(fill_grown_to_value, glyph)))
+//
+// The clip nests: a rounded clip inside another intersects with it (each masks
+// what the one above it left), so a clipped card inside a clipped scroll viewport
+// does the right thing. Cost is per-pixel and only along the rounded edge — the
+// straight interior takes the same path as an unclipped node.
+ZView Clip(float radius, ZView view);
+
 ZView Font(ZFont size, ZView view);
 ZView Grow(float weight, ZView view);
 
@@ -1315,6 +1505,108 @@ void z_ws_send(ZWebSocket *ws, const void *data, size_t len);  // masked text fr
 void z_ws_close(ZWebSocket *ws);
 
 // ---------------------------------------------------------------------------
+// Sensors + location (P38).
+//
+// The device sensors (accelerometer, gyroscope, magnetometer, ...) and the GPS
+// are streamed from the zsysd sensor source. A one-shot fix (z_loc_get) is a fast
+// synchronous read; a continuous stream (z_sensor_open / z_loc_watch) parks a
+// subscription that pushes samples to a callback from the app loop, at a
+// requested refresh rate clamped to [Z_SENSOR_RATE_MIN, Z_SENSOR_RATE_MAX] Hz.
+// Sensor access needs the `sensors` permission; location needs `location`
+// (request it with z_perm_request before opening a stream, exactly like network).
+// A denied capability streams nothing rather than aborting. See
+// docs/system-apis/location.md.
+// ---------------------------------------------------------------------------
+
+// The device sensors Zelto exposes (a modern-phone set). Values are SI units:
+// acceleration m/s^2, rotation rad/s, magnetic field microtesla, orientation
+// degrees [azimuth,pitch,roll], light lux, proximity cm, pressure hPa, step
+// counter a cumulative count. Unknown/absent sensors report .present == false.
+typedef enum ZSensorType {
+    Z_SENSOR_ACCELEROMETER = 0,
+    Z_SENSOR_GYROSCOPE,
+    Z_SENSOR_MAGNETOMETER,
+    Z_SENSOR_ORIENTATION,
+    Z_SENSOR_GRAVITY,
+    Z_SENSOR_LINEAR_ACCEL,
+    Z_SENSOR_ROTATION_VECTOR,
+    Z_SENSOR_LIGHT,
+    Z_SENSOR_PROXIMITY,
+    Z_SENSOR_PRESSURE,
+    Z_SENSOR_STEP_COUNTER,
+    Z_SENSOR_COUNT,
+} ZSensorType;
+
+// Refresh-rate bounds. A request outside this range is clamped; Android's
+// SENSOR_DELAY_FASTEST maps to the max (its contract is "device-dependent
+// fastest", so a 60 Hz cap is compliant). Named presets mirror the Android
+// delays for the andemu bridge.
+#define Z_SENSOR_RATE_MIN     1
+#define Z_SENSOR_RATE_MAX     60
+#define Z_SENSOR_RATE_NORMAL  5
+#define Z_SENSOR_RATE_UI      16
+#define Z_SENSOR_RATE_GAME    50
+#define Z_SENSOR_RATE_FASTEST 60
+
+// One sensor reading. `n` is how many of `v[]` are meaningful (1 for scalar
+// sensors like light/pressure, 3 for vectors); `t` is a monotonic timestamp (ms);
+// `accuracy` is 0..3 (unreliable..high), mirroring Android's SensorEvent.accuracy.
+typedef struct ZSensorSample {
+    ZSensorType type;
+    float v[3];
+    int n;
+    int accuracy;
+    int64_t t;
+} ZSensorSample;
+
+// Static capability of a sensor: whether it is present and its rate bounds.
+typedef struct ZSensorCaps {
+    bool present;
+    int min_hz;
+    int max_hz;
+} ZSensorCaps;
+
+// A location fix. `ok` is false when the fix is unavailable (permission denied /
+// no source). Angles in degrees, accuracy/altitude in metres, speed in m/s,
+// bearing in degrees; `t` is a monotonic timestamp (ms).
+typedef struct ZLocation {
+    double lat, lng;
+    float accuracy;
+    float altitude;
+    float speed;
+    float bearing;
+    int64_t t;
+    bool ok;
+} ZLocation;
+
+// Stream callbacks, fired from the app loop. The sample/fix is valid only for the
+// call (copy what you keep).
+typedef void (*ZSensorCb)(ZApp *app, const ZSensorSample *s, void *ud);
+typedef void (*ZLocationCb)(ZApp *app, const ZLocation *loc, void *ud);
+
+// Static capability of a sensor type (no round-trip).
+ZSensorCaps z_sensor_info(ZSensorType type);
+
+// Open a sensor stream at `rate_hz` (clamped to [MIN,MAX]); `cb` fires per sample
+// from the app loop. Returns a handle (>0) or 0 on failure / unknown sensor.
+// Needs the `sensors` grant — a denied stream simply never delivers.
+int z_sensor_open(ZApp *app, ZSensorType type, int rate_hz, ZSensorCb cb, void *ud);
+
+// Change an open stream's rate, or close it. Closing fires no further callbacks.
+void z_sensor_set_rate(int handle, int rate_hz);
+void z_sensor_close(int handle);
+
+// A single location fix (fast synchronous round-trip to the broker). `.ok` is
+// false when the `location` grant is missing or there is no fix.
+ZLocation z_loc_get(ZApp *app);
+
+// Continuous location: `cb` fires from the app loop at ~`rate_hz` (clamped).
+// Returns a handle (>0) or 0 on failure. Needs the `location` grant. Stop with
+// z_loc_stop.
+int z_loc_watch(ZApp *app, int rate_hz, ZLocationCb cb, void *ud);
+void z_loc_stop(int handle);
+
+// ---------------------------------------------------------------------------
 // Task switcher (running apps).
 //
 // A client (the launcher) can list every other running app window and switch to
@@ -1338,8 +1630,28 @@ const ZTask *z_running_apps(ZApp *app, int *count);
 void z_task_activate(ZApp *app, const ZTask *task);
 void z_task_close(ZApp *app, const ZTask *task);
 
+// A picture of a running app's WINDOW, as it looked when it was last on screen.
+//
+// Returns a key to pass straight to Image() / Cover(), or NULL when no picture
+// is available — which is the normal case for a window that has never been
+// backgrounded, for the first frame after asking (the image arrives
+// asynchronously and repaints the caller when it lands), and on any compositor
+// that does not implement zelto-toplevel-capture-v1. So a caller must ALWAYS
+// have a fallback; the app's icon is the intended one.
+//
+//   const char *shot = z_snapshot(app, task);
+//   ZView poster = shot ? Cover(Image(shot)) : Image(icon_for(task->app_id));
+//
+// The image is deliberately STALE — it shows the window as it was, not as it is,
+// because a backgrounded window is not being drawn. That is what makes it useful:
+// it identifies the window far better than an icon can. It is also a reduced-
+// resolution copy, so scale it to fit rather than assuming a size.
+//
+// Asking is what subscribes, so a client that never calls this costs nothing.
+const char *z_snapshot(ZApp *app, const ZTask *task);
+
 #ifdef __cplusplus
 }
-#endif
+#endif // ZELTO_UI_H
 
-#endif  // ZELTO_UI_H
+#endif // ZELTO_UI_H  // ZELTO_UI_H

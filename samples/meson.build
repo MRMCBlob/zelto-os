@@ -3,4 +3,5 @@
 
 if zelto_dep.found()
   subdir('hello')
+  subdir('andemu-demo')
 endif

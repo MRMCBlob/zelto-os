@@ -90,12 +90,19 @@ static ZView cards_body(ZApp *app, CardsState *state) {
             lifecycle_banner(app),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Cards"))),
+            // The ZStack is what CENTRES the number. Frame only sets a size — a
+            // Text made a Frame's direct child is laid out at the frame's origin
+            // and sits in its top-left corner, which read as "roughly centred"
+            // while the type was half the size the box was drawn for and reads as
+            // a mistake now that it is not. A depth stack centres its children.
             Frame(140.0f, 140.0f,
                 Background(Z_COLOR_PRIMARY,
                     CornerRadius(24,
-                        Foreground(Z_COLOR_ON_PRIMARY,
-                            Font(Z_FONT_LARGE_TITLE,
-                                Text("%d", state->count)))))),
+                        ZStack(
+                            Foreground(Z_COLOR_ON_PRIMARY,
+                                Font(Z_FONT_LARGE_TITLE,
+                                    Text("%d", state->count))),
+                            .align = Z_ALIGN_CENTER)))),
             Button(bump, "Tap me"),
             camera_section(app, state),
             Spacer(),

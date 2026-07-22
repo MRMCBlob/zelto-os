@@ -64,6 +64,37 @@ export ZCOMP_OUTPUT_SIZE="${SIM_SIZE:-720x1440}"
 orig_xdg="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_RUNTIME_DIR="${SIM_RUNTIME_DIR:-/tmp/zelto-sim/xdg}"
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+
+# Reap a previous run's compositor BEFORE touching its socket, and WAIT for it to
+# actually be gone.
+#
+# The order matters and used to be wrong. libwayland unlinks the socket path (and
+# its .lock) when the display is destroyed — so a zcomp that is still shutting
+# down will delete whatever file now sits at that path. If we clear the stale
+# sockets first and start the new compositor while the old one is still on its way
+# out, the old one's exit unlinks the NEW compositor's socket: every client
+# launched after that point dies with "cannot connect to Wayland display", and
+# grim burns all six of its retries against a socket that is never coming back.
+# The run still "succeeds" — it just produces a missing or half-populated frame.
+#
+# So: signal, poll until the process is really gone, escalate to KILL, and only
+# then remove socket files.
+reap_stale_zcomp() {
+    pgrep -f "$BUILD/compositor/zcomp" >/dev/null 2>&1 || return 0
+    echo "==> reaping a stale zcomp from a previous run"
+    pkill -f "$BUILD/compositor/zcomp" 2>/dev/null || true
+    for _ in $(seq 1 40); do            # up to 10s of graceful exit
+        pgrep -f "$BUILD/compositor/zcomp" >/dev/null 2>&1 || return 0
+        sleep 0.25
+    done
+    pkill -9 -f "$BUILD/compositor/zcomp" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        pgrep -f "$BUILD/compositor/zcomp" >/dev/null 2>&1 || return 0
+        sleep 0.25
+    done
+    echo "!! a previous zcomp will not die; this run may collide with it"
+}
+reap_stale_zcomp
 rm -f "$XDG_RUNTIME_DIR"/wayland-*       # clear a prior run's stale sockets
 
 if [ "${HEADLESS:-0}" = "1" ]; then
@@ -106,8 +137,18 @@ export ZELTO_WALLPAPER_DIR="${ZELTO_WALLPAPER_DIR:-$REPO_ROOT/resources/wallpape
 # ZELTO_BATTERY_TICK_MS (default 5000). ZELTO_VOLUME_MS widens the HUD dwell for
 # a reliable screenshot.
 export ZELTO_FAKE_BATTERY="${ZELTO_FAKE_BATTERY:-1}"
+
+# P38 sensor/location source: the host has no phone sensors, so zsysd synthesises
+# them from these ZELTO_SIM_* values (a real device port fills them from a HAL).
+# Override any of them to script a reading — e.g. ZELTO_SIM_LOCATION="48.85,2.35"
+# to move the GPS fix, matching `zelto simulator set location` in the docs.
+export ZELTO_SIM_LOCATION="${ZELTO_SIM_LOCATION:-52.5200,13.4050}"
+export ZELTO_SIM_ORIENTATION="${ZELTO_SIM_ORIENTATION:-30,2,1}"
+export ZELTO_SIM_ACCEL="${ZELTO_SIM_ACCEL:-0.6,0.2,9.78}"
+export ZELTO_SIM_GYRO="${ZELTO_SIM_GYRO:-0.02,0.00,0.03}"
+export ZELTO_SIM_MAG="${ZELTO_SIM_MAG:-0,-30,-40}"
+export ZELTO_SIM_LIGHT="${ZELTO_SIM_LIGHT:-320}"
 rm -f "$XDG_RUNTIME_DIR/zsysd.sock"     # drop a stale broker socket from a prior run
-pkill -f "$BUILD/compositor/zcomp" 2>/dev/null || true   # reap a stale sim compositor
 
 PIDS=()
 cleanup() { kill "${ZPID:-}" "${PIDS[@]}" 2>/dev/null || true; }
@@ -179,7 +220,9 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/settings/zelto-settings.app" \
          "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
          "$REPO_ROOT/system/apps/store/zelto-store.app" \
-         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app"; do
+         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app" \
+         "$REPO_ROOT/system/apps/sensors/zelto-sensors.app" \
+         "$REPO_ROOT/samples/andemu-demo/zelto-andemu.app"; do
     [ -f "$m" ] || { echo "!! manifest missing: $m"; continue; }
     # exec= is a COMMAND (system/common/exec_cmd.h): the binary, then optional
     # args — a script app is "/usr/bin/zelto-script --id X /usr/share/zelto/
@@ -219,14 +262,38 @@ spawn() { [ -x "$1" ] && { "$@" & PIDS+=($!); }; }
 # zsysd forks the consent dialog on a permission prompt by absolute path; on the
 # device that's /usr/bin/zelto-consent, uninstalled here — point it at the build
 # binary (the ZELTO_RECENTS_BIN idiom) so prompts resolve instead of auto-denying.
-export ZELTO_CONSENT_BIN="$SYS/consent/zelto-consent"
+# Honour a preset ZELTO_CONSENT_BIN (a harness can point it at /bin/true to
+# auto-allow every prompt for an unattended screenshot); default to the real one.
+export ZELTO_CONSENT_BIN="${ZELTO_CONSENT_BIN:-$SYS/consent/zelto-consent}"
 spawn "$SYS/zsysd/zsysd"
+
+# Wait for the broker to be LISTENING before starting anything that reads a
+# setting from it.
+#
+# Every System-UI client opens with a z_setting_get, and if the broker's socket is
+# not bound yet that call falls back to a compiled-in default — silently, because
+# a default looks exactly like a configured value. That is how a shot booted with
+# zelto-lock at lock_enabled=0 and photographed an unlocked home screen for a lock
+# test. libzelto now waits for the broker itself (sdk/src/app.c zsysd_connect), so
+# this is belt-and-braces; it is here because the harness should be the place the
+# race is VISIBLE rather than absorbed, and because it keeps the boot log ordered.
+wait_for_zsysd() {
+    for _ in $(seq 1 100); do            # up to 10s
+        [ -S "$XDG_RUNTIME_DIR/zsysd.sock" ] && return 0
+        sleep 0.1
+    done
+    echo "!! zsysd never bound $XDG_RUNTIME_DIR/zsysd.sock — clients will run on"
+    echo "   compiled-in defaults and this boot is NOT representative"
+    return 1
+}
+wait_for_zsysd || true
+
 spawn "$SYS/bar/zelto-bar"
-# The nav bar's Recents button fork/execs the recents overlay by absolute path,
-# which on the device is /usr/bin/zelto-recents. Uninstalled here, so point it at
-# the build-host binary (nav reads ZELTO_RECENTS_BIN).
+# The home indicator's switcher gesture fork/execs the recents overlay by
+# absolute path, which on the device is /usr/bin/zelto-recents. Uninstalled here,
+# so point it at the build-host binary (homebar reads ZELTO_RECENTS_BIN).
 export ZELTO_RECENTS_BIN="$SYS/recents/zelto-recents"
-spawn "$SYS/nav/zelto-nav"
+spawn "$SYS/homebar/zelto-homebar"
 spawn "$SYS/keyboard/zelto-keyboard"
 spawn "$SYS/shade/zelto-shade"
 spawn "$SYS/dim/zelto-dim"
@@ -283,6 +350,26 @@ if [ -n "${SIM_APP:-}" ]; then
     spawn "$(resolve_bin "$SIM_APP")"
 fi
 
+# Optional: launch an app N seconds INTO the run, rather than during boot
+# (SIM_LATE_APP="zelto-cards 6"). SIM_APP and SIM_EXTRA both spawn while the shell
+# is still coming up, which is fine for "have this on screen" but useless for
+# "make something happen once the system has settled into a state" — the window
+# maps before the state exists. A late launch is a focus change at a chosen
+# moment, which is how a test reaches an edge that only fires on one (the App
+# Switcher's capture is taken at the active->inactive edge; the lock-suppression
+# path needs that edge to land AFTER the screen has locked).
+if [ -n "${SIM_LATE_APP:-}" ]; then
+    set -- $SIM_LATE_APP
+    late_bin="$(resolve_bin "$1")"
+    late_delay="${2:-5}"
+    if [ -n "$late_bin" ]; then
+        echo "==> [late] will launch $(basename "$late_bin") after ${late_delay}s"
+        ( sleep "$late_delay"; exec "$late_bin" ) & PIDS+=($!)
+    else
+        echo "!! SIM_LATE_APP: no such binary: $1"
+    fi
+fi
+
 # Optional (shots harness): extra apps to leave running — a space-separated list of
 # binary names — so a populated Recents / task switcher can be captured. Each is an
 # ordinary xdg toplevel; they stack behind whatever overlay is spawned below.
@@ -304,6 +391,17 @@ if [ -n "${SIM_CONSENT:-}" ]; then
     sleep 1
     # shellcheck disable=SC2086
     spawn "$SYS/consent/zelto-consent" $SIM_CONSENT
+fi
+
+# Optional (shots harness): spawn the share sheet standalone with a space-separated
+# list of candidate app_ids — the sheet zsysd normally forks to resolve an intent,
+# captured directly. Its exit code is the pick, which nothing reads here. Set
+# ZELTO_SHARE_MIME / ZELTO_SHARE_PAYLOAD too (zsysd passes them in the child's
+# environment) to get the preview row the real sheet shows.
+if [ -n "${SIM_CHOOSER:-}" ]; then
+    sleep 1
+    # shellcheck disable=SC2086
+    spawn "$SYS/chooser/zelto-chooser" $SIM_CHOOSER
 fi
 
 # Headless + SHOT: give it a moment to render, grab a PNG with grim, then exit —
@@ -339,6 +437,24 @@ if [ -n "${SHOT:-}" ]; then
             echo "   grim attempt $attempt: display not ready, retrying"
             sleep 1.5
         done
+        # A frame is not proof of a boot. If the shell never came up, grim happily
+        # captures zcomp's flat teal clear colour and writes a perfectly valid PNG
+        # — which then sits in the catalogue looking like a deliberate design.
+        # A real Zelto frame has a wallpaper, a status bar and text in it, so it
+        # compresses poorly; a flat fill compresses to almost nothing. Judge on
+        # that, and say so loudly rather than exiting 0 on a blank screen.
+        if [ -s "$SHOT" ]; then
+            bytes=$(stat -c%s "$SHOT" 2>/dev/null || echo 0)
+            if [ "$bytes" -lt 20000 ]; then
+                echo "!! $SHOT is only ${bytes}B — that is a BLANK/flat frame, not a"
+                echo "   booted shell. Treating this capture as failed."
+                rm -f "$SHOT"
+                exit 1
+            fi
+        else
+            echo "!! grim never produced a frame after 6 attempts"
+            exit 1
+        fi
     else
         echo "!! grim not installed (apt install grim); cannot screenshot"
     fi

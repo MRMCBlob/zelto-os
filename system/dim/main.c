@@ -22,7 +22,8 @@
 // is the OPPOSITE of z_layer_set_input_region(app,0,0,0,0), which means "whole
 // surface".)
 //
-// TRADEOFF / decision. We anchor BELOW the status bar (margin_top = BAR_H) so the
+// TRADEOFF / decision. We anchor BELOW the status bar (margin_top = the bar's
+// safe area) so the
 // bar — which is the live status indicator for these very settings (its Wi-Fi /
 // airplane glyphs + a brightness pip) — stays at full brightness and legible,
 // while the whole app area visibly dims. A real phone dims the bar too; here the
@@ -33,7 +34,9 @@
 
 #include <zelto/ui.h>
 
-#define BAR_H 40
+#include "common/safe_areas.h"
+#include "common/settings_defaults.h"
+
 // Per-level alpha step. Level 5 -> 0 (no dim); level 1 -> 4*STEP = 192 (~75%
 // black, the app still faintly visible). Strong enough to read off a screendump.
 #define DIM_STEP 48
@@ -68,7 +71,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
 static ZView dim_body(ZApp *app, DimState *s) {
     if (!s->inited) {
         s->inited = true;
-        s->brightness = z_setting_get_int("sys.brightness", 3);
+        s->brightness =
+            z_setting_get_int("sys.brightness", ZELTO_DEFAULT_BRIGHTNESS);
     }
     // Subscribe once (ctrl_fd is up by the first build), like the shade.
     if (!s->subscribed) {
@@ -100,5 +104,5 @@ Z_LAYER_APP(DimState, dim_body,
             .anchor = Z_ANCHOR_TOP | Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT |
                       Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .margin_top = BAR_H,
+            .margin_top = ZELTO_BAR_H,
             .keyboard = false)

@@ -89,6 +89,7 @@ struct ZNode {
 
     // Scroll / virtualised-list support.
     bool clip;            // clip this subtree to the node frame (viewport)
+    float clip_radius;    // Clip(): round that subtree clip's corners (0 = square)
     bool fill;            // in a parent's arrange, expand to the inner box
     bool abs_children;    // position children by their layout_y, not flow
     float layout_y;       // absolute y within an abs_children parent (rows)
@@ -208,8 +209,8 @@ ZUI *z_app_ui(ZApp *app);
 void *z_app_state(ZApp *app);
 // Text-field focus (P21). z_text_field (view.c) uses these to reflect + set the
 // app's active text field; app.c drives text-input-v3 enable/disable off it.
-void z_app_focus_field(ZApp *app, ZTextField *f);
-bool z_app_field_active(ZApp *app, const ZTextField *f);
+// z_app_focus_field / z_app_field_active are PUBLIC (declared in <zelto/ui.h>,
+// included above) — the home screen needs them to inset for the keyboard.
 // The app's currently-focused field, or NULL (P22 selection actions operate on it).
 ZTextField *z_app_active_field(ZApp *app);
 
@@ -251,6 +252,18 @@ void z_keyed_frame_end(ZScreen *s);
 #define Z_NET_POLL_MAX 12
 int z_net_collect_fds(struct pollfd *pfds, int max);
 void z_net_handle_ready(struct pollfd *pfds, int count);
+
+// --- Sensor/location event-loop integration (sensors.c) --------------------
+// The sensor/GPS streams share ONE persistent socket to zsysd (all of an app's
+// subscriptions ride it), so the loop hosts a single fd. z_sensor_poll_fd is that
+// fd (or -1 when no stream is open); z_sensor_handle_ready reads and dispatches
+// whatever samples arrived. See sensors.c.
+int z_sensor_poll_fd(void);
+void z_sensor_handle_ready(void);
+// Foreground gate: pause every sensor/location stream at the broker while the app
+// is backgrounded, resume on return (the "when-in-use" contract). app.c calls it
+// from the xdg lifecycle transition. See sensors.c.
+void z_sensor_set_paused(bool paused);
 
 // --- Navigator back-swipe (called from the app loop's pointer handling) ----
 // The interruptible edge-swipe (P33). app.c owns the pointer geometry and drives
@@ -299,11 +312,70 @@ void z_text_close(ZText *t);
 // advances, so measure must use the same weight the renderer will paint at.
 float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
                      float *ascent, float *descent);
+// The same, over the first `len` bytes of `s` (len < 0 = to the NUL). A line
+// breaker measures SLICES of a paragraph it does not own; without a length it
+// would have to copy each slice somewhere to NUL-terminate it, and any fixed
+// buffer used for that silently truncates — measuring SHORT, so the breaker
+// emits a line that overflows. Shaping has taken a length all along.
+float z_text_measure_n(ZText *t, const char *s, int len, float size,
+                       ZWeight weight, float *ascent, float *descent);
+
+// The app's shaping context (ZApp is private to app.c). Needed by builders that
+// have to measure at BUILD time rather than at layout time — WrapText, whose
+// whole job is to know how wide a run of prose is before the tree exists.
+ZText *z_app_text(ZApp *app);
 
 // --- Layout ---------------------------------------------------------------
 // Lay out `root` to fill a (w x h) surface, writing x/y/w/h into every node.
 // `text` is used to measure Text nodes.
 void z_layout(ZView root, float w, float h, ZText *text);
+
+// --- Line breaking --------------------------------------------------------
+// One wrapped line: a SLICE of the caller's string, never a copy (the renderer
+// takes a length, and Text("%.*s", len, s) prints one, so a paragraph costs no
+// allocation at all).
+typedef struct ZWrapLine {
+    const char *s;
+    int len;
+} ZWrapLine;
+
+// Greedy line breaking. `measure` returns the advance width of s[0..len) — the
+// caller passes the real shaper, a test passes a fixed-advance stub, which is
+// what makes the algorithm testable without a font. '\n' always breaks. A word
+// too long to fit alone is broken mid-word rather than allowed to overflow, so
+// the result NEVER exceeds max_w. Returns the number of lines written.
+//
+// `rest` (nullable) receives the first byte NOT consumed, so a caller that hit
+// max_lines can continue instead of silently dropping the tail. It points at the
+// terminating NUL when the whole string was broken. P44 shipped this without it
+// and lost everything past line 32 with no diagnostic — the same silent-degrade
+// it had just added a warning for elsewhere in the same commit.
+typedef float (*ZWrapMeasure)(void *ud, const char *s, int len);
+int z_wrap_lines(const char *text, float max_w, ZWrapMeasure measure, void *ud,
+                 ZWrapLine *out, int max_lines, const char **rest);
+
+// --- Hit testing ----------------------------------------------------------
+// The inverse of layout: which node owns a point. It lives beside layout.c's
+// arrange() because it is pure geometry over the frames arrange() wrote — the
+// app loop asks it a question, it does not run the loop — and because that is
+// what makes it unit-testable without a compositor connection (see
+// test/test_hit_test_clip.c).
+//
+// The rule it enforces: A NODE IS TAPPABLE EXACTLY WHERE IT IS PAINTED. The
+// renderer masks a subtree only at nodes that set `clip` (a Scroll viewport or
+// an explicit Clip()); everything else paints wherever layout put it, including
+// outside its parent. Hit testing therefore has to mask by the same clip stack
+// and nothing else. See the long comment at the implementation.
+typedef enum ZHitWant {
+    Z_HIT_TAP = 0,      // on_tap / on_tap_data
+    Z_HIT_SCROLL,       // a Z_K_SCROLL with a live ZScroll cell
+    Z_HIT_PAN,          // on_pan / on_pan_data
+    Z_HIT_LONG_PRESS,   // on_long_press
+} ZHitWant;
+
+// Deepest (front-most) node of the requested kind whose PAINTED area contains
+// (x, y). `root` must already have been laid out.
+ZView z_hit_test(ZView root, double x, double y, ZHitWant want);
 
 // --- Damage / reconcile ---------------------------------------------------
 // An integer pixel rect, half-open [x0,x1) x [y0,y1).
@@ -354,15 +426,48 @@ const ZImage *z_image_get(const char *path);
 // Used by the layout pass to aspect-fit an Image that was given no fixed size.
 bool z_image_intrinsic(const char *path, int *w, int *h);
 
+// Put an ALREADY-DECODED bitmap into the cache under `key`, taking ownership of
+// `px` (premultiplied ARGB, w*h; freed by the cache, and freed immediately if
+// this fails). `key` is any stable string that cannot collide with a file path.
+//
+// This is how pixels that did not come from a file reach the renderer: a window
+// snapshot arrives from the compositor as a memfd (z_snapshot, app.c), and
+// adopting it here means the whole existing Image path — layout aspect-fit,
+// Cover, the source-over blit — works on it unchanged, with no new node kind.
+// Re-adopting the same key REPLACES the bitmap rather than adding an entry.
+bool z_image_adopt(const char *key, int w, int h, uint32_t *px);
+
 // --- Render ---------------------------------------------------------------
 // A 32-bit ARGB (little-endian: B,G,R,A bytes) software target. clip_* is the
 // half-open region paint is restricted to (set to the full canvas for a full
 // repaint, or to a damage rect for partial repaint).
+
+// One entry of the ROUNDED clip stack (Clip()). The rectangular clip_* region
+// above bounds which pixels are even visited; this masks the corners inside it,
+// as antialiased coverage rather than a hard in/out test.
+typedef struct ZRoundClip {
+    int x0, y0, x1, y1;
+    float r;
+} ZRoundClip;
+
+// Depth of nested Clip()s a canvas can hold. A rounded clip only nests when one
+// masked shape sits inside another, and the deepest chain the system UI builds
+// is three (a Control Center slab inside a rounded sheet inside a scrolled
+// card), so four carries a level of headroom. Past this the extra levels are
+// ignored rather than overflowing: the shape degrades to a squarer mask instead
+// of corrupting memory — and render.c says so on stderr, once per process,
+// because a soft-fail nobody can see in a screenshot is otherwise diagnosed as
+// the wrong radius token. z_hit_test() applies the same cap so touch and paint
+// agree even there.
+#define Z_MAX_ROUND_CLIPS 4
+
 typedef struct ZCanvas {
     uint32_t *pixels;
     int width, height;
     int stride_px;       // pixels per row
     int clip_x0, clip_y0, clip_x1, clip_y1;
+    ZRoundClip rclip[Z_MAX_ROUND_CLIPS];
+    int n_rclip;         // 0 on the common path: no rounded clip is active
     ZText *text;
 } ZCanvas;
 
@@ -370,6 +475,11 @@ typedef struct ZCanvas {
 void z_canvas_set_clip(ZCanvas *canvas, int x0, int y0, int x1, int y1);
 // Clear the current clip region to fully transparent.
 void z_canvas_clear_clip(ZCanvas *canvas);
+
+// Coverage in [0,1] that the active rounded clips leave at pixel (x,y) — 1.0
+// when none is active (checked with a single int compare, so the ordinary path
+// pays nothing). Every painter multiplies its own coverage by this.
+float z_canvas_round_cov(const ZCanvas *canvas, int x, int y);
 
 // Paint the laid-out tree into the canvas (within its current clip).
 void z_render(ZCanvas *canvas, ZView root);

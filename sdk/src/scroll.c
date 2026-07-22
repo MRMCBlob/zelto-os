@@ -38,6 +38,17 @@ static ZScroll *next_scroll_cell(ZApp *app) {
                 sc->offset = z_rubber_band(-px, 400.0f);
                 sc->dragging = true;   // hold the over-pull so layout won't clamp it
             }
+            // ZELTO_SCROLL_TO=<px> parks the first scroll cell at an ordinary
+            // scroll position, clamped by layout like any other. The over-pull
+            // hook above cannot do this job: it rubber-bands, so it saturates
+            // after a few hundred px and the BOTTOM of a long screen (the last
+            // group of a settings list, the final row of a form) has no way to be
+            // photographed at all. Env-gated, so zero production effect.
+            const char *to = getenv("ZELTO_SCROLL_TO");
+            if (to && to[0]) {
+                float px = (float)atof(to);
+                sc->raw = sc->offset = px > 0.0f ? px : 0.0f;
+            }
         }
         if (s->scroll_count <= i) {
             s->scroll_count = i + 1;
@@ -164,7 +175,10 @@ ZView z_scroll_view(ZApp *app, const ZScrollOpts *opts) {
 // --- List (virtualised) ---------------------------------------------------
 ZView z_list(ZApp *app, const ZListOpts *opts) {
     ZScroll *sc = next_scroll_cell(app);
-    float rh = opts->row_height > 1.0f ? opts->row_height : 44.0f;
+    // Z_ROW_H, not 44: 44 is Apple's row height in POINTS, and this number is in
+    // screen units (see Z_PT in ui.h — the same confusion P43 found in the type
+    // scale and P44 in the safe areas).
+    float rh = opts->row_height > 1.0f ? opts->row_height : (float)Z_ROW_H;
     int count = opts->count < 0 ? 0 : opts->count;
 
     ZView scroll = new_node(Z_K_SCROLL);

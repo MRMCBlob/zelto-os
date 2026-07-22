@@ -4,6 +4,7 @@
 // the MVP — it needs no client GPU context, which is robust under QEMU's virtio
 // software path. See docs/contributing/sdk-internals.md.
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "internal.h"
@@ -105,6 +106,31 @@ static float corner_coverage(int x, int y, int rx0, int ry0, int rx1, int ry1,
     return d + 0.5f;
 }
 
+// The rounded-clip mask (Clip()). Each active entry contributes the coverage its
+// own rounded rect leaves at this pixel, and they multiply — so nesting a clipped
+// card inside a clipped viewport masks with the intersection, which is what a
+// clip stack means. corner_coverage returns 1.0 anywhere off the corner arcs, so
+// the straight interior of a clip costs one compare per pixel.
+//
+// Note this only refines a mask the RECTANGULAR clip has already bounded: paint()
+// intersects the canvas clip with the same frame before descending, so anything
+// wholly outside a Clip is never iterated at all. This function exists for the
+// corners, where "outside" is a fraction rather than a yes/no.
+float z_canvas_round_cov(const ZCanvas *c, int x, int y) {
+    if (c->n_rclip == 0) {
+        return 1.0f;
+    }
+    float cov = 1.0f;
+    for (int i = 0; i < c->n_rclip; i++) {
+        const ZRoundClip *rc = &c->rclip[i];
+        cov *= corner_coverage(x, y, rc->x0, rc->y0, rc->x1, rc->y1, rc->r);
+        if (cov <= 0.0f) {
+            return 0.0f;
+        }
+    }
+    return cov;
+}
+
 static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
                             float radius, ZColor col) {
     // Rect geometry (used for the rounded-corner test) — independent of the clip.
@@ -133,18 +159,21 @@ static void fill_round_rect(ZCanvas *c, float fx, float fy, float fw, float fh,
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) {
             uint32_t sa = base_a;
+            // The node's own corner, and any rounded Clip() it sits inside, are
+            // both just coverage — multiply them and feather the fill's alpha by
+            // the product, so a rounded surface's edge is smooth rather than
+            // stepped and a clipped one is cut to the shape of its container.
+            float cov = z_canvas_round_cov(c, x, y);
             if (r > 0.5f) {
-                float cov = corner_coverage(x, y, rx0, ry0, rx1, ry1, r);
-                if (cov <= 0.0f) {
+                cov *= corner_coverage(x, y, rx0, ry0, rx1, ry1, r);
+            }
+            if (cov <= 0.0f) {
+                continue;
+            }
+            if (cov < 1.0f) {
+                sa = (uint32_t)((float)base_a * cov + 0.5f);
+                if (sa == 0) {
                     continue;
-                }
-                if (cov < 1.0f) {
-                    // The corner feathers the fill's own alpha, so a rounded
-                    // surface's edge is smooth rather than stepped.
-                    sa = (uint32_t)((float)base_a * cov + 0.5f);
-                    if (sa == 0) {
-                        continue;
-                    }
                 }
             }
             uint32_t *dst = &c->pixels[y * c->stride_px + x];
@@ -260,7 +289,8 @@ static void blit_image(ZCanvas *c, ZView n, float alpha) {
         for (int x = x0; x < x1; x++) {
             // The same continuous corner the fills use — an app icon masked to its
             // squircle here reads as the same object as a card drawn beside it.
-            float cov = corner_coverage(x, y, rx0, ry0, rx1, ry1, rr);
+            float cov = corner_coverage(x, y, rx0, ry0, rx1, ry1, rr) *
+                        z_canvas_round_cov(c, x, y);
             if (cov <= 0.0f) {
                 continue;
             }
@@ -369,6 +399,7 @@ static void paint_shadow(ZCanvas *c, ZView n, float alpha) {
             }
             float t = d < 0.0f ? 0.0f : d / e;
             float cov = 1.0f - t * t * (3.0f - 2.0f * t);   // smoothstep falloff
+            cov *= z_canvas_round_cov(c, x, y);
             uint32_t sa = (uint32_t)((float)sh.a * cov + 0.5f);
             if (sa == 0) {
                 continue;
@@ -413,6 +444,7 @@ static void blend_coverage(ZCanvas *c, int x, int y, ZColor col, float cov) {
         y >= c->clip_y1) {
         return;
     }
+    cov *= z_canvas_round_cov(c, x, y);
     uint32_t a = (uint32_t)((float)col.a * cov + 0.5f);
     if (a == 0) {
         return;
@@ -493,10 +525,26 @@ static void paint(ZCanvas *canvas, ZView n, float alpha) {
         return;
     }
 
-    // A clipping node (scroll viewport) intersects the active clip with its frame
-    // for its subtree, then restores it. Skip entirely if nothing is visible.
+    // The two things a node paints OUTSIDE its own frame go first, before any
+    // clip of its own is installed. A shadow is a penumbra around the frame and a
+    // focus ring is a plate just beyond it, so masking them to the frame would
+    // erase them outright — which is exactly what happened the moment Clip()
+    // existed and someone wrote Shadow(Z_ELEV_2, Clip(r, card)). They are still
+    // bounded by every ANCESTOR clip, which is the correct containment: a card
+    // scrolled to the edge of a viewport must not cast a shadow past it.
+    if (n->elevation > 0.5f) {
+        paint_shadow(canvas, n, a);
+    }
+    if (n->focused && (n->has_bg || n->kind == Z_K_RECT)) {
+        stroke_focus_ring(canvas, n, a);
+    }
+
+    // A clipping node (scroll viewport, or an explicit Clip()) intersects the
+    // active clip with its frame for its subtree, then restores it. Skip entirely
+    // if nothing is visible.
     int save_x0 = canvas->clip_x0, save_y0 = canvas->clip_y0;
     int save_x1 = canvas->clip_x1, save_y1 = canvas->clip_y1;
+    int save_nrc = canvas->n_rclip;
     if (n->clip) {
         // Intersect with the active clip (which may already be a damage rect),
         // never widen it — otherwise a partial repaint would paint outside its
@@ -516,14 +564,48 @@ static void paint(ZCanvas *canvas, ZView n, float alpha) {
             canvas->clip_y1 = save_y1;
             return;
         }
+        // Clip(radius): push the ROUNDED half of the mask on top of the
+        // rectangular one just set. Its geometry is the node's own frame, NOT the
+        // intersected rect — a clip corner stays where the shape's corner is even
+        // when a damage rect or an outer viewport has cropped the region being
+        // painted, which is what keeps a partial repaint identical to a full one.
+        if (n->clip_radius > 0.5f && canvas->n_rclip >= Z_MAX_ROUND_CLIPS) {
+            // The stack is full: this level's ROUNDED half is dropped and the
+            // rectangular clip above still applies, so the shape silently gets
+            // squarer corners. Say so, once per process — a soft-fail nobody can
+            // see in a screenshot is the kind of thing that gets diagnosed as
+            // "the radius token must be wrong". Not fatal: a squarer corner is a
+            // cosmetic loss, and aborting a UI process over one is worse.
+            //
+            // The bound is not arbitrary. A rounded clip only nests when one
+            // masked shape sits inside another, and the deepest chain the system
+            // UI builds is three — a Control Center slab inside a rounded sheet
+            // inside a scrolled card. Four leaves a level of headroom; a tree
+            // that needs five is describing a shape nobody can perceive, since
+            // each level only refines corners the level above already cut.
+            static bool warned;
+            if (!warned) {
+                warned = true;
+                fprintf(stderr,
+                        "[zelto] Clip(): more than %d nested rounded clips; the "
+                        "innermost corner mask is ignored (corners will be "
+                        "square). Flatten the nesting or raise "
+                        "Z_MAX_ROUND_CLIPS.\n",
+                        Z_MAX_ROUND_CLIPS);
+            }
+        }
+        if (n->clip_radius > 0.5f && canvas->n_rclip < Z_MAX_ROUND_CLIPS) {
+            int fx0 = (int)(n->x + 0.5f), fy0 = (int)(n->y + 0.5f);
+            int fx1 = (int)(n->x + n->w + 0.5f), fy1 = (int)(n->y + n->h + 0.5f);
+            float r = n->clip_radius;
+            float hw = (float)(fx1 - fx0) / 2.0f, hh = (float)(fy1 - fy0) / 2.0f;
+            if (r > hw) { r = hw; }
+            if (r > hh) { r = hh; }
+            ZRoundClip *rc = &canvas->rclip[canvas->n_rclip++];
+            rc->x0 = fx0; rc->y0 = fy0; rc->x1 = fx1; rc->y1 = fy1; rc->r = r;
+        }
     }
 
-    if (n->elevation > 0.5f) {
-        paint_shadow(canvas, n, a);
-    }
-    if (n->focused && (n->has_bg || n->kind == Z_K_RECT)) {
-        stroke_focus_ring(canvas, n, a);
-    }
     if (n->has_bg) {
         fill_round_rect(canvas, n->x, n->y, n->w, n->h, n->radius,
                         apply_alpha(n->bg, a));
@@ -578,6 +660,7 @@ static void paint(ZCanvas *canvas, ZView n, float alpha) {
         canvas->clip_y0 = save_y0;
         canvas->clip_x1 = save_x1;
         canvas->clip_y1 = save_y1;
+        canvas->n_rclip = save_nrc;
     }
 }
 

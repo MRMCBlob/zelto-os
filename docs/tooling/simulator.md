@@ -45,7 +45,18 @@ SKIP_BUILD=1 meta/run-sim.sh
 
 # Also auto-launch an app (name of a built binary, or a full path):
 SIM_APP=zelto-notepad meta/run-sim.sh
+
+# Launch an app N seconds INTO the run, not during boot:
+SIM_LATE_APP="zelto-cards 6" meta/run-sim.sh
 ```
+
+`SIM_APP` and `SIM_EXTRA` both spawn while the shell is still coming up, which is right
+for "have this on screen" and useless for "make something happen once the system has
+settled" — the window maps before the state exists. `SIM_LATE_APP` is a focus change at a
+chosen moment, which is how a test reaches an edge that only fires on one. (The App
+Switcher's window snapshot is taken at the active→inactive edge, so proving the lock
+screen suppresses it needs that edge to land *after* the screen has locked — see
+`test/test_capture_lock_suppression.sh`.)
 
 The host build lives in `build-host/` (native meson build; the SDK needs
 `libsqlite3-dev`). The compositor draws with the **pixman** software renderer by default

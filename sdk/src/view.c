@@ -146,6 +146,122 @@ ZView z_text(const char *fmt, ...) {
     return n;
 }
 
+// --- WrapText -------------------------------------------------------------
+// Prose that fits its column. The split happens HERE, at build time, with the
+// same shaper the renderer will use — see the long note above z_wrap_lines() in
+// layout.c for why this is a builder and not a layout pass.
+//
+// Each line is a Text node over a SLICE of the caller's string ("%.*s"), so a
+// paragraph costs one arena copy per line and no allocation for the split.
+typedef struct WrapUD {
+    ZText *text;
+    float size;
+    ZWeight weight;
+} WrapUD;
+
+// Measure a SLICE. No buffer: z_text_measure_n shapes exactly `len` bytes of the
+// caller's string. The first version of this copied each slice into a 512-byte
+// stack buffer to NUL-terminate it and CLAMPED to the buffer on overflow, which
+// is the worst possible failure for a line breaker — a truncated slice measures
+// SHORT, so the breaker decides it fits and emits a line that runs off the
+// column. That is the exact bug WrapText exists to prevent, reintroduced inside
+// WrapText's own measurement, and silent.
+//
+// When the font failed to open there is no shaper at all. Returning 0 here would
+// mean "nothing is ever too wide", so the whole paragraph would come back as one
+// line and overflow — see the fallback in z_text_measure_n, which estimates from
+// the byte count instead so the wrap still breaks at roughly the right place.
+static float wrap_measure(void *ud, const char *s, int len) {
+    WrapUD *w = ud;
+    if (len <= 0) {
+        return 0.0f;
+    }
+    return z_text_measure_n(w->text, s, len, w->size, w->weight, NULL, NULL);
+}
+
+// One group of at most Z_MAX_CHILDREN lines.
+static ZView wrap_group(const ZWrapLine *lines, int n, const ZWrapOpts *opts,
+                        float size) {
+    ZStackOpts col = {.spacing = opts->line_gap, .align = Z_ALIGN_LEADING};
+    for (int i = 0; i < n; i++) {
+        ZView t = z_text("%.*s", lines[i].len, lines[i].s);
+        t->font_size = size;
+        t->weight = opts->weight;
+        if (opts->color.a) {
+            t->fg = opts->color;
+        }
+        col.children[i] = t;
+    }
+    return z_stack(Z_AXIS_VERTICAL, &col);
+}
+
+// THE LINE CAP IS AN ARRAY SIZE, NOT A FACT ABOUT PROSE, so P45 removed it
+// rather than reporting it. P44 capped at Z_MAX_CHILDREN and dropped the rest
+// with no diagnostic; the brief that found it asked whether the right answer was
+// "cap and warn" or "hard error". It is neither. A hard error kills the Store
+// because a package description is long — the toolkit does not get to abort the
+// program over content it was handed. And a warning still loses the text; the
+// user, who cannot read stderr, sees a paragraph that simply stops.
+//
+// The 32 came from ZStackOpts.children[], so the fix is structural: fill a
+// group, and if the breaker reports anything left, start another and stack the
+// groups. A vertical stack of vertical stacks lays out identically to a flat one
+// as long as the outer spacing is the same line_gap, which it is. That buys
+// 32x32 = 1024 lines — past any prose a phone screen can hold — and only THERE,
+// where it really is a caller error rather than an implementation limit, does it
+// warn and stop.
+ZView z_text_wrap(ZApp *app, const char *s, const ZWrapOpts *opts) {
+    float size = opts->size > 0 ? (float)opts->size : (float)Z_FONT_BODY;
+    WrapUD ud = {z_app_text(app), size, opts->weight};
+
+    ZWrapLine lines[Z_MAX_CHILDREN];
+    ZStackOpts outer = {.spacing = opts->line_gap, .align = Z_ALIGN_LEADING};
+    int n_groups = 0;
+    ZView first_line = NULL;
+    int total = 0;
+
+    const char *p = s ? s : "";
+    while (*p && n_groups < Z_MAX_CHILDREN) {
+        const char *rest = p;
+        int n = z_wrap_lines(p, opts->width, wrap_measure, &ud, lines,
+                             Z_MAX_CHILDREN, &rest);
+        if (n <= 0 || rest == p) {
+            break;                   // no progress: refuse to spin
+        }
+        total += n;
+        if (n == 1 && n_groups == 0 && !*rest) {
+            first_line = wrap_group(lines, 1, opts, size)->children[0];
+        }
+        outer.children[n_groups++] = wrap_group(lines, n, opts, size);
+        p = rest;
+    }
+    if (*p) {
+        // 1024 lines of prose in one WrapText. Not a limit anyone reaches by
+        // accident, so say so instead of quietly ending the paragraph.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr,
+                    "zelto: WrapText: prose exceeds %d lines; the remainder is "
+                    "not drawn. Put prose this long in a Scroll, one WrapText "
+                    "per block.\n",
+                    Z_MAX_CHILDREN * Z_MAX_CHILDREN);
+        }
+    }
+    if (total == 0) {
+        return z_stack(Z_AXIS_VERTICAL, &outer);
+    }
+    // One line: return it bare, so the common case lays out exactly as a plain
+    // Text does (a one-child stack is not the same node for a parent's measure).
+    if (first_line) {
+        return first_line;
+    }
+    if (n_groups == 1) {
+        return outer.children[0];
+    }
+    return z_stack(Z_AXIS_VERTICAL, &outer);
+}
+
 ZView z_image(const char *path) {
     ZView n = node_new(Z_K_IMAGE);
     n->img_path = path ? z_arena_strdup(z_build_arena, path) : NULL;
@@ -394,6 +510,19 @@ ZView CornerRadius(float radius, ZView view) {
     return view;
 }
 
+// Clip(): mask the SUBTREE to this node's frame, rounded. `clip` is the same flag
+// a scroll viewport sets (it bounds which pixels are visited); clip_radius is the
+// corner mask the renderer then applies inside it. Deliberately NOT the same field
+// as `radius`: radius is what this node paints for itself, clip_radius is what it
+// imposes on its children, and a node routinely wants one without the other — a
+// slab that is a rounded surface AND clips its fill sets both, a bare clipping
+// frame with no paint of its own sets only the second.
+ZView Clip(float radius, ZView view) {
+    view->clip = true;
+    view->clip_radius = radius;
+    return view;
+}
+
 ZView Cover(ZView view) {
     // Aspect-fill an Image: scale so the frame is fully covered, center-cropping
     // the overflow (vs the default aspect-fit, which letterboxes). Only meaningful
@@ -522,11 +651,15 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     // whose 1px padding lets the ring show around the material inside it. (The
     // modifiers mutate the node they are given rather than wrapping it, so the ring
     // needs a real second node — hence the depth stack.)
+    // Z_RADIUS_WIDGET, not Z_RADIUS_PANEL: a widget card must read ROUNDER than
+    // the app icons beside it on the same home screen, and at PANEL's 22 units
+    // against the icon's 23.3 it read very slightly squarer. See the ladder note
+    // in gfx.h for the measurement.
     ZView fill = Background(Z_COLOR_MATERIAL_REGULAR,
-        CornerRadius(Z_RADIUS_PANEL - 1.0f,
+        CornerRadius(Z_RADIUS_WIDGET - 1.0f,
             Padding(17.0f, z_stack(Z_AXIS_VERTICAL, &col))));
     return Shadow(Z_ELEV_2,
         Background(Z_COLOR_MATERIAL_EDGE,
-            CornerRadius(Z_RADIUS_PANEL,
+            CornerRadius(Z_RADIUS_WIDGET,
                 ZStack(Fill(fill), .padding = 1.0f))));
 }

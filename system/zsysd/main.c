@@ -74,6 +74,7 @@ typedef struct Manifest {
     char share_targets[256];  // CSV of accepted MIME globs ("text/plain,image/*")
     char links[128];          // CSV of handled URL schemes ("zelto,myapp")
     char exec[256];           // launch command (path + args) for launch-if-needed
+    bool no_snapshot;         // `no_snapshot=1`: never photograph this window
 } Manifest;
 static Manifest g_manifests[MAX_MANIFESTS];
 static int g_n_manifests;
@@ -123,15 +124,25 @@ typedef struct Grant {
 } Grant;
 static Grant g_grants[MAX_GRANTS];
 
-// --- notification store + shade sink ---------------------------------------
+// --- notification store + sinks --------------------------------------------
 // zsysd's third duty: a notification store + router. A perm-gated notify_post
 // assigns a monotonic global id, stores the notification, and pushes a
-// notify_show to the shade sink. The shade (a libzelto app that sent
-// notify_subscribe) is recorded by its ctrl fd; only one sink (last wins). The
-// shade reports a body tap (notify_tap -> drop the banner; it routed the deep
-// link itself via z_open_url) or an action tap (notify_action -> route to the
-// poster's mailbox, then drop). Cancel removes a notification by id. The store
-// is in-memory only (lost on reboot); no history/grouping (heads-up only).
+// notify_show to every subscribed SINK. A sink is a libzelto surface that sent
+// notify_subscribe, recorded by its ctrl fd. A sink reports a body tap
+// (notify_tap -> drop the banner; it routed the deep link itself via z_open_url)
+// or an action tap (notify_action -> route to the poster's mailbox, then drop).
+// Cancel removes a notification by id. The store is in-memory only (lost on
+// reboot); no history/grouping (heads-up only).
+//
+// WHY A SET AND NOT LAST-WINS. This was one fd — "the shade sink" — because for
+// P10 the shade was the only surface that displayed notifications. The lock
+// screen shows them too (P41), and it is a SEPARATE process, so last-wins made
+// the two surfaces silently exclusive: whichever subscribed later took the sink
+// and the other never saw another notification again. Since init starts the lock
+// last, that would have been the shade — the heads-up banner, gone. A set fans
+// out to both, exactly like the settings-subscriber set below, and a drop of a
+// notification reaches every surface showing it. Any sink may report a tap; the
+// notification is dropped once and the hide is fanned out to all of them.
 typedef struct Notification {
     bool used;
     int64_t id;
@@ -145,7 +156,29 @@ typedef struct Notification {
 } Notification;
 static Notification g_notifs[MAX_NOTIFS];
 static int64_t g_next_notif_id = 1;
-static int g_shade_fd = -1;   // ctrl fd of the subscribed shade (-1 = none)
+static int g_sink_fds[MAX_CLIENTS];   // ctrl fds of the subscribed sinks
+static int g_n_sinks;
+
+// Register / drop a notification sink. Subscribing twice on one fd is a no-op, so
+// a surface that re-subscribes after a rebuild does not get double pushes.
+static void sink_subscribe_fd(int fd) {
+    for (int i = 0; i < g_n_sinks; i++) {
+        if (g_sink_fds[i] == fd) {
+            return;
+        }
+    }
+    if (g_n_sinks < MAX_CLIENTS) {
+        g_sink_fds[g_n_sinks++] = fd;
+    }
+}
+static void sink_unsubscribe_fd(int fd) {
+    for (int i = 0; i < g_n_sinks; i++) {
+        if (g_sink_fds[i] == fd) {
+            g_sink_fds[i] = g_sink_fds[--g_n_sinks];
+            return;
+        }
+    }
+}
 
 // --- settings store (zsysd's 4th duty) -------------------------------------
 // A single source of truth for system toggles. Values are strings (bools as
@@ -178,7 +211,7 @@ static Setting g_settings[MAX_SETTINGS];
 
 // Subscriber ctrl fds (the persistent connections that asked for settings_changed
 // pushes). A SET, not last-wins: several apps observe simultaneously. Cleared per
-// fd on its disconnect in the read loop (mirroring g_shade_fd).
+// fd on its disconnect in the read loop (mirroring the notification sink set).
 static int g_settings_subs[MAX_CLIENTS];
 static int g_n_settings_subs;
 
@@ -296,6 +329,8 @@ static void scan_manifest_dir(const char *dir) {
                 snprintf(m.links, sizeof(m.links), "%s", v);
             } else if (strcmp(k, "exec") == 0) {
                 snprintf(m.exec, sizeof(m.exec), "%s", v);
+            } else if (strcmp(k, "no_snapshot") == 0) {
+                m.no_snapshot = atoi(v) != 0;
             }
         }
         fclose(f);
@@ -629,7 +664,14 @@ static void deliver_or_queue(const char *app_id, const char *kind,
 // Show the System-UI chooser over the candidate app_ids and block until the
 // user picks one. Mirrors show_consent's fork/exec + exit-code IPC: the chooser
 // exits with the 1-based index of the pick (0 = cancel / exec failure).
-static int run_chooser(char ids[][96], int n) {
+//
+// `mime` / `payload` describe WHAT is being shared, so the sheet can preview it
+// (both may be ""). They go through the ENVIRONMENT of the forked child, not
+// argv: argv is the candidate list and its indices ARE the IPC — the exit code
+// means "argv[N]" — so prepending anything to it would introduce an offset both
+// sides must agree on, and a disagreement delivers the share to the wrong app.
+static int run_chooser(char ids[][96], int n, const char *mime,
+                       const char *payload) {
     char *argv[2 + MAX_MANIFESTS];
     argv[0] = (char *)"zelto-chooser";
     for (int i = 0; i < n; i++) {
@@ -641,6 +683,8 @@ static int run_chooser(char ids[][96], int n) {
         return 0;
     }
     if (pid == 0) {
+        setenv("ZELTO_SHARE_MIME", mime ? mime : "", 1);
+        setenv("ZELTO_SHARE_PAYLOAD", payload ? payload : "", 1);
         execv(CHOOSER_BIN, argv);
         _exit(0);
     }
@@ -675,7 +719,7 @@ static void handle_intent_resolve(const char *line) {
         }
         // Share always shows the sheet (even a single candidate) — that chooser
         // is the user's confirmation of where the content goes.
-        int pick = run_chooser(cands, n);
+        int pick = run_chooser(cands, n, mime, payload);
         if (pick < 1 || pick > n) {
             fprintf(stderr, "[zsysd] share cancelled (pick=%d)\n", pick);
             return;
@@ -699,7 +743,8 @@ static void handle_intent_resolve(const char *line) {
         // A single handler skips the chooser (resolve directly by scheme).
         int idx = 1;
         if (n > 1) {
-            idx = run_chooser(cands, n);
+            // A deep link has no payload to preview — the URL is the subject.
+            idx = run_chooser(cands, n, "", url);
             if (idx < 1 || idx > n) {
                 fprintf(stderr, "[zsysd] open_url cancelled (pick=%d)\n", idx);
                 return;
@@ -748,15 +793,15 @@ static Notification *notif_find(int64_t id) {
     return NULL;
 }
 
-// Remove a notification from the store and hide its banner on the shade.
+// Remove a notification from the store and hide it on every sink.
 static void notif_drop(int64_t id) {
     Notification *n = notif_find(id);
     if (!n) {
         return;
     }
     n->used = false;
-    if (g_shade_fd >= 0) {
-        send_notify_hide(g_shade_fd, id);
+    for (int i = 0; i < g_n_sinks; i++) {
+        send_notify_hide(g_sink_fds[i], id);
     }
     publish_notif_count();
 }
@@ -764,7 +809,7 @@ static void notif_drop(int64_t id) {
 // notify_post: perm-gate (the consent prompt blocks here exactly like a
 // perm_request — the posting app waits synchronously on its transient conn),
 // assign a global id, store it, reply {"id":"N"} on this connection, and push a
-// notify_show to the shade sink. A denial replies {"id":"-1"}.
+// notify_show to every sink. A denial replies {"id":"-1"}.
 static void handle_notify_post(int fd, const char *line) {
     char app_id[96] = {0}, title[128] = {0}, body[192] = {0}, channel[64] = {0},
          tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0};
@@ -819,10 +864,10 @@ static void handle_notify_post(int fd, const char *line) {
         ssize_t w = write(fd, reply, (size_t)m);
         (void)w;
     }
-    fprintf(stderr, "[zsysd] notify_post app=%s id=%lld -> shade %s\n", app_id,
-            (long long)n->id, g_shade_fd >= 0 ? "yes" : "(no sink)");
-    if (g_shade_fd >= 0) {
-        send_notify_show(g_shade_fd, n);
+    fprintf(stderr, "[zsysd] notify_post app=%s id=%lld -> %d sink(s)\n", app_id,
+            (long long)n->id, g_n_sinks);
+    for (int i = 0; i < g_n_sinks; i++) {
+        send_notify_show(g_sink_fds[i], n);
     }
     publish_notif_count();
 }
@@ -1087,7 +1132,7 @@ static bool read_sysfs_battery(int *pct_out, bool *charging_out) {
 }
 
 // Store + push a notification straight from the OS (no app, no perm gate — the
-// system is the poster). Reuses the notify store + shade sink. Used for the
+// system is the poster). Reuses the notify store + sinks. Used for the
 // low-battery warning.
 static void post_system_notification(const char *title, const char *body) {
     Notification *n = NULL;
@@ -1109,8 +1154,8 @@ static void post_system_notification(const char *title, const char *body) {
     n->action_id[0] = n->action_title[0] = '\0';
     fprintf(stderr, "[zsysd] system notification id=%lld: %s\n",
             (long long)n->id, title);
-    if (g_shade_fd >= 0) {
-        send_notify_show(g_shade_fd, n);
+    for (int i = 0; i < g_n_sinks; i++) {
+        send_notify_show(g_sink_fds[i], n);
     }
     publish_notif_count();
 }
@@ -1216,6 +1261,279 @@ static void battery_init(void) {
             g_batt_tick_ms, g_batt_active);
 }
 
+// --- sensor + location source (zsysd's 6th duty, P38) ----------------------
+// The device sensors (accelerometer, gyroscope, magnetometer, ...) and the GPS
+// are streamed to apps that subscribe over a normal client connection: each
+// subscription is keyed by that connection's fd, carries a sensor type and a
+// refresh rate (clamped to [1,60] Hz — 60 is display-aligned, and the sensible
+// cap for a software-rendered sim), and a per-subscription deadline. sensor_tick
+// pushes one sensor_sample / location_update line per subscription when its
+// deadline passes, exactly like the battery tick funnels through settings_apply,
+// but addressed to a single subscriber fd rather than fanned out.
+//
+// The values are SIM-scriptable: a real device port fills them from a HAL, but
+// here they come from ZELTO_SIM_* env (e.g. ZELTO_SIM_LOCATION="52.52,13.40",
+// ZELTO_SIM_ORIENTATION="az,pitch,roll"), so the harness can `set location`
+// deterministically. Streaming a sensor is gated by the `sensors` grant and
+// location by the `location` grant — the same cached decisions the permission
+// broker already owns (decide()/grant_find), so no new consent path.
+//
+// All numeric fields travel as QUOTED strings ("v0":"0.010000"), because the
+// hand-rolled json_get on both ends only parses quoted string values; the client
+// re-parses them with strtod/atoi (the same way ids travel as quoted strings).
+#define MAX_SENSOR_SUBS 32
+#define SENSOR_RATE_MIN 1
+#define SENSOR_RATE_MAX 60
+
+typedef struct SensorSub {
+    bool used;
+    int fd;                // subscriber connection
+    char app_id[96];
+    int kind;              // 0 = sensor, 1 = location
+    char type[24];         // sensor wire name (kind 0 only)
+    int rate_hz;           // clamped [1,60]
+    int64_t next_ms;       // monotonic ms of this subscription's next sample
+} SensorSub;
+static SensorSub g_sensor_subs[MAX_SENSOR_SUBS];
+
+static float env_f(const char *name, float dflt) {
+    const char *s = getenv(name);
+    return (s && s[0]) ? (float)atof(s) : dflt;
+}
+
+// Parse a "x,y,z" env (or its default) into three floats (missing -> 0).
+static void env_vec3(const char *name, const char *dflt, float out[3]) {
+    const char *s = getenv(name);
+    if (!s || !s[0]) {
+        s = dflt;
+    }
+    out[0] = out[1] = out[2] = 0.0f;
+    sscanf(s, "%f,%f,%f", &out[0], &out[1], &out[2]);
+}
+
+// Synthesize one sensor reading for `type` at time `t` (ms). Writes up to three
+// values into v[] and returns the value count (0 = unknown/absent sensor). The
+// values are static per env (deterministic for screenshots); an app proves a
+// stream's rate by counting samples over time, not by watching a value wobble.
+static int sensor_synth(const char *type, int64_t t, float v[3], int *accuracy) {
+    *accuracy = 3;   // SENSOR_STATUS_ACCURACY_HIGH
+    v[0] = v[1] = v[2] = 0.0f;
+    if (strcmp(type, "accelerometer") == 0 || strcmp(type, "gravity") == 0) {
+        env_vec3("ZELTO_SIM_ACCEL", "0,0,9.81", v);
+        return 3;
+    }
+    if (strcmp(type, "linear_acceleration") == 0) {
+        return 3;   // at rest: no linear acceleration
+    }
+    if (strcmp(type, "gyroscope") == 0) {
+        env_vec3("ZELTO_SIM_GYRO", "0,0,0", v);
+        return 3;
+    }
+    if (strcmp(type, "magnetometer") == 0) {
+        env_vec3("ZELTO_SIM_MAG", "0,-30,-40", v);
+        return 3;
+    }
+    if (strcmp(type, "orientation") == 0 || strcmp(type, "rotation_vector") == 0) {
+        env_vec3("ZELTO_SIM_ORIENTATION", "0,0,0", v);
+        return 3;
+    }
+    if (strcmp(type, "light") == 0) {
+        v[0] = env_f("ZELTO_SIM_LIGHT", 300.0f);
+        return 1;
+    }
+    if (strcmp(type, "proximity") == 0) {
+        v[0] = env_f("ZELTO_SIM_PROXIMITY", 5.0f);
+        return 1;
+    }
+    if (strcmp(type, "pressure") == 0) {
+        v[0] = env_f("ZELTO_SIM_PRESSURE", 1013.25f);
+        return 1;
+    }
+    if (strcmp(type, "step_counter") == 0) {
+        v[0] = env_f("ZELTO_SIM_STEPS", 0.0f) + (float)(t / 1000);   // ~1 step/s
+        return 1;
+    }
+    return 0;   // unknown sensor
+}
+
+// Fill a location reading from ZELTO_SIM_LOCATION (+ optional altitude/speed/
+// bearing). Returns false if no simulated location is configured.
+static bool location_synth(double *lat, double *lng, float *acc, float *alt,
+                           float *speed, float *bearing) {
+    const char *s = getenv("ZELTO_SIM_LOCATION");
+    if (!s || !s[0]) {
+        s = "52.5200,13.4050";   // a default fix so location demos have data
+    }
+    double la = 0, ln = 0;
+    if (sscanf(s, "%lf,%lf", &la, &ln) < 2) {
+        return false;
+    }
+    *lat = la;
+    *lng = ln;
+    *acc = env_f("ZELTO_SIM_LOC_ACCURACY", 12.0f);
+    *alt = env_f("ZELTO_SIM_ALTITUDE", 34.0f);
+    *speed = env_f("ZELTO_SIM_SPEED", 0.0f);
+    *bearing = env_f("ZELTO_SIM_BEARING", 0.0f);
+    return true;
+}
+
+static int clamp_rate(int hz) {
+    if (hz < SENSOR_RATE_MIN) {
+        return SENSOR_RATE_MIN;
+    }
+    if (hz > SENSOR_RATE_MAX) {
+        return SENSOR_RATE_MAX;
+    }
+    return hz;
+}
+
+// Register (or re-arm) a subscription on this fd. kind 0 keys on fd+type; kind 1
+// (location) keys on fd. Re-subscribing updates the rate in place.
+static void sensor_sub_add(int fd, const char *app_id, int kind,
+                           const char *type, int rate_hz) {
+    SensorSub *slot = NULL;
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        SensorSub *s = &g_sensor_subs[i];
+        if (s->used && s->fd == fd && s->kind == kind &&
+            (kind != 0 || strcmp(s->type, type) == 0)) {
+            slot = s;
+            break;
+        }
+        if (!slot && !s->used) {
+            slot = s;   // remember a free slot but keep scanning for a match
+        }
+    }
+    if (!slot) {
+        return;   // table full
+    }
+    slot->used = true;
+    slot->fd = fd;
+    slot->kind = kind;
+    snprintf(slot->app_id, sizeof(slot->app_id), "%s", app_id ? app_id : "");
+    if (kind == 0) {
+        snprintf(slot->type, sizeof(slot->type), "%s", type ? type : "");
+    } else {
+        slot->type[0] = '\0';
+    }
+    slot->rate_hz = clamp_rate(rate_hz);
+    slot->next_ms = now_ms();   // deliver the first sample promptly
+}
+
+// Drop a subscription. type==NULL removes every sub of `kind` on this fd.
+static void sensor_sub_remove(int fd, int kind, const char *type) {
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        SensorSub *s = &g_sensor_subs[i];
+        if (s->used && s->fd == fd && s->kind == kind &&
+            (kind != 0 || !type || strcmp(s->type, type) == 0)) {
+            s->used = false;
+        }
+    }
+}
+
+// Drop every subscription on a fd (called when the connection closes).
+static void sensor_unsubscribe_fd(int fd) {
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        if (g_sensor_subs[i].used && g_sensor_subs[i].fd == fd) {
+            g_sensor_subs[i].used = false;
+        }
+    }
+}
+
+// Push a sensor sample / location update to each subscription whose deadline has
+// passed, then advance that subscription's deadline by its period. A subscription
+// whose grant was revoked (or never held) is skipped silently.
+static void sensor_tick(void) {
+    int64_t t = now_ms();
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        SensorSub *s = &g_sensor_subs[i];
+        if (!s->used || t < s->next_ms) {
+            continue;
+        }
+        int period = 1000 / (s->rate_hz > 0 ? s->rate_hz : 1);
+        s->next_ms = t + (period > 0 ? period : 1);
+
+        const char *perm = (s->kind == 1) ? "location" : "sensors";
+        Grant *g = grant_find(s->app_id, perm);
+        if (!g || !g->granted) {
+            continue;   // not (or no longer) permitted: stream nothing
+        }
+
+        char msg[320];
+        int m;
+        if (s->kind == 1) {
+            double lat = 0, lng = 0;
+            float acc = 0, alt = 0, spd = 0, brg = 0;
+            if (!location_synth(&lat, &lng, &acc, &alt, &spd, &brg)) {
+                continue;
+            }
+            m = snprintf(msg, sizeof(msg),
+                         "{\"op\":\"location_update\",\"lat\":\"%.6f\","
+                         "\"lng\":\"%.6f\",\"accuracy\":\"%.1f\","
+                         "\"altitude\":\"%.1f\",\"speed\":\"%.2f\","
+                         "\"bearing\":\"%.1f\",\"t\":\"%lld\"}\n",
+                         lat, lng, acc, alt, spd, brg, (long long)t);
+        } else {
+            float v[3];
+            int acc = 3;
+            int n = sensor_synth(s->type, t, v, &acc);
+            if (n == 0) {
+                continue;
+            }
+            m = snprintf(msg, sizeof(msg),
+                         "{\"op\":\"sensor_sample\",\"type\":\"%s\",\"t\":\"%lld\","
+                         "\"n\":\"%d\",\"accuracy\":\"%d\",\"v0\":\"%.6f\","
+                         "\"v1\":\"%.6f\",\"v2\":\"%.6f\"}\n",
+                         s->type, (long long)t, n, acc, v[0], v[1], v[2]);
+        }
+        if (m > 0 && m < (int)sizeof(msg)) {
+            ssize_t w = write(s->fd, msg, (size_t)m);
+            (void)w;
+        }
+    }
+}
+
+// ms until the soonest subscription deadline; -1 (block) when there are none.
+static int sensor_poll_timeout(void) {
+    int64_t soonest = -1;
+    for (int i = 0; i < MAX_SENSOR_SUBS; i++) {
+        if (g_sensor_subs[i].used &&
+            (soonest < 0 || g_sensor_subs[i].next_ms < soonest)) {
+            soonest = g_sensor_subs[i].next_ms;
+        }
+    }
+    if (soonest < 0) {
+        return -1;
+    }
+    int64_t rem = soonest - now_ms();
+    return rem < 0 ? 0 : (int)rem;
+}
+
+// Answer a synchronous one-shot location_get on the requesting connection. Gated
+// by the `location` grant; a denial (or no fix) replies {"ok":"0"}.
+static void handle_location_get(int fd, const char *line) {
+    char app_id[96] = {0};
+    json_get(line, "app_id", app_id, sizeof(app_id));
+    Grant *g = grant_find(app_id, "location");
+    double lat = 0, lng = 0;
+    float acc = 0, alt = 0, spd = 0, brg = 0;
+    char reply[320];
+    int m;
+    if (g && g->granted &&
+        location_synth(&lat, &lng, &acc, &alt, &spd, &brg)) {
+        m = snprintf(reply, sizeof(reply),
+                     "{\"ok\":\"1\",\"lat\":\"%.6f\",\"lng\":\"%.6f\","
+                     "\"accuracy\":\"%.1f\",\"altitude\":\"%.1f\","
+                     "\"speed\":\"%.2f\",\"bearing\":\"%.1f\",\"t\":\"%lld\"}\n",
+                     lat, lng, acc, alt, spd, brg, (long long)now_ms());
+    } else {
+        m = snprintf(reply, sizeof(reply), "{\"ok\":\"0\"}\n");
+    }
+    if (m > 0 && m < (int)sizeof(reply)) {
+        ssize_t w = write(fd, reply, (size_t)m);
+        (void)w;
+    }
+}
+
 // Process one request line. Perm ops reply on the same connection; register and
 // intent_resolve come over a persistent control connection (no reply). `slot`
 // is the client's table index, so a register can record its mailbox app_id.
@@ -1268,10 +1586,12 @@ static void handle_line(int slot, int fd, char *line) {
     }
 
     // --- notifications ---
-    // Shade subscribes as the sink (last subscriber wins). Records its ctrl fd.
+    // A surface subscribes as a sink (the shade and the lock screen both do).
+    // Records its ctrl fd in the sink SET — not last-wins, see the store's notes.
     if (strcmp(op, "notify_subscribe") == 0) {
-        g_shade_fd = fd;
-        fprintf(stderr, "[zsysd] notify sink subscribed (slot %d)\n", slot);
+        sink_subscribe_fd(fd);
+        fprintf(stderr, "[zsysd] notify sink subscribed (slot %d, %d total)\n",
+                slot, g_n_sinks);
         return;
     }
     // notify_post is a synchronous round-trip (replies {"id":..} on this conn).
@@ -1334,11 +1654,99 @@ static void handle_line(int slot, int fd, char *line) {
         }
         return;
     }
+    // snapshot_policy: may the compositor photograph this app's window for the
+    // App Switcher? Answers the manifest's `no_snapshot=1` (default: yes).
+    //
+    // WHY THIS LIVES HERE AND NOT IN ZCOMP. The flag is a manifest declaration,
+    // and zsysd is the process that reads manifests — it already holds this exact
+    // table for permissions, share targets and links, already merges the baked-in
+    // dir with the runtime-installed one, and already rebuilds it on the
+    // installer's {"op":"reload"}. Teaching zcomp to read manifests instead would
+    // duplicate the parser, the two-directory merge and the reload signal inside
+    // the compositor, and give the compositor a policy file to watch.
+    //
+    // WHY NOT A sys.* SETTINGS KEY. settings_set is ungated — any client can write
+    // any key — so publishing the deny-list as a setting would let one app clear
+    // another app's flag. A dedicated READ-ONLY op has no such write path.
+    //
+    // Answering per-app rather than shipping the whole list keeps the reply
+    // bounded, and zcomp asks once per window (at map, where it first learns the
+    // app_id) and caches the answer, so nothing queries on the capture path.
+    if (strcmp(op, "snapshot_policy") == 0) {
+        char sapp[96] = {0};
+        json_get(line, "app_id", sapp, sizeof(sapp));
+        bool allow = true;
+        for (int i = 0; i < g_n_manifests; i++) {
+            if (strcmp(g_manifests[i].id, sapp) == 0) {
+                allow = !g_manifests[i].no_snapshot;
+                break;
+            }
+        }
+        char reply[64];
+        int m = snprintf(reply, sizeof(reply), "{\"allow\":\"%d\"}\n", allow ? 1 : 0);
+        if (m > 0 && m < (int)sizeof(reply)) {
+            ssize_t w = write(fd, reply, (size_t)m);
+            (void)w;
+        }
+        if (!allow) {
+            fprintf(stderr, "[zsysd] snapshot_policy %s -> DENY (no_snapshot)\n",
+                    sapp);
+        }
+        return;
+    }
+
     // settings_subscribe: record this ctrl fd in the observer set (multiple).
     if (strcmp(op, "settings_subscribe") == 0) {
         settings_subscribe_fd(fd);
         fprintf(stderr, "[zsysd] settings observer subscribed (slot %d, %d total)\n",
                 slot, g_n_settings_subs);
+        return;
+    }
+
+    // --- sensors + location (P38) ---
+    // A stream subscription keyed by this connection's fd; sensor_tick pushes
+    // samples to it at the requested (clamped) rate. Fire-and-forget (no reply);
+    // permission is checked at each tick against the cached grant.
+    if (strcmp(op, "sensor_subscribe") == 0) {
+        char sapp[96] = {0}, type[24] = {0}, rate[8] = {0};
+        json_get(line, "app_id", sapp, sizeof(sapp));
+        json_get(line, "type", type, sizeof(type));
+        json_get(line, "rate", rate, sizeof(rate));
+        if (type[0]) {
+            sensor_sub_add(fd, sapp, 0, type, rate[0] ? atoi(rate) : 5);
+            fprintf(stderr, "[zsysd] sensor_subscribe app=%s type=%s rate=%s\n",
+                    sapp, type, rate[0] ? rate : "5");
+        }
+        return;
+    }
+    if (strcmp(op, "sensor_unsubscribe") == 0) {
+        char type[24] = {0};
+        json_get(line, "type", type, sizeof(type));
+        sensor_sub_remove(fd, 0, type[0] ? type : NULL);
+        // Logged symmetrically with the subscribe: an app backgrounding pauses its
+        // streams (libzelto's when-in-use gate), so a stream that stops without the
+        // app exiting is the expected battery/privacy behaviour, not a leak.
+        fprintf(stderr, "[zsysd] sensor_unsubscribe type=%s\n",
+                type[0] ? type : "*");
+        return;
+    }
+    if (strcmp(op, "location_subscribe") == 0) {
+        char sapp[96] = {0}, rate[8] = {0};
+        json_get(line, "app_id", sapp, sizeof(sapp));
+        json_get(line, "rate", rate, sizeof(rate));
+        sensor_sub_add(fd, sapp, 1, NULL, rate[0] ? atoi(rate) : 1);
+        fprintf(stderr, "[zsysd] location_subscribe app=%s\n", sapp);
+        return;
+    }
+    if (strcmp(op, "location_unsubscribe") == 0) {
+        sensor_sub_remove(fd, 1, NULL);
+        fprintf(stderr, "[zsysd] location_unsubscribe\n");
+        return;
+    }
+    // location_get is a synchronous one-shot (replies on this conn, like
+    // settings_get), so an app can read a single fix without a stream.
+    if (strcmp(op, "location_get") == 0) {
+        handle_location_get(fd, line);
         return;
     }
     if (strcmp(op, "notify_badge") == 0) {
@@ -1407,6 +1815,10 @@ static void serve_once(int timeout_ms) {
         battery_tick();
     }
 
+    // Sensor/location streams: push a sample to each subscription whose deadline
+    // has passed (the poll woke us at the soonest deadline, computed below).
+    sensor_tick();
+
     // New connection.
     if (pfds[0].revents & POLLIN) {
         int c = accept(g_lfd, NULL, NULL);
@@ -1440,10 +1852,9 @@ static void serve_once(int timeout_ms) {
             close(cfd);
             g_client_fd[slot] = -1;
             g_client_app[slot][0] = '\0';   // mailbox gone
-            if (cfd == g_shade_fd) {
-                g_shade_fd = -1;   // shade sink disconnected
-            }
+            sink_unsubscribe_fd(cfd);       // a notification sink went away
             settings_unsubscribe_fd(cfd);   // drop a settings observer too
+            sensor_unsubscribe_fd(cfd);     // and any sensor/location streams
             continue;
         }
         buf[r] = '\0';
@@ -1503,7 +1914,12 @@ int main(void) {
     g_lfd = lfd;
 
     for (;;) {
-        serve_once(battery_poll_timeout());
+        // Wake for whichever periodic source is due first (battery drain or a
+        // sensor/location stream). -1 from one loses to a finite deadline.
+        int bt = battery_poll_timeout();
+        int st = sensor_poll_timeout();
+        int timeout = (bt < 0) ? st : (st < 0 ? bt : (bt < st ? bt : st));
+        serve_once(timeout);
 
         // Replay whatever queued behind a consent dialog, now that it is gone.
         // Taken off the queue BEFORE handling, because handling one may raise the

@@ -62,3 +62,4 @@ Thumbs.db
 !resources/wallpaper/**
 !resources/app-icons/
 !resources/app-icons/**
+__pycache__/

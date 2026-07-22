@@ -136,16 +136,25 @@ static void set_px(ZText *t, int px) {
     t->cur_px = px;
 }
 
-// Shape `s` and run `glyph_cb` for each glyph; returns total advance width.
-// glyph_cb may be NULL (measure only).
-static float shape_line(ZText *t, const char *s, int px, ZWeight weight,
+// Shape the first `len` bytes of `s` (len < 0 = up to the NUL) and run
+// `glyph_cb` for each glyph; returns total advance width. glyph_cb may be NULL
+// (measure only).
+//
+// The LENGTH is what makes WrapText correct. A line breaker measures prefixes
+// of the paragraph it is breaking, i.e. SLICES of a string it does not own and
+// must not mutate. Copying each slice into a fixed buffer to NUL-terminate it —
+// which is what view.c did until P45 — silently truncates any slice longer than
+// the buffer, and a truncated slice measures SHORT, so the breaker concludes it
+// fits and emits a line that runs off the column. HarfBuzz has taken an explicit
+// length here all along.
+static float shape_line(ZText *t, const char *s, int nbytes, int px, ZWeight weight,
                         void (*glyph_cb)(ZText *, unsigned glyph,
                                          float x_off, float y_off, void *ud),
                         void *ud) {
     set_weight(t, weight);
     set_px(t, px);
     hb_buffer_t *buf = hb_buffer_create();
-    hb_buffer_add_utf8(buf, s, -1, 0, -1);
+    hb_buffer_add_utf8(buf, s, nbytes, 0, -1);
     hb_buffer_guess_segment_properties(buf);
     hb_shape(t->hb_font, buf, NULL, 0);
 
@@ -165,9 +174,13 @@ static float shape_line(ZText *t, const char *s, int px, ZWeight weight,
     return advance;
 }
 
-float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
-                     float *ascent, float *descent) {
+float z_text_measure_n(ZText *t, const char *s, int len, float size,
+                       ZWeight weight, float *ascent, float *descent) {
     int px = (int)(size + 0.5f);
+    if (!s) {
+        s = "";
+        len = 0;
+    }
     if (!t || !t->face) {
         // Rough fallback so layout still allocates space.
         if (ascent) {
@@ -176,9 +189,10 @@ float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
         if (descent) {
             *descent = size * 0.2f;
         }
-        return (float)strlen(s) * size * 0.5f;
+        size_t n = len < 0 ? strlen(s) : (size_t)len;
+        return (float)n * size * 0.5f;
     }
-    float adv = shape_line(t, s, px, weight, NULL, NULL);
+    float adv = shape_line(t, s, len, px, weight, NULL, NULL);
     if (ascent) {
         *ascent = t->face->size->metrics.ascender / 64.0f;
     }
@@ -188,6 +202,11 @@ float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
     return adv;
 }
 
+float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
+                     float *ascent, float *descent) {
+    return z_text_measure_n(t, s, -1, size, weight, ascent, descent);
+}
+
 // --- rasterization --------------------------------------------------------
 typedef struct {
     ZCanvas *canvas;
@@ -195,20 +214,46 @@ typedef struct {
     ZColor color;
 } DrawCtx;
 
+// Blend one coverage-weighted glyph pixel over the destination, in the SAME
+// premultiplied-alpha, destination-alpha-PRESERVING space as the rest of the
+// renderer (render.c's blend_coverage / fill_round_rect).
+//
+// This used to force the output alpha to 0xff and treat the destination as
+// straight-alpha RGB. On an opaque surface that is invisible — dst alpha is
+// already 255 — but on a TRANSPARENT one (the status bar paints no background,
+// so it starts at 0x00000000) it wrecked the glyphs: a partly-covered edge pixel
+// blended white toward rgb 0 and was then stamped fully opaque, so every
+// antialiased edge came out as a solid mid-grey speck. The clock rendered as a
+// stippled outline instead of text. Preserving dst alpha and premultiplying the
+// source keeps the edge pixels partly transparent, which is what antialiasing
+// over a see-through surface means.
 static void blend_cover(ZCanvas *c, int x, int y, ZColor col, uint8_t cov) {
     if (x < c->clip_x0 || y < c->clip_y0 || x >= c->clip_x1 ||
         y >= c->clip_y1 || cov == 0) {
         return;
     }
+    // Effective coverage = glyph alpha * source alpha, less whatever a rounded
+    // Clip() takes off at this pixel (1.0 when none is active) — so a label that
+    // runs into a clipped container's corner is cut by the same antialiased mask
+    // as the fills around it, rather than surviving as a stray glyph edge.
+    uint32_t a = (uint32_t)cov * col.a / 255u;
+    float rc = z_canvas_round_cov(c, x, y);
+    if (rc < 0.999f) {
+        a = (uint32_t)((float)a * rc + 0.5f);
+    }
+    if (a == 0) {
+        return;
+    }
     uint32_t *dst = &c->pixels[y * c->stride_px + x];
     uint32_t d = *dst;
-    uint32_t dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff, db = d & 0xff;
-    // Effective coverage = glyph alpha * source alpha.
-    uint32_t a = (uint32_t)cov * col.a / 255u;
-    uint32_t r = (col.r * a + dr * (255 - a)) / 255u;
-    uint32_t g = (col.g * a + dg * (255 - a)) / 255u;
-    uint32_t b = (col.b * a + db * (255 - a)) / 255u;
-    *dst = 0xff000000u | (r << 16) | (g << 8) | b;
+    uint32_t da = (d >> 24) & 0xff, dr = (d >> 16) & 0xff, dg = (d >> 8) & 0xff,
+             db = d & 0xff;
+    uint32_t inv = 255u - a;
+    uint32_t oa = a + da * inv / 255u;
+    uint32_t r = (col.r * a + dr * inv) / 255u;
+    uint32_t g = (col.g * a + dg * inv) / 255u;
+    uint32_t b = (col.b * a + db * inv) / 255u;
+    *dst = (oa << 24) | (r << 16) | (g << 8) | b;
 }
 
 static void draw_glyph(ZText *t, unsigned glyph, float x_off, float y_off,
@@ -261,5 +306,5 @@ void z_text_draw(ZCanvas *canvas, const char *s, float size, ZWeight weight,
         .baseline = pen_y + t->face->size->metrics.ascender / 64.0f,
         .color = color,
     };
-    shape_line(t, s, px, weight, draw_glyph, &ctx);
+    shape_line(t, s, -1, px, weight, draw_glyph, &ctx);
 }

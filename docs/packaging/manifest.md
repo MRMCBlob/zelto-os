@@ -84,7 +84,42 @@ color=2e9bff
 permissions=notifications,network
 share_targets=text/plain
 links=zelto
+no_snapshot=1
 ```
+
+### `no_snapshot=` — opting out of window thumbnails
+
+The App Switcher shows each backgrounded window as a picture of itself, taken by the
+compositor the moment the window stopped being the foreground one
+([compositor-internals.md](../contributing/compositor-internals.md)). An app that puts
+something on screen it would rather not have photographed — a banking balance, a
+password manager's vault, a medical record — declares `no_snapshot=1` and gets its icon
+on the card instead.
+
+The opt-out is enforced by *never taking* the picture, not by taking it and declining to
+send it. There is then no copy of those pixels anywhere for a later bug to leak.
+
+**Where it is enforced, and why there.** `zcomp` does not read manifests and does not
+start now. `zsysd` already parses them — for `permissions=`, `share_targets=` and
+`links=` — already merges the baked-in `/usr/share/zelto/apps` with the runtime-installed
+directory, and already rebuilds the table when `zelto-install` sends it `{"op":"reload"}`.
+Duplicating that inside the compositor would mean a second parser, a second directory
+merge and a filesystem watch, all in the process that must never block. So `zcomp` asks,
+over the same `zsysd.sock` it already uses for the media keys, with a read-only
+`{"op":"snapshot_policy","app_id":"…"}`.
+
+It asks **once per window, at map** — the point where it first learns the `app_id` — and
+caches the answer on the toplevel. The capture itself happens inside a focus change, on
+the frame an app-switch animation starts, and a blocking socket round-trip there would
+put `zsysd`'s health on the compositor's frame budget.
+
+It is a dedicated op rather than a `sys.*` setting because `settings_set` is ungated: any
+client may write any key, so a deny-list published as a setting could be cleared by the
+very app it restrains. A read-only op has no such write path.
+
+An unreachable broker resolves to **allowed**, matching every other `zsysd` fallback in
+the system. Denying on error would let a broker hiccup silently empty the App Switcher —
+a visible breakage of a working feature, traded for protecting a flag almost nothing sets.
 
 `exec=` is a **command, not just a path**: it is split on whitespace and executed
 directly (no shell). That is what makes an interpreted app launchable by the same

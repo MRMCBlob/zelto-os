@@ -72,7 +72,8 @@ static bool node_changed(ZView a, ZView b) {
     }
     if (a->has_bg != b->has_bg || a->radius != b->radius ||
         a->focused != b->focused || a->font_size != b->font_size ||
-        a->elevation != b->elevation || a->text_shadow != b->text_shadow) {
+        a->elevation != b->elevation || a->text_shadow != b->text_shadow ||
+        a->clip != b->clip || a->clip_radius != b->clip_radius) {
         return true;
     }
     // Press-feedback veil (P31): a change in the stamped press amount repaints the

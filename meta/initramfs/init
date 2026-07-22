@@ -144,11 +144,24 @@ fi
 # socket appears, so zcomp composites a real shell rather than just the
 # background. The bar is a wlr-layer-shell client anchored at the top with an
 # exclusive zone; the launcher is a back toplevel filling the area below it and
-# fork/execs an app binary when a tile is tapped. Both inherit WAYLAND_DISPLAY +
-# ZELTO_FONT from this environment, so apps the launcher spawns find them too.
+# fork/execs an app binary when a tile is tapped. Both inherit WAYLAND_DISPLAY
+# from this environment, so apps the launcher spawns find the display too.
 # The socket is wayland-0 under XDG_RUNTIME_DIR.
 export WAYLAND_DISPLAY=wayland-0
-export ZELTO_FONT=/usr/share/zelto/fonts/ZeltoSans.ttf
+# NO ZELTO_FONT HERE, DELIBERATELY. This line used to export
+# /usr/share/zelto/fonts/ZeltoSans.ttf. P30 (71d4908) switched the bundled face
+# to Satoshi-Variable.ttf in build-initramfs.sh and did not touch this file, so
+# for fifteen phases every libzelto client on the real target opened a path that
+# did not exist, z_text_open() returned NULL, and QEMU rendered NOT ONE GLYPH —
+# eight "could not open font (text disabled)" lines per boot, in a 60k-line
+# serial log nobody grepped. Everything after P30 was verified in the simulator,
+# which sets its own ZELTO_FONT and was therefore never affected.
+#
+# The path now has ONE definition, Z_DEFAULT_FONT in sdk/src/app.c, which the
+# image is built to satisfy; test/test_bundled_font_path.sh fails the day the
+# two disagree again. ZELTO_FONT survives as a pure override (the simulator and
+# a device with a different face still set it) — it just no longer has a stale
+# default sitting in front of the working one.
 # P23 power source: qemu-virt has no real battery, so the BATTERY/VOLUME harness
 # passes zelto.fakebattery=1 on the kernel cmdline to make zsysd drive a fake
 # drain (sys.battery_pct / _charging), driveable without hardware. A fast tick is
@@ -192,14 +205,14 @@ launch_shell() {
         # prompt can connect to the compositor and render.
         [ -x /usr/bin/zsysd ] && /usr/bin/zsysd &
         [ -x /usr/bin/zelto-bar ] && /usr/bin/zelto-bar &
-        # The bottom navigation bar (Back/Home/Recents): a layer-shell client
-        # anchored at the bottom with an exclusive zone, so apps map between the
-        # top bar and it. Always-running like the bar; its buttons drive the
+        # The home indicator: a layer-shell client anchored at the bottom with a
+        # 34px exclusive zone (the bottom safe area), so apps map between the top
+        # bar and it. Always-running like the bar; swipes off its strip drive the
         # window manager (foreign-toplevel activate + fork/exec zelto-recents).
-        [ -x /usr/bin/zelto-nav ] && /usr/bin/zelto-nav &
+        [ -x /usr/bin/zelto-homebar ] && /usr/bin/zelto-homebar &
         # The on-screen keyboard (P21): a bottom-anchored TOP-layer layer-shell
-        # app and the seat's single input-method-v2 client. Started after the nav
-        # bar so it composites above it (a phone keyboard sits over the nav).
+        # app and the seat's single input-method-v2 client. Started after the home
+        # indicator so it composites above it (a phone keyboard sits over it).
         # Always-running but shown only while a text field is focused.
         [ -x /usr/bin/zelto-keyboard ] && /usr/bin/zelto-keyboard &
         # The notification shade: an OVERLAY layer-shell sink that subscribes to

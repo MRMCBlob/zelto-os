@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <linux/input-event-codes.h>
@@ -28,6 +29,7 @@
 #include "wlr-foreign-toplevel-management-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "zelto-backdrop-v1-client-protocol.h"
+#include "zelto-toplevel-capture-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #define Z_DEFAULT_FONT "/usr/share/zelto/fonts/Satoshi-Variable.ttf"
@@ -44,6 +46,14 @@ typedef struct ZTaskRec {
     char *app_id;
     bool active;
     bool used;
+
+    // Window snapshot (zelto-toplevel-capture-v1). `cap` is created lazily, the
+    // first time the app asks for this window's picture, so an app that never
+    // calls z_snapshot costs nothing. `snap_key` is this record's stable key
+    // into the image cache; `has_snap` says whether a picture has arrived yet.
+    struct zelto_toplevel_capture_v1 *cap;
+    char snap_key[48];
+    bool has_snap;
 } ZTaskRec;
 
 // A retained shm buffer in the double-buffer pool. Buffers persist across frames
@@ -127,6 +137,11 @@ struct ZApp {
     struct zwlr_foreign_toplevel_manager_v1 *ftl_manager;
     ZTaskRec ftl_recs[Z_MAX_TASKS];
     ZTask ftl_snapshot[Z_MAX_TASKS];
+
+    // Window-snapshot manager (zelto-toplevel-capture-v1). Bound only when the
+    // compositor advertises it, so a client built against an older zcomp simply
+    // never gets a picture and keeps its icon fallback. See z_snapshot().
+    struct zelto_toplevel_capture_manager_v1 *cap_manager;
 
     struct wl_callback *frame_cb;   // in-flight frame throttle (NULL = idle)
     ZBuf bufs[2];                   // retained double-buffer pool
@@ -316,6 +331,9 @@ struct ZApp {
 // Accessors so the toolkit modules (animation/scroll/navigation) reach the
 // retained state without app.c's wayland-heavy ZApp definition.
 ZUI *z_app_ui(ZApp *app) { return &app->ui; }
+// The shaping context, for builders that must measure before the tree exists
+// (WrapText). NULL when the font failed to open — callers degrade to one line.
+ZText *z_app_text(ZApp *app) { return app ? app->text : NULL; }
 void *z_app_state(ZApp *app) { return app->state; }
 // Recover the owning app from a foreign-toplevel record.
 static ZApp *rec_app(ZTaskRec *rec) { return rec->app; }
@@ -449,65 +467,24 @@ static ZView find_focusable(ZView n) {
     return NULL;
 }
 
-static bool point_in(ZView n, double x, double y) {
-    return x >= n->x && x < n->x + n->w && y >= n->y && y < n->y + n->h;
-}
-
-// Deepest (top-most) node with an on_tap handler whose frame contains (x,y).
+// Which node owns a point — tap, scroll, pan and long-press targets alike — is
+// z_hit_test() in layout.c, next to the arrange() that wrote the frames it reads.
+// Four near-identical recursive walks used to live here, and all four masked a
+// subtree by every ANCESTOR's frame rather than by the clip stack the renderer
+// masks paint with, so what was touchable and what was visible were different
+// regions (test/test_hit_test_clip.c). These wrappers keep the call sites below
+// reading as they did.
 static ZView hit_test(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    // Children paint last-on-top; search them front-to-back first.
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = hit_test(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return (n->on_tap || n->on_tap_data) ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_TAP);
 }
-
-// Deepest scroll container under (x,y) — the wheel/vertical-drag target.
 static ZView find_scroll(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = find_scroll(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return (n->kind == Z_K_SCROLL && n->scroll) ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_SCROLL);
 }
-
-// Deepest custom OnPan / OnPanData target under (x,y).
 static ZView find_pan(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = find_pan(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return (n->on_pan || n->on_pan_data) ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_PAN);
 }
-
-// Deepest OnLongPress target under (x,y).
 static ZView find_long_press(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = find_long_press(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return n->on_long_press ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_LONG_PRESS);
 }
 
 // --- build/layout/paint/commit -------------------------------------------
@@ -760,6 +737,9 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
     }
     if (active != app->active) {
         app->active = active;
+        // when-in-use: pause this app's sensor/GPS streams while it is backgrounded
+        // (battery + privacy), resume them on return. No-op if it opened none.
+        z_sensor_set_paused(!active);
         if (app->lifecycle) {
             app->lifecycle(app, app->state,
                            active ? Z_LC_ACTIVE : Z_LC_INACTIVE);
@@ -1945,6 +1925,16 @@ static void ftl_handle_closed(void *data,
     ZTaskRec *rec = data;
     ZApp *app = rec_app(rec);
     zwlr_foreign_toplevel_handle_v1_destroy(h);
+    // Drop the snapshot subscription with the window it watched. The cached
+    // BITMAP is deliberately left alone: the record is about to be recycled for
+    // some future window, but a card may still be painting this picture during
+    // the switcher's close animation, and the cache's own LRU will reclaim it.
+    if (rec->cap) {
+        zelto_toplevel_capture_v1_destroy(rec->cap);
+        rec->cap = NULL;
+    }
+    rec->has_snap = false;
+    rec->snap_key[0] = '\0';
     free(rec->title);
     free(rec->app_id);
     rec->title = rec->app_id = NULL;
@@ -2003,6 +1993,98 @@ static const struct zwlr_foreign_toplevel_manager_v1_listener
         .finished = ftl_manager_finished,
 };
 
+// --- window snapshots (zelto-toplevel-capture-v1) --------------------------
+// The compositor photographs a window as it leaves the foreground and hands the
+// image over as a sealed memfd. We map it, copy it into the image cache under
+// this record's stable key, and unmap immediately.
+//
+// The copy is deliberate. Keeping the mapping alive and pointing the cache
+// straight at it would save a memcpy, but it would tie a cache entry's lifetime
+// to a file descriptor and make every later refresh a question of who still has
+// the old pixels mapped. One ~500KB memcpy per app switch is not worth that; the
+// expensive thing the memfd route avoids is a PNG encode per switch, and it
+// still avoids it.
+//
+// The compositor sends PREMULTIPLIED ARGB8888 (it is copying an libzelto
+// surface, and libzelto's renderer writes premultiplied), which is exactly what
+// ZImage wants — so there is no format conversion anywhere on this path.
+static void cap_handle_snapshot(void *data,
+                                struct zelto_toplevel_capture_v1 *cap,
+                                int32_t fd, int32_t width, int32_t height,
+                                int32_t stride, uint32_t format) {
+    (void)cap;
+    (void)format;
+    ZTaskRec *rec = data;
+    if (width <= 0 || height <= 0 || stride < width * 4) {
+        close(fd);
+        return;
+    }
+    size_t size = (size_t)stride * (size_t)height;
+    void *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (map == MAP_FAILED) {
+        return;
+    }
+    uint32_t *px = malloc((size_t)width * (size_t)height * 4);
+    if (px) {
+        for (int y = 0; y < height; y++) {
+            memcpy(px + (size_t)y * (size_t)width,
+                   (const char *)map + (size_t)y * (size_t)stride,
+                   (size_t)width * 4);
+        }
+        if (z_image_adopt(rec->snap_key, width, height, px)) {
+            rec->has_snap = true;
+            z_invalidate(rec_app(rec));   // repaint the card with its picture
+        }
+    }
+    munmap(map, size);
+}
+
+static void cap_handle_gone(void *data, struct zelto_toplevel_capture_v1 *cap) {
+    (void)data;
+    // Nothing to undo: any picture already delivered stays valid and on screen.
+    // A switcher showing the card of an app that has just exited is precisely
+    // what the snapshot is for.
+    zelto_toplevel_capture_v1_destroy(cap);
+    ((ZTaskRec *)data)->cap = NULL;
+}
+
+static const struct zelto_toplevel_capture_v1_listener cap_listener = {
+    .snapshot = cap_handle_snapshot,
+    .gone = cap_handle_gone,
+};
+
+const char *z_snapshot(ZApp *app, const ZTask *task) {
+    if (!app || !task || !task->handle) {
+        return NULL;
+    }
+    ZTaskRec *rec = NULL;
+    for (int i = 0; i < Z_MAX_TASKS; i++) {
+        if (app->ftl_recs[i].used && app->ftl_recs[i].handle == task->handle) {
+            rec = &app->ftl_recs[i];
+            break;
+        }
+    }
+    if (!rec) {
+        return NULL;
+    }
+    // Subscribe on first ask. The picture arrives asynchronously, so this call
+    // returns NULL now and the caller repaints when it lands (z_invalidate
+    // above) — which is why the fallback has to be a real fallback, not an
+    // error path: every card renders its icon at least once.
+    if (!rec->cap && app->cap_manager) {
+        snprintf(rec->snap_key, sizeof(rec->snap_key), "\x01snap:%p",
+                 (void *)rec->handle);
+        rec->cap = zelto_toplevel_capture_manager_v1_get_capture(
+            app->cap_manager, rec->handle);
+        if (rec->cap) {
+            zelto_toplevel_capture_v1_add_listener(rec->cap, &cap_listener,
+                                                   rec);
+        }
+    }
+    return rec->has_snap ? rec->snap_key : NULL;
+}
+
 // --- registry -------------------------------------------------------------
 static void registry_global(void *data, struct wl_registry *registry,
                             uint32_t name, const char *interface,
@@ -2031,6 +2113,13 @@ static void registry_global(void *data, struct wl_registry *registry,
             version < 3 ? version : 3);
         zwlr_foreign_toplevel_manager_v1_add_listener(
             app->ftl_manager, &ftl_manager_listener, app);
+    } else if (strcmp(interface,
+                      zelto_toplevel_capture_manager_v1_interface.name) == 0) {
+        // Window snapshots for the App Switcher's cards. Optional: an older
+        // compositor never advertises it and z_snapshot then always returns
+        // NULL, so the caller keeps painting the app-icon poster.
+        app->cap_manager = wl_registry_bind(
+            registry, name, &zelto_toplevel_capture_manager_v1_interface, 1);
     } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0) {
         // Idle notifications (the lock screen drives its dim/lock/off machine
         // off these). Every app binds it harmlessly; zelto-lock is the consumer.
@@ -2158,10 +2247,20 @@ static int app_run(ZApp *app) {
     app->clip_fd = -1;
     z_active_app = app;
 
+    // NAME THE PATH. The old message was "could not open font (text disabled)"
+    // and nothing else, which is why a stale ZELTO_FONT in the initramfs went
+    // fifteen phases undiagnosed: the line was true, unactionable and repeated
+    // once per client, so it read as boot noise rather than as "this image ships
+    // no usable font". A failure whose cause is a filename should print the
+    // filename.
     const char *font = getenv("ZELTO_FONT");
-    app->text = z_text_open(font ? font : Z_DEFAULT_FONT);
+    const char *font_path = font ? font : Z_DEFAULT_FONT;
+    app->text = z_text_open(font_path);
     if (!app->text) {
-        fprintf(stderr, "zelto: warning: could not open font (text disabled)\n");
+        fprintf(stderr,
+                "zelto: warning: could not open font '%s' (%s) — TEXT DISABLED, "
+                "this surface will render no glyphs\n",
+                font_path, font ? "from $ZELTO_FONT" : "compiled-in default");
     }
 
     app->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -2266,13 +2365,13 @@ static int app_run(ZApp *app) {
         }
         wl_display_flush(dpy);
 
-        struct pollfd pfds[4 + Z_NET_POLL_MAX];
+        struct pollfd pfds[5 + Z_NET_POLL_MAX];
         pfds[0].fd = wl_display_get_fd(dpy);
         pfds[0].events = POLLIN;
         pfds[0].revents = 0;
         nfds_t nf = 1;
-        int perm_slot = -1, ctrl_slot = -1, clip_slot = -1, net_slot = -1,
-            net_n = 0;
+        int perm_slot = -1, ctrl_slot = -1, clip_slot = -1, sensor_slot = -1,
+            net_slot = -1, net_n = 0;
         if (app->perm_fd >= 0) {
             perm_slot = (int)nf;
             pfds[nf].fd = app->perm_fd;
@@ -2291,6 +2390,15 @@ static int app_run(ZApp *app) {
         if (app->clip_fd >= 0) {
             clip_slot = (int)nf;
             pfds[nf].fd = app->clip_fd;
+            pfds[nf].events = POLLIN;
+            pfds[nf].revents = 0;
+            nf++;
+        }
+        // Sensor/GPS stream socket (sensors.c): one fd carries every subscription.
+        int sfd = z_sensor_poll_fd();
+        if (sfd >= 0) {
+            sensor_slot = (int)nf;
+            pfds[nf].fd = sfd;
             pfds[nf].events = POLLIN;
             pfds[nf].revents = 0;
             nf++;
@@ -2359,6 +2467,11 @@ static int app_run(ZApp *app) {
         if (clip_slot >= 0 &&
             (pfds[clip_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
             clip_handle_read(app);
+        }
+        // Sensor/GPS stream socket: read + dispatch any pushed samples.
+        if (sensor_slot >= 0 &&
+            (pfds[sensor_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
+            z_sensor_handle_ready();
         }
         // Drive any ready HTTP/WebSocket sockets (callbacks fire from here).
         if (net_n > 0) {
@@ -2763,11 +2876,13 @@ void z_tick_every(ZApp *app, int ms) {
 // request may block on a user prompt, so its socket is parked in the app loop.
 //
 // z_active_app is declared near the top of this file (set for app_run's life).
-static int zsysd_connect(void) {
-    const char *runtime = getenv("XDG_RUNTIME_DIR");
-    if (!runtime) {
-        runtime = "/run";
-    }
+
+// How long a client will keep trying to reach the broker after it starts, and
+// how often. See zsysd_connect().
+#define ZSYSD_STARTUP_GRACE_MS 4000
+#define ZSYSD_RETRY_MS 25
+
+static int zsysd_connect_once(const char *runtime) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         return -1;
@@ -2780,6 +2895,63 @@ static int zsysd_connect(void) {
         return -1;
     }
     return fd;
+}
+
+// Connect to the broker, waiting for it during startup.
+//
+// zsysd and the System UI clients are launched back to back — /init does
+// `zsysd & zelto-bar & ... zelto-lock &` (meta/initramfs/init) and the simulator
+// does the same (meta/run-sim.sh) — so a client routinely reaches its first
+// z_setting_get before zsysd has finished bind()+listen(). A single-shot connect
+// then fails, and EVERY caller here treats that as "no broker" and quietly falls
+// back to a compiled-in default. That is not a degraded mode, it is a wrong boot:
+// zelto-lock read lock_enabled=0 / dim=8s instead of its configured policy and
+// never locked the screen, in roughly one boot in twelve, on the device as well
+// as in the sim. It is silent because a default is indistinguishable from a
+// setting.
+//
+// So during a startup grace window, keep retrying. After that window — or once
+// this process has ever been connected — go back to a single attempt, because
+// then a refused connect means the broker is genuinely gone and a caller must
+// not stall the UI thread waiting for it.
+static int zsysd_connect(void) {
+    static bool ever_connected = false;
+    static struct timespec first = {0, 0};
+
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    if (!runtime) {
+        runtime = "/run";
+    }
+
+    int fd = zsysd_connect_once(runtime);
+    if (fd >= 0) {
+        ever_connected = true;
+        return fd;
+    }
+    if (ever_connected) {
+        return -1;   // broker was there and went away: report it, don't wait
+    }
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (first.tv_sec == 0 && first.tv_nsec == 0) {
+        first = now;
+    }
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed_ms = (now.tv_sec - first.tv_sec) * 1000 +
+                          (now.tv_nsec - first.tv_nsec) / 1000000;
+        if (elapsed_ms >= ZSYSD_STARTUP_GRACE_MS) {
+            return -1;   // no broker in this system; run standalone
+        }
+        struct timespec nap = {0, ZSYSD_RETRY_MS * 1000000L};
+        nanosleep(&nap, NULL);
+        fd = zsysd_connect_once(runtime);
+        if (fd >= 0) {
+            ever_connected = true;
+            return fd;
+        }
+    }
 }
 
 static ZPermStatus zsysd_parse_status(const char *line) {

@@ -168,6 +168,26 @@ backdrop_client_code = custom_target(
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# zelto-toplevel-capture-v1 client bindings — the App Switcher's window
+# thumbnails. The compositor snapshots each window as it leaves the foreground
+# and delivers it as a sealed memfd; libzelto maps it and hands the pixels to the
+# existing ARGB blit (z_snapshot / Z_K_SNAPSHOT). Our own protocol, vendored in
+# protocols/, so both the header and the marshalling are generated.
+capture_xml = meson.project_source_root() / 'protocols/zelto-toplevel-capture-v1.xml'
+
+capture_client_header = custom_target(
+  'zelto-toplevel-capture-v1-client-protocol.h',
+  input : capture_xml,
+  output : 'zelto-toplevel-capture-v1-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+capture_client_code = custom_target(
+  'zelto-toplevel-capture-v1-protocol.c',
+  input : capture_xml,
+  output : 'zelto-toplevel-capture-v1-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 sdk_protocol_src = [
   xdg_client_header, xdg_client_code,
   layer_client_header, layer_client_code,
@@ -177,4 +197,5 @@ sdk_protocol_src = [
   input_method_client_header, input_method_client_code,
   data_control_client_header, data_control_client_code,
   backdrop_client_header, backdrop_client_code,
+  capture_client_header, capture_client_code,
 ]

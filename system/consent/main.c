@@ -14,6 +14,16 @@
 
 #include <zelto/ui.h>
 
+#include "common/app_icons.h"
+
+// The alert box. NARROW (a phone alert is a card you read at a glance, not a
+// dialog you scan across) and a fixed size, so the compositor backdrop rect that
+// blurs behind it can be computed without measuring the layout.
+#define ALERT_W 420.0f
+#define ALERT_H 226.0f
+#define ALERT_PAD 22.0f
+#define ALERT_BTN_H 46.0f
+
 // Flick-to-Deny (P33). The modal stays button-driven for Allow, but a DOWNWARD
 // drag on the card past this threshold (or a strong down-fling) resolves to Deny —
 // the safe default: an accidental swipe denies rather than grants. Dragging the
@@ -88,6 +98,23 @@ static void on_consent_pan(ZApp *app, void *state, const ZPanEvent *e) {
     z_invalidate(app);
 }
 
+// One stacked action: a FULL-WIDTH rounded cap. The default Button() sizes itself
+// to its label, which is right for a form and wrong here — two stacked buttons of
+// different widths read as two different KINDS of thing, when the whole point of
+// the stack is that they are the same kind of thing and only the answer differs.
+static ZView alert_button(ZAction act, const char *label, ZColor bg, ZColor ink,
+                          bool bold) {
+    return OnTap(act,
+        Background(bg,
+            CornerRadius(Z_RADIUS_CHIP,
+                Frame(ALERT_W - 2.0f * ALERT_PAD, ALERT_BTN_H,
+                    HStack(Spacer(),
+                           Weight(bold ? Z_WEIGHT_SEMIBOLD : Z_WEIGHT_MEDIUM,
+                               Foreground(ink,
+                                   Font(Z_FONT_CALLOUT, Text("%s", label)))),
+                           Spacer(), .align = Z_ALIGN_CENTER)))));
+}
+
 static ZView consent_body(ZApp *app, ConsentState *s) {
     // The entrance spring + the flick-to-Deny drag, allocated first +
     // unconditionally (call-order cells) for a stable identity across rebuilds.
@@ -118,31 +145,10 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
         }
     }
     z_full_repaint(app);   // full-screen modal fading/moving over the app
-    // The modal card: title, the "<app> wants to use the <perm>" line, and the
-    // Deny / Allow actions (tinted via Background over the default button fill).
-    ZView card = Shadow(Z_ELEV_3, Background(Z_COLOR_SURFACE,
-        CornerRadius(20,
-            Frame(580.0f, 300.0f,
-                VStack(
-                    Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT_INV,
-                        Font(Z_FONT_TITLE, Text("Permission request")))),
-                    Foreground(Z_COLOR_TEXT_MUTED,
-                        Font(Z_FONT_CALLOUT,
-                            Text("\"%s\" wants to use the %s", s->app_id,
-                                 s->perm))),
-                    Spacer(),
-                    HStack(
-                        Background(Z_COLOR_SURFACE_3,
-                            Button(on_deny, "Deny")),
-                        Spacer(),
-                        Background(Z_COLOR_SUCCESS,
-                            Button(on_allow, "Allow")),
-                        .spacing = 16, .align = Z_ALIGN_CENTER),
-                    .padding = 28, .spacing = 18, .align = Z_ALIGN_LEADING)))));
 
-    // Entrance (P32): the whole modal (dim backdrop + card) fades on `enter` via one
-    // Opacity, and the card additionally rises into place — a faked scale-up (the
-    // toolkit has no scale primitive) reading as a gentle lift.
+    // Entrance (P32): the whole modal (dim backdrop + card) fades on `enter` via
+    // one Opacity, and the card additionally rises into place — a faked scale-up
+    // (the toolkit has no scale primitive) reading as a gentle lift.
     float e = z_animated_get(s->enter);
     // Flick-to-Deny (P33): the card follows a downward drag 1:1 (an upward drag
     // resists via the rubber-band) and fades as it nears the Deny threshold. OnPan
@@ -154,6 +160,52 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
     if (dprog > 1.0f) {
         dprog = 1.0f;
     }
+
+    // The alert is a MATERIAL over the app that asked, not an opaque slab: the
+    // compositor blurs the rectangle it occupies and this tints it, so you can
+    // still see WHICH app is asking behind the question. The rect follows the
+    // drag, so it is re-declared each build (z_backdrop dedups a still one).
+    float sw = (float)z_app_width(app);
+    float sh = (float)z_app_height(app);
+    z_backdrop(app, (sw - ALERT_W) * 0.5f,
+               (sh - ALERT_H) * 0.5f + dy + (1.0f - e) * 24.0f,
+               ALERT_W, ALERT_H, Z_RADIUS_PANEL);
+
+    // The app's own name, not its reverse-DNS id: "os.zelto.pinger" is a database
+    // key, and a permission prompt that prints one is asking the user to trust a
+    // string they have never seen. The manifest has the display name.
+    char name[96];
+    const char *who = zelto_name_for_app_id(s->app_id, name, sizeof(name))
+                          ? name
+                          : s->app_id;
+
+    // The alert. It was a 580px-wide card with the two actions side by side and
+    // everything left-aligned — the shape of a desktop dialog, and at that width
+    // "Deny" and "Allow" end up at opposite ends of the screen, so the one your
+    // thumb reaches first is decided by which hand you are holding the phone in.
+    // A phone alert is NARROW and CENTRED, and its actions are STACKED: both land
+    // under the same thumb, one above the other, in a fixed order you can learn.
+    ZView card = Shadow(Z_ELEV_3, Background(Z_COLOR_MATERIAL_SHEET,
+        CornerRadius(Z_RADIUS_PANEL,
+            Frame(ALERT_W, ALERT_H,
+                VStack(
+                    Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT,
+                        Font(Z_FONT_HEADLINE, Text("%s", who)))),
+                    Foreground(Z_COLOR_TEXT_MUTED,
+                        Font(Z_FONT_SUBHEAD,
+                            Text("wants to use %s", s->perm))),
+                    Spacer(),
+                    // Deny on TOP, Allow at the BOTTOM: the affirmative action is
+                    // the one nearest the thumb, and the safe one is the one you
+                    // have to reach past it for — the same bias the flick-to-Deny
+                    // gesture has.
+                    alert_button(on_deny, "Don't Allow", Z_COLOR_SURFACE_3,
+                                 Z_COLOR_TEXT, false),
+                    alert_button(on_allow, "Allow", Z_COLOR_PRIMARY,
+                                 Z_COLOR_ON_PRIMARY, true),
+                    .padding = ALERT_PAD, .spacing = 10,
+                    .align = Z_ALIGN_CENTER)))));
+
     ZView risen = Opacity(1.0f - dprog,
         OnPan(on_consent_pan, OffsetXY(0.0f, (1.0f - e) * 24.0f + dy, card)));
     // Dim full-screen backdrop with the card centred in it.

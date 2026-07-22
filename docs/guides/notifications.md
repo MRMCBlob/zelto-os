@@ -95,6 +95,45 @@ z_notify_post(n);
 
 See [../api-reference/c/system.md](../api-reference/c/system.md).
 
+## Displaying notifications: the sink contract
+
+Everything above is the POSTING side. The other side — the surfaces that actually
+draw a notification — is a separate contract, and it is the one you need if you
+are writing System UI rather than an app.
+
+A **sink** is a surface that has called `z_notify_subscribe()`. zsysd records it
+by its persistent control fd and pushes every posted notification to it as
+`notify_show` (and `notify_hide` when it is cancelled or expires).
+
+**Sinks are a SET, not a single registration.** More than one surface may
+subscribe, and each one receives every notification. This matters because Zelto
+has at least two surfaces that draw the same notification at the same time: the
+heads-up banner (`system/shade`) and the lock screen (`system/lock`), which
+between them cover "you are using the phone" and "the phone is on the table".
+
+That was not always true, and the way it failed is worth knowing, because
+nothing about it looks like a bug at the call site. The sink used to be one fd —
+literally "the shade sink" — so subscribing was LAST-WINS. `/init` starts the
+lock screen after the shade, so the lock screen's subscription silently replaced
+the shade's, and the heads-up banner simply stopped existing. No error, no log:
+one surface quietly took the other's notifications.
+
+Consequences for anything that subscribes:
+
+- **Subscribing does not displace anyone.** Add a surface freely.
+- **Expect to be one of several.** Do not assume you are the only one showing a
+  given notification, and do not treat receiving one as ownership of it.
+- **Any sink may report an action tap**, and zsysd routes it to the posting app's
+  mailbox. A notification acted on from the lock screen and the same one acted on
+  from the banner are indistinguishable to the poster, which is the intent.
+- **Subscribing twice on one fd is a no-op**, so a surface that re-subscribes
+  after a rebuild does not receive doubles.
+- **A sink is dropped automatically when its connection closes.** A surface that
+  exits needs no teardown call.
+
+The settings-observer set (`z_settings_observe`) works the same way and for the
+same reason; the two fan-outs mirror each other in `system/zsysd/main.c`.
+
 ## Next
 
 - [background-tasks.md](background-tasks.md)

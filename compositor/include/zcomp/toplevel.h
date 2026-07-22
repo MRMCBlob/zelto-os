@@ -3,6 +3,8 @@
 #ifndef ZCOMP_TOPLEVEL_H
 #define ZCOMP_TOPLEVEL_H
 
+#include <stdint.h>
+
 #include <wayland-server-core.h>
 
 #include "zcomp/server.h"
@@ -33,6 +35,27 @@ typedef struct ZcompToplevel {
     // or close this window). Live only while ftl_handle is non-NULL.
     struct wl_listener ftl_request_activate;
     struct wl_listener ftl_request_close;
+
+    // --- window capture (zelto-toplevel-capture-v1, see capture.c) ----------
+    // Whether this window is currently the foreground one. Tracked here purely
+    // so zcomp_update_activation can spot the active -> inactive EDGE, which is
+    // when the snapshot is taken.
+    bool active;
+
+    // The app's manifest `no_snapshot=1` declaration, resolved through zsysd once
+    // at map (zcomp_capture_resolve_policy) and cached here. An app that opts out
+    // is never photographed at all — not "photographed and hidden" — so there is
+    // no picture of it anywhere for a later bug to leak.
+    bool no_snapshot;
+
+    // The last snapshot of this window: ARGB8888, snap_w * snap_h, owned by the
+    // compositor because the client that displays it is a different, shorter-
+    // lived process than the app that drew it. NULL until first backgrounded.
+    uint32_t *snap_data;
+    int snap_w, snap_h;
+
+    // ZcompCapture objects (clients watching this window for snapshots).
+    struct wl_list captures;
 } ZcompToplevel;
 
 // new_xdg_surface handler: adopt a freshly created xdg_surface (toplevel or

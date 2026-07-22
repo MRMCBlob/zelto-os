@@ -29,10 +29,10 @@ SAMPLE="${SAMPLE:-$REPO_ROOT/build-arm64/samples/hello/zelto-hello}"
 # app (SAMPLE) which the launcher exec's as "Rows".
 BAR="${BAR:-$REPO_ROOT/build-arm64/system/bar/zelto-bar}"
 LAUNCHER="${LAUNCHER:-$REPO_ROOT/build-arm64/system/launcher/zelto-launcher}"
-# P14 home screen + system navigation: the bottom 3-button nav bar (layer-shell,
+# P14 home screen + system navigation: the home indicator (layer-shell,
 # always-running like the bar) and the Recents task-overview overlay (fork/exec'd
-# by the nav bar's Recents button).
-NAV="${NAV:-$REPO_ROOT/build-arm64/system/nav/zelto-nav}"
+# by the indicator's swipe-up-and-hold gesture).
+HOMEBAR="${HOMEBAR:-$REPO_ROOT/build-arm64/system/homebar/zelto-homebar}"
 RECENTS="${RECENTS:-$REPO_ROOT/build-arm64/system/recents/zelto-recents}"
 CARDS="${CARDS:-$REPO_ROOT/build-arm64/system/apps/cards/zelto-cards}"
 # P8 system services: the permission broker (a plain daemon) + the consent
@@ -145,7 +145,7 @@ install_bin() {
 install_bin "$SAMPLE"   zelto-hello      # app #1 ("Rows"), launched by a tile
 install_bin "$CARDS"    zelto-cards      # app #2 ("Cards"), launched by a tile
 install_bin "$BAR"      zelto-bar        # status bar (layer-shell)
-install_bin "$NAV"      zelto-nav        # bottom nav bar (layer-shell, Back/Home/Recents)
+install_bin "$HOMEBAR"  zelto-homebar    # home indicator (layer-shell, gesture nav)
 install_bin "$RECENTS"  zelto-recents    # Recents task-overview overlay
 install_bin "$LAUNCHER" zelto-launcher   # app launcher / home grid (back toplevel)
 install_bin "$ZSYSD"    zsysd            # system-service broker (permissions+intents)
@@ -410,7 +410,11 @@ if is_dynamic "$ZCOMP"; then
     # 1b. the libzelto apps' closure (libwayland-client, libharfbuzz,
     #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
     #     a closure, but bundle each so a future divergence can't break boot.
-    for binp in "$SAMPLE" "$CARDS" "$BAR" "$NAV" "$RECENTS" "$LAUNCHER" \
+    # $HOMEBAR, not $NAV: P40 replaced the three-button nav bar with the home
+    # indicator and renamed the variable at the top of this file, but this list
+    # kept the old name. Under `set -u` an unset variable is fatal, so EVERY
+    # QEMU boot died here ("NAV: unbound variable") until P44 ran one.
+    for binp in "$SAMPLE" "$CARDS" "$BAR" "$HOMEBAR" "$RECENTS" "$LAUNCHER" \
                 "$ZSYSD" "$CONSENT" "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" \
                 "$DIM" "$LOCKAPP" "$VOLAPP" "$KBDAPP" "$PINGER" "$NOTEPAD" \
                 "$SETTINGS_APP" "$FETCH" "$INSTALLER" "$STORE"; do
