@@ -250,6 +250,23 @@ launch_shell() {
                     echo "[zelto-init] keyboard will type '$kt'"
                 ;;
         esac
+        # P48 KBDTAP harness: the ON-TARGET drive of the classifier, accents,
+        # repeat, callout and autocorrect — everything ZELTO_KBD_TYPE deliberately
+        # does NOT exercise (it isolates the relay). The spec is a ZELTO_KBD_TAP
+        # sequence of comma-separated key names with the deliberate-miss and hold
+        # syntax ("l@-45", "e~700>é", "BKSP~2600"). No spaces, so it survives the
+        # cmdline word-split. This is the whole point of item 4: these timings run
+        # against the guest clock under TCG, which lags wall time, and a hold whose
+        # threshold is wall-clock is a real hazard on a clock that lags.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" zelto.kbdtap="*)
+                kp=$(cat /proc/cmdline)
+                kp=${kp##*zelto.kbdtap=}
+                kp=${kp%% *}
+                [ -n "$kp" ] && export ZELTO_KBD_TAP="$kp" && \
+                    echo "[zelto-init] keyboard will tap '$kp'"
+                ;;
+        esac
         # The system-service broker (zsysd): the permission authority. Started
         # before the shell so an app's z_perm_request reaches it; it inherits
         # WAYLAND_DISPLAY + ZELTO_FONT so the consent dialog it spawns on a

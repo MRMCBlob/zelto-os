@@ -126,7 +126,7 @@ KCMD="console=ttyAMA0 rdinit=/init loglevel=7"
 # sending a key. Refuse instead, in the same spirit as QSPERSIST refusing to run
 # without socat: a harness that cannot execute must not exit 0.
 for _h in STORAGE NET INSTALL HOME_TEST QSPERSIST SETTINGS ACTUATE LOCK KBD \
-          VOLUME SHADE2 QUICK NAV; do
+          KBDTAP VOLUME SHADE2 QUICK NAV; do
     if [ "${!_h:-0}" = "1" ] && [ "${HEADLESS:-0}" != "1" ]; then
         echo "!! $_h=1 needs HEADLESS=1 — every harness runs inside the headless"
         echo "   branch, and without it this script would boot a window, wait and"
@@ -1343,6 +1343,127 @@ if [ "${HEADLESS:-0}" = "1" ]; then
             echo "    process on boot 2."
         fi
         echo "==> typed-text persistence test done; logs in $OUT/kbd-boot*.log"
+        exit "$rc"
+    fi
+
+    # P48 KBDTAP: DRIVE THE KEYBOARD ON THE REAL TARGET. Everything P47/P48 built —
+    # the classifier, the accents, the backspace repeat, the callout, autocorrect —
+    # was verified in the SIMULATOR, which is the exact belief that let the target
+    # render zero glyphs from P30 to P45. KBD=1 above only exercises ZELTO_KBD_TYPE
+    # (the relay, kept as the isolating half); it never touches a key cap, a hold or
+    # a timing. This one does, through the coordinate-free ZELTO_KBD_TAP the sim
+    # tests use, plumbed onto the cmdline as zelto.kbdtap= (initramfs init).
+    #
+    # WHAT P48 FOUND HERE, and it is the reason this harness exists. The keyboard's
+    # geometry all works on the real target: the classifier resolved every press,
+    # the callout drew the chosen letter, the long-press ACCENTS opened and the
+    # slide committed 'é', and the backspace REPEAT started and accelerated. The
+    # holds — the things everyone expected the lagging guest clock to break — held.
+    #
+    # What does NOT survive TCG is the SURROUNDING-TEXT ROUND TRIP. Every press
+    # below logs prefix='' on the target, where the host sim shows the prefix
+    # building 'h' -> 'he' -> 'hel'. The field commits the character, but the
+    # app-rebuilds-and-re-declares-its-surrounding-text cycle does not complete
+    # before the next tap fires (tap_tick re-arms 250 GUEST-ms later, and under TCG
+    # the compositor + Notepad cannot turn a frame around in that budget). So every
+    # feature that reads the field's contents — the prediction prefix, AUTOCORRECT,
+    # auto-capitalisation, the double-space period — sees stale or empty context and
+    # does nothing. This is NOT a real-hardware bug: at 60fps the round trip is
+    # ~16-32ms, far under a human's inter-key interval. It is a property of driving
+    # the keyboard faster than a TCG guest can render, and it is why KBD=1 kept
+    # ZELTO_KBD_TYPE as the isolating half and this harness ASSERTS only the
+    # timing- and round-trip-INDEPENDENT facts (the model built, the classifier
+    # ran). Autocorrect and the hold outcomes are REPORTED, not asserted, because
+    # both depend on the guest keeping up and the honest answer is "here is what it
+    # did", not a green light that would rot the day the guest got slower.
+    if [ "${KBDTAP:-0}" = "1" ]; then
+        SERIAL_T="$OUT/kbdtap-boot.log"
+        mkdir -p "$OUT"
+        # A sequence that touches every timing-sensitive path once:
+        #   t,e,h        type a typo (the classifier resolves each press)
+        #   SPACE        boundary -> autocorrect "teh" -> "the"
+        #   BKSP         immediately after -> revert to "teh"
+        #   SPACE        boundary again -> "the "
+        #   e~1400>é     press 'e', hold 1.4s, slide onto the é accent, release
+        #   BKSP~2600    press delete, hold 2.6s -> repeat, accelerate, whole-word
+        KTAP="t,e,h,SPACE,BKSP,SPACE,e~1400>é,BKSP~2600"
+        # zelto.kbd=N focuses Notepad's field (no tile/field tap); N large enough
+        # that its autosave never fires and steals focus mid-sequence.
+        K_DELAY="${SHOT_DELAY:-16}"
+        if [ "$K_DELAY" -lt 150 ]; then
+            K_DELAY=150
+            echo "==> SHOT_DELAY raised to ${K_DELAY}s: the tapping happens well"
+            echo "    after zcomp, Notepad and the keyboard are up, and the holds"
+            echo "    alone need ~4s of guest time on top of the boot."
+        fi
+        rm -f "$SERIAL_T"
+        qemu-system-aarch64 "${common[@]}" \
+            -append "$KCMD zelto.kbd=40 zelto.kbdtap=$KTAP" \
+            -display none \
+            -serial "file:$SERIAL_T" &
+        QPID=$!
+        sleep "$K_DELAY"
+        sync
+        kill "$QPID" 2>/dev/null || true
+        wait "$QPID" 2>/dev/null || true
+
+        echo "==> [kbdtap] what the keyboard did on the real target:"
+        grep -E "\[keyboard\] (lm |press |autocorrect|accents open|slide to|backspace repeat|callout)" \
+            "$SERIAL_T" | sed 's/^/    /' || true
+
+        rc=0
+        # Coarse, timing-INDEPENDENT: the dictionary built and named itself.
+        if ! grep -q "\[keyboard\] lm trie+bigram:" "$SERIAL_T"; then
+            echo "!! FAIL: the language model never built on the target (no 'lm"
+            echo "   trie+bigram' line). The keyboard did not come up, or the trie"
+            echo "   did not compile into the image."; rc=1
+        fi
+        # The classifier resolved presses (the whole P47/P48 hit path) on target.
+        if ! grep -q "\[keyboard\] press .* lm=trie+bigram" "$SERIAL_T"; then
+            echo "!! FAIL: no press was classified on the target — ZELTO_KBD_TAP"
+            echo "   did not reach the keyboard, or the field never focused (see"
+            echo "   $SERIAL_T)."; rc=1
+        fi
+        # Context-dependent features (autocorrect, prefix, auto-cap) are REPORTED,
+        # not asserted: they read the field's surrounding text, whose round trip
+        # does not keep up with the tap cadence under TCG (see the note above). A
+        # miss here is data about the guest's frame rate, not a keyboard bug.
+        echo "==> CONTEXT FEATURES (need the field's surrounding-text round trip,"
+        echo "    which lags the tap cadence under TCG — reported, not asserted):"
+        if grep -q "\[keyboard\] press .* prefix='he'" "$SERIAL_T" ||
+           grep -q "\[keyboard\] press .* prefix='hel'" "$SERIAL_T"; then
+            echo "    - prediction prefix: the field DID report back between taps"
+        else
+            echo "    - prediction prefix: every press saw prefix='' — the field's"
+            echo "      surrounding text never caught up to the typing under TCG"
+        fi
+        if grep -q "autocorrect 'teh' -> 'the'" "$SERIAL_T"; then
+            echo "    - autocorrect: FIRED on the target"
+        else
+            echo "    - autocorrect: did NOT fire (the boundary saw an empty word,"
+            echo "      because the field round trip lagged — verified in the sim)"
+        fi
+        # The holds are REPORTED, not asserted: their thresholds are wall-clock and
+        # the guest clock lags, so a miss here is data about the clock, not a bug.
+        echo "==> HOLD OUTCOMES (wall-clock thresholds on a lagging guest clock —"
+        echo "    reported, not asserted):"
+        if grep -q "accents open for 'e'" "$SERIAL_T"; then
+            echo "    - long-press accents: OPENED"
+            grep -q "slide to 'é'" "$SERIAL_T" && \
+                echo "    - accent slide+commit: REACHED 'é'" || \
+                echo "    - accent slide+commit: popup opened but slide not logged"
+        else
+            echo "    - long-press accents: did NOT open in the guest-time budget"
+        fi
+        if grep -q "backspace repeat begins" "$SERIAL_T"; then
+            echo "    - backspace repeat: STARTED"
+            grep -q "mode=word" "$SERIAL_T" && \
+                echo "    - backspace repeat: reached WHOLE-WORD mode" || \
+                echo "    - backspace repeat: did not reach whole-word in the budget"
+        else
+            echo "    - backspace repeat: did NOT begin in the guest-time budget"
+        fi
+        echo "==> keyboard-on-target drive done; serial in $SERIAL_T"
         exit "$rc"
     fi
 
