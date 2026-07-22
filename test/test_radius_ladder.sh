@@ -121,10 +121,14 @@ fi
 #   MUST: outer >= inner. A container squarer than its own contents makes the
 #         inner corner poke out of the outer curve — it is wrong at any padding
 #         and in any style.
-#   IDEAL: outer == inner + padding (concentric corners: the gap between the two
-#         curves stays constant all the way round). Measured and REPORTED here,
-#         not asserted, because closing a small deficit means moving a token four
-#         surfaces share and that is a design decision, not a lint.
+#   CONCENTRIC: outer == inner + padding (the gap between the two curves stays
+#         constant all the way round). P45/P46/P47 REPORTED this as a deficit
+#         (sheet 32, rows 16 inset 20, so concentric wanted 36) and left it,
+#         because moving Z_RADIUS_SHEET touches four surfaces and knocks it off the
+#         round 10/16/22/32 ladder. P48 CLOSED it from the other side — the share
+#         sheet's own inset dropped 20 -> 16, so 32 = 16 + 16 exactly — and now
+#         that it is closed it is ASSERTED, so the deficit cannot creep back the
+#         next time someone nudges SHEET_PAD.
 sheet="$(radius_of Z_RADIUS_SHEET)"
 card="$(radius_of Z_RADIUS_CARD)"
 sheet_pad="$(sed -n 's/^#define SHEET_PAD[[:space:]]*\([0-9.]*\)f.*/\1/p' \
@@ -137,9 +141,12 @@ else
         zt_fail "the share sheet's corner is SQUARER than the rows inside it, so their corners cut outside its curve" \
                 "Z_RADIUS_SHEET >= Z_RADIUS_CARD ($card)" "$sheet"
     fi
-    echo "note: sheet corner $sheet, rows $card inset $sheet_pad — concentric" \
-         "would be $(awk -v i="$card" -v p="$sheet_pad" 'BEGIN{printf "%.0f", i+p}')" \
-         "(deficit $(awk -v o="$sheet" -v i="$card" -v p="$sheet_pad" 'BEGIN{printf "%.0f", i+p-o}'))"
+    want="$(awk -v i="$card" -v p="$sheet_pad" 'BEGIN{printf "%.0f", i+p}')"
+    if ! awk -v o="$sheet" -v w="$want" 'BEGIN { exit !(o == w) }'; then
+        zt_fail "the share sheet's corners are not concentric with its rows: the row radius plus the sheet inset must equal the sheet radius, or the gap between the two curves varies around the corner" \
+                "Z_RADIUS_SHEET == Z_RADIUS_CARD + SHEET_PAD ($card + $sheet_pad = $want)" "$sheet"
+    fi
+    echo "note: sheet corner $sheet == rows $card + inset $sheet_pad — concentric"
 fi
 
 zt_done

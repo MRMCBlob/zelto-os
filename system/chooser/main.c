@@ -54,7 +54,15 @@
 // sheet with three targets should not be as tall as one with twelve, and a
 // fixed-height sheet with empty material under the last row reads as a panel that
 // failed to load.
-#define SHEET_PAD 20.0f
+// 16, not 20 (P48). The rows inside the sheet are drawn with Z_RADIUS_CARD (16)
+// and the sheet itself with Z_RADIUS_SHEET (32); concentric corners — the gap
+// between the two curves constant all the way round — need outer = inner + inset,
+// i.e. 32 = 16 + 16. At 20 the sheet's corner was 4 units SQUARER than concentric
+// (test_radius_ladder reported the deficit for two phases). Closing it here, in
+// the share sheet's own inset, rather than by moving Z_RADIUS_SHEET — which four
+// surfaces share and which sits on a deliberately-round ladder (10/16/22/32) that
+// 36 would fall off.
+#define SHEET_PAD 16.0f
 #define SHEET_ROW_H 60.0f
 // The gaps between the sheet's rows, named so that sheet_height() below can be an
 // expression over the SAME constants the rows are built from. They were bare
