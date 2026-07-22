@@ -167,6 +167,15 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
                 state->note.len);
         fflush(stderr);
     }
+    // P47. ZELTO_NOTEPAD_SECURE=1 marks the note field a PASSWORD field, which is
+    // not a notepad feature — it is the only way to get a secure field in front of
+    // the real keyboard without inventing a login app for one test. What it
+    // exercises is the whole relay: the field declares content purpose PASSWORD
+    // through text-input-v3, the compositor forwards it to input-method-v2, and
+    // the keyboard turns its language model off. Everything in that chain has been
+    // in place since P21 except the two ends.
+    const char *secure = getenv("ZELTO_NOTEPAD_SECURE");
+    state->note.secure = secure && secure[0] == '1';
     if (echo && echo[0] && !state->autofocused) {
         state->autofocused = true;
         z_app_focus_field(app, &state->note);

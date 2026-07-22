@@ -376,6 +376,14 @@ typedef struct ZTextField {
     // the framework keeps them in 0..len as the buffer changes.
     int caret;
     int anchor;
+    // A PASSWORD field (P47). Two consequences, and the second is the one that
+    // matters: the field renders bullets instead of the text, and text-input-v3
+    // declares CONTENT_PURPOSE_PASSWORD, which the compositor relays to the
+    // keyboard. The keyboard turns off everything that assumes the text is
+    // language — adaptive touch targets, auto-capitalisation, the double-space
+    // period — because a password is precisely the string those get wrong, and
+    // "the keyboard corrected my password" is unfixable from the app's side.
+    bool secure;
     // Fired from the app loop after the buffer changes (a committed string, a
     // backspace, a paste or a cut), with the live app + the app state pointer.
     // NULL = ignore.
@@ -499,6 +507,35 @@ void z_im_commit_text(ZApp *app, const char *utf8);
 
 // Delete one byte before the cursor in the focused field (backspace).
 void z_im_backspace(ZApp *app);
+
+// What KIND of field has focus (text-input-v3's content purpose, relayed to the
+// input method by the compositor). The keyboard reads it to decide what it is
+// allowed to do: a PASSWORD field must not get adaptive touch targets, must not
+// auto-capitalise and must not learn from what is typed into it, because none of
+// those helps when the text is not a word and all of them leak it.
+//
+// NORMAL is the default and also what is reported when no field is focused or
+// the client never set a content type; OTHER is every purpose this system does
+// not treat specially (digits, url, email, ...), reported so a caller can tell
+// "not password" from "not told".
+typedef enum ZImPurpose {
+    Z_IM_PURPOSE_NORMAL = 0,
+    Z_IM_PURPOSE_PASSWORD,
+    Z_IM_PURPOSE_OTHER,
+} ZImPurpose;
+ZImPurpose z_im_purpose(ZApp *app);
+
+// The focused field's text as the APP last reported it, and where the cursor is
+// in it (byte offset). This is the surrounding-text half of text-input-v3, which
+// the compositor has been relaying since P21 and nobody read: it is the only way
+// the keyboard can know what has already been typed, which is what
+// auto-capitalisation, the double-space period and the prediction context are all
+// rules about. Returns "" with *cursor = 0 when the app is not sending it.
+//
+// It is the app's text, not the keyboard's echo of its own keystrokes: a paste, a
+// caret move or a programmatic edit all show up here and none of them go through
+// a key cap.
+const char *z_im_surrounding(ZApp *app, int *cursor);
 
 // ---------------------------------------------------------------------------
 // Clipboard + text selection (P22).
@@ -1777,6 +1814,57 @@ typedef void (*ZProbeVisitor)(void *ud, ZTapAction on_data, void *data,
                               ZAction on_plain, float x, float y, float w,
                               float h);
 void z_probe_taps(ZApp *app, ZProbeVisitor fn, void *ud);
+
+// Resolve a control's FRAME without pressing it. Same lookup as z_probe_tap and
+// none of the consequences — for a caller that wants to aim somewhere OTHER than
+// the centre (the keyboard's deliberate-miss harness) and must therefore ask
+// where the centre is first.
+ZProbeTap z_probe_frame(ZApp *app, ZTapAction on_data, void *data,
+                        ZAction on_plain);
+
+// What the PLAIN geometric hit walk finds at a point — the rectangles, and
+// nothing else. No dispatch, and deliberately NOT routed through a tap resolver
+// (below): this is the control that says what a press at this point would have
+// done before anything clever was put in front of it. `found` false means the
+// point is in a dead gutter and a real finger there would have done nothing.
+typedef struct ZProbeHit {
+    bool found;
+    float x, y, w, h;
+    ZTapAction on_data;
+    void *data;
+    ZAction on_plain;
+} ZProbeHit;
+ZProbeHit z_probe_at(ZApp *app, float x, float y);
+
+// ---------------------------------------------------------------------------
+// Tap resolver (P47) — a surface that decides for itself what a press meant.
+//
+// The default answer to "what did this press hit?" is the rectangle under it,
+// and for almost everything that is right. It is wrong for a keyboard. Key caps
+// are ~32pt wide because a ten-key row on a 390pt phone cannot make them wider,
+// which is under the finger's own contact patch — so a keyboard that resolves
+// presses by rectangle is a keyboard you have to aim at. The fix every usable
+// phone keyboard has shipped since 2007 is to keep the ART fixed and let the
+// TARGETS move: the region that yields 'l' grows after "hel" and the region that
+// yields 'k' shrinks, without a pixel changing. Rectangles cannot express that
+// (grow two neighbours and they overlap; grow neither and the gutter between them
+// is dead), so the surface answers the question itself.
+//
+// The resolver is called on the release of a tap, with the surface-local point,
+// BEFORE the default hit walk. Return true to say "I handled this"; return false
+// to fall through to the ordinary rectangle dispatch. It is also called on the
+// release that ends a LONG PRESS, which is what makes press-hold-slide-release
+// (the accent popup) expressible — the default path swallows that release.
+//
+// One resolver per app. Passing NULL removes it.
+typedef bool (*ZTapResolver)(ZApp *app, void *state, float x, float y);
+void z_tap_resolver(ZApp *app, ZTapResolver fn);
+
+// Drive the surface's tap path at a point, exactly as a finger's release does:
+// the resolver first, the rectangle walk if it declines. This is what a test
+// presses with — the same function the pointer listener calls, so there is no
+// second code path to keep honest.
+void z_probe_press(ZApp *app, float x, float y);
 
 #ifdef __cplusplus
 }

@@ -67,11 +67,56 @@ app's text-input focus and deactivates the keyboard. The lock keeps its bespoke
 4-digit keypad (it must work with no app in focus); it does not use the soft
 keyboard.
 
+## Adaptive touch targets
+
+A character cap is **31.5–32.1pt** wide by 41.6pt tall, and it cannot be wider:
+ten keys across a 390pt phone is 38.9pt a key *with no gaps at all*. iOS's caps
+are the same size for the same reason, and the 44pt guideline is not what its
+keyboard obeys. What makes a cap that size typeable is not its width — it is that
+**the touch targets are not the caps**.
+
+The art never moves. The regions do, on every keystroke. After `hel` the region
+that yields `l` is much larger than the region that yields `k` beside it, in
+proportion to how likely each letter is. Implemented as a **classifier**, not as
+resized rectangles (grown rectangles overlap, tie and leave gaps):
+
+```
+score(key) = P(touch | key) × P(key | prefix)          argmax wins
+             ^ Gaussian on the distance   ^ the language model
+               from the key's centre,       (system/keyboard/lm_bigram.c)
+               σ = 0.35 × the cap's size
+```
+
+Three consequences:
+
+- **The dead gutter is gone.** The 11-unit gap between caps paints no key and
+  used to *hit* no key — ~15% of every row did nothing. The classifier never asks
+  which rectangle contains the point, so every point on the strip resolves to
+  something. The cap audit prints `gutter` (still ~15%, unchanged) and `dead`
+  (now 0) separately.
+- **A dead-centre press is always that key.** No prefix can override the inner
+  half of a cap, or the keyboard could not type a password, a name, or any word
+  the model has not seen.
+- **Password fields turn it off.** A secure `ZTextField` declares
+  `CONTENT_PURPOSE_PASSWORD` on text-input-v3; the compositor relays it; the
+  keyboard reads it with `z_im_purpose()` and falls back to geometry.
+
+The model sits behind a seam (`system/keyboard/predict.h`) and says which one it
+is. Today it is a compiled-in letter-pair table, which knows that `l` often
+follows `e` but has no idea the word `hello` exists — so it cannot grow the space
+bar when the prefix is a complete word. A prefix tree over a shipped word list
+replaces `lm_bigram.c` alone.
+
+The prefix comes from **text-input-v3 surrounding text**, relayed since P21 and
+read since P47 — not from an echo of the keyboard's own keystrokes, which would
+be wrong the moment anything else edited the field.
+
 ## App API
 
 ```c
 // In app state: a retained buffer the widget edits.
-ZTextField note;   // { char text[256]; int len; on_change; }
+ZTextField note;   // { char text[256]; int len; secure; on_change; }
+note.secure = true;   // renders bullets AND disables the keyboard's language model
 
 // In body(): tapping this focuses it and raises the keyboard.
 TextField(app, &state->note, "Type a note...");
@@ -84,6 +129,9 @@ The keyboard app itself uses the input-method side:
 z_im_bind(app, on_show, on_hide, state);  // become the seat's input method
 z_im_commit_text(app, "a");               // insert a character
 z_im_backspace(app);                       // delete one char before the cursor
+z_im_purpose(app);                        // NORMAL / PASSWORD / OTHER
+z_im_surrounding(app, &cursor);           // the field's text, as its app reports it
+z_tap_resolver(app, kbd_resolve);         // this surface resolves its own presses
 ```
 
 See `docs/api-reference/c/ui.md`, `compositor/src/text_input.c`, and

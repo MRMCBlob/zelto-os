@@ -397,13 +397,16 @@ static void field_on_pan(ZApp *app, void *state, const ZPanEvent *e) {
 
 // One run of the field's text (a byte slice), optionally highlighted (selection).
 static ZView field_run(const char *text, int a, int b, bool highlight) {
-    char buf[Z_TEXTFIELD_CAP];
+    // Three bytes per buffer byte: a SECURE field's runs are a masked copy whose
+    // bullet is three UTF-8 bytes wide (P47), so a buffer sized to the field's own
+    // capacity would silently truncate a long password's dots at a third of it.
+    char buf[Z_TEXTFIELD_CAP * 3];
     int n = b - a;
     if (n < 0) {
         n = 0;
     }
-    if (n >= Z_TEXTFIELD_CAP) {
-        n = Z_TEXTFIELD_CAP - 1;
+    if (n >= (int)sizeof(buf)) {
+        n = (int)sizeof(buf) - 1;
     }
     memcpy(buf, text + a, (size_t)n);
     buf[n] = '\0';
@@ -483,29 +486,53 @@ ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
     int hi = anchor < caret ? caret : anchor;
     bool sel = active && lo != hi;
 
+    // A SECURE field (P47) never paints its own text. The runs are built from a
+    // masked copy rather than by asking the renderer to substitute, so the
+    // caret/selection arithmetic below stays exactly what it was: one bullet per
+    // BYTE of the buffer, and every offset scaled by the bullet's width in bytes.
+    // (The bullet is U+2022, three bytes; the field's offsets are byte offsets.)
+    static const char DOT[] = "\xe2\x80\xa2";
+    char mask[Z_TEXTFIELD_CAP * 3];
+    const char *shown = f->text;
+    int mul = 1;
+    if (f->secure) {
+        int m = 0;
+        for (int i = 0; i < f->len && m + 4 <= (int)sizeof(mask); i++) {
+            memcpy(mask + m, DOT, 3);
+            m += 3;
+        }
+        mask[m] = '\0';
+        shown = mask;
+        mul = 3;
+    }
+    int len = f->len * mul;
+    lo *= mul;
+    hi *= mul;
+    caret *= mul;
+
     if (sel) {
         // [before] |handleL| [selected+highlight] |handleR| [after]
         if (lo > 0) {
-            n->children[n->n_children++] = field_run(f->text, 0, lo, false);
+            n->children[n->n_children++] = field_run(shown, 0, lo, false);
         }
         n->children[n->n_children++] = field_handle();
-        n->children[n->n_children++] = field_run(f->text, lo, hi, true);
+        n->children[n->n_children++] = field_run(shown, lo, hi, true);
         n->children[n->n_children++] = field_handle();
-        if (hi < f->len) {
-            n->children[n->n_children++] = field_run(f->text, hi, f->len, false);
+        if (hi < len) {
+            n->children[n->n_children++] = field_run(shown, hi, len, false);
         }
     } else if (active) {
         // [before caret] |caret| [after caret]
         if (caret > 0) {
-            n->children[n->n_children++] = field_run(f->text, 0, caret, false);
+            n->children[n->n_children++] = field_run(shown, 0, caret, false);
         }
         n->children[n->n_children++] = field_caret();
-        if (caret < f->len) {
+        if (caret < len) {
             n->children[n->n_children++] =
-                field_run(f->text, caret, f->len, false);
+                field_run(shown, caret, len, false);
         }
     } else {
-        n->children[n->n_children++] = field_run(f->text, 0, f->len, false);
+        n->children[n->n_children++] = field_run(shown, 0, len, false);
     }
     return n;
 }

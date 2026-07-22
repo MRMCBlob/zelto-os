@@ -218,6 +218,19 @@ struct ZApp {
     bool im_active, im_pending_active;
     ZImVisibilityCb im_show_cb, im_hide_cb;
     void *im_ud;
+    // The relayed field CONTEXT (P47). Both halves have been arriving from the
+    // compositor since P21 (compositor/src/text_input.c send_im_state forwards
+    // set_content_type and set_surrounding_text verbatim) into listener stubs that
+    // dropped them on the floor. The keyboard needs both: the purpose to know a
+    // password field, the surrounding text to know what has been typed.
+    ZImPurpose im_purpose;
+    char im_surround[Z_TEXTFIELD_CAP];
+    int im_cursor;
+    // The APP side of surrounding text: what we last told the compositor, so a
+    // field whose contents changed re-sends and one that did not stays quiet.
+    char ti_sent[Z_TEXTFIELD_CAP];
+    int ti_sent_cursor;
+    bool ti_sent_secure;
 
     // Clipboard (P22). Copy/Cut take ownership of the CLIPBOARD selection through
     // the CORE wl_data_device (data_device_mgr + data_device): a wl_data_source is
@@ -293,6 +306,10 @@ struct ZApp {
     bool long_press_armed, long_pressed;
     double press_s;              // monotonic time of the press
     ZView long_press_target;     // OnLongPress node under the press (NULL = none)
+
+    // Tap resolver (P47): this surface answers "what did that press mean?" itself.
+    // See the contract in zelto/ui.h; zelto-keyboard is the only client.
+    ZTapResolver tap_resolver;
 
     // One-shot timer (z_after). Not tied to seat activity — a plain wall-clock
     // deadline the app loop bounds its poll() on, firing `after_cb` once. Drives
@@ -576,21 +593,46 @@ static void render(ZApp *app) {
     // (blur / app backgrounded), which hides it. The flags dedup the commits.
     if (app->text_input) {
         bool want = app->active_field != NULL && app->ti_entered;
-        if (want && !app->ti_enabled) {
-            zwp_text_input_v3_enable(app->text_input);
+        // The field's CONTEXT, not just its existence (P47). The purpose says
+        // what kind of field it is (a secure one turns the keyboard's language
+        // machinery off); the surrounding text says what is already in it, which
+        // is what auto-capitalisation and the double-space period are rules about.
+        // Both have to be RE-SENT as the field changes — the P21 code sent them
+        // once, on the enable edge, so the keyboard's view of the text was
+        // whatever it was at focus time, forever.
+        bool ctx_changed =
+            want && app->ti_enabled &&
+            (strcmp(app->ti_sent, app->active_field->text) != 0 ||
+             app->ti_sent_cursor != app->active_field->caret ||
+             app->ti_sent_secure != app->active_field->secure);
+        if (want && (!app->ti_enabled || ctx_changed)) {
+            if (!app->ti_enabled) {
+                zwp_text_input_v3_enable(app->text_input);
+            }
             zwp_text_input_v3_set_content_type(
                 app->text_input, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
-                ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+                app->active_field->secure
+                    ? ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PASSWORD
+                    : ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
             zwp_text_input_v3_set_surrounding_text(
                 app->text_input, app->active_field->text,
                 (uint32_t)app->active_field->caret,
                 (uint32_t)app->active_field->caret);
             zwp_text_input_v3_commit(app->text_input);
             app->ti_enabled = true;
+            snprintf(app->ti_sent, sizeof(app->ti_sent), "%s",
+                     app->active_field->text);
+            app->ti_sent_cursor = app->active_field->caret;
+            app->ti_sent_secure = app->active_field->secure;
         } else if (!want && app->ti_enabled) {
             zwp_text_input_v3_disable(app->text_input);
             zwp_text_input_v3_commit(app->text_input);
             app->ti_enabled = false;
+            // Forget what we sent, so the NEXT field re-declares its own context
+            // rather than inheriting a match against the last one's.
+            app->ti_sent[0] = '\0';
+            app->ti_sent_cursor = -1;
+            app->ti_sent_secure = false;
         }
     }
 
@@ -791,6 +833,74 @@ ZProbeTap z_probe_tap(ZApp *app, ZTapAction on_data, void *data,
         r.ran = true;
     }
     return r;
+}
+
+// The same lookup with none of the consequences. A caller that wants to press
+// somewhere OTHER than the centre has to be told where the centre is first, and
+// making it ask z_probe_tap for that would press the key on the way past.
+ZProbeTap z_probe_frame(ZApp *app, ZTapAction on_data, void *data,
+                        ZAction on_plain) {
+    ZProbeTap r = {0};
+    if (!app || !app->root || (!on_data && !on_plain)) {
+        return r;
+    }
+    ZView n = probe_find(app->root, on_data, data, on_plain);
+    if (!n) {
+        return r;
+    }
+    r.found = true;
+    r.x = n->x;
+    r.y = n->y;
+    r.w = n->w;
+    r.h = n->h;
+    return r;
+}
+
+// What the RECTANGLES say is at this point. Deliberately not routed through the
+// tap resolver: this is the control a resolver's claim is measured against, so it
+// has to be the answer that existed before the resolver did.
+ZProbeHit z_probe_at(ZApp *app, float x, float y) {
+    ZProbeHit r = {0};
+    if (!app || !app->root) {
+        return r;
+    }
+    ZView n = hit_test(app->root, (double)x, (double)y);
+    if (!n) {
+        return r;
+    }
+    r.found = true;
+    r.x = n->x;
+    r.y = n->y;
+    r.w = n->w;
+    r.h = n->h;
+    r.on_data = n->on_tap_data;
+    r.data = n->tap_data;
+    r.on_plain = n->on_tap;
+    return r;
+}
+
+// THE tap path: the resolver first, the rectangle walk if it declines. Both the
+// pointer listener's release and z_probe_press go through this and nothing else
+// does, so a test cannot accidentally exercise a path a finger does not.
+static void tap_at(ZApp *app, double x, double y) {
+    if (app->tap_resolver && app->tap_resolver(app, app->state, (float)x,
+                                               (float)y)) {
+        return;
+    }
+    dispatch_tap(app, hit_test(app->root, x, y));
+}
+
+void z_tap_resolver(ZApp *app, ZTapResolver fn) {
+    if (app) {
+        app->tap_resolver = fn;
+    }
+}
+
+void z_probe_press(ZApp *app, float x, float y) {
+    if (!app || !app->root) {
+        return;
+    }
+    tap_at(app, (double)x, (double)y);
 }
 
 static void probe_walk(ZView n, ZProbeVisitor fn, void *ud) {
@@ -1398,16 +1508,29 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
     app->long_press_armed = false;
     if (app->long_pressed) {
         // The long-press already handled this gesture; swallow the tap/pan-end.
+        //
+        // Except on a surface that resolves its own taps (P47). Press-hold-slide-
+        // release is one gesture with TWO decisions in it — the hold opens the
+        // accent popup, the release picks the accent — and the second one arrives
+        // as exactly this release, at a point that is now over a control the hold
+        // created. Swallowing it unconditionally is what makes a long-press menu
+        // impossible to finish without lifting and tapping again. The resolver
+        // gets the release point and says whether it meant anything; if it
+        // declines, the swallow stands (a long-press that opened nothing must not
+        // also emit the tap it suppressed).
         app->long_pressed = false;
         app->panning = false;
         press_release(app);
+        if (app->tap_resolver) {
+            app->tap_resolver(app, app->state, (float)app->ptr_x,
+                              (float)app->ptr_y);
+        }
         return;
     }
     if (!app->panning) {
         // No drag: it was a tap. Flash the press feedback, then run the handler.
-        ZView hit = hit_test(app->root, app->ptr_x, app->ptr_y);
         press_flash_release(app);
-        dispatch_tap(app, hit);
+        tap_at(app, app->ptr_x, app->ptr_y);
         return;
     }
     // Drag end. An interruptible back-swipe either flings the pop through or snaps
@@ -1737,10 +1860,19 @@ static void im_deactivate(void *data, struct zwp_input_method_v2 *im) {
     (void)im;
     ((ZApp *)data)->im_pending_active = false;
 }
+// The focused field's contents, as its app reports them. Kept, not dropped
+// (P47): the keyboard's prediction context, auto-capitalisation and double-space
+// period are all rules about the text BEFORE the cursor, and the keyboard cannot
+// see the field. Echoing its own keystrokes instead would be wrong the moment
+// anything else edited the field — a paste, a caret move, a programmatic clear.
 static void im_surrounding_text(void *data, struct zwp_input_method_v2 *im,
                                 const char *text, uint32_t cursor,
                                 uint32_t anchor) {
-    (void)data; (void)im; (void)text; (void)cursor; (void)anchor;
+    (void)im; (void)anchor;
+    ZApp *app = data;
+    snprintf(app->im_surround, sizeof(app->im_surround), "%s", text ? text : "");
+    int len = (int)strlen(app->im_surround);
+    app->im_cursor = (int)cursor > len ? len : (int)cursor;
 }
 static void im_text_change_cause(void *data, struct zwp_input_method_v2 *im,
                                  uint32_t cause) {
@@ -1748,7 +1880,14 @@ static void im_text_change_cause(void *data, struct zwp_input_method_v2 *im,
 }
 static void im_content_type(void *data, struct zwp_input_method_v2 *im,
                             uint32_t hint, uint32_t purpose) {
-    (void)data; (void)im; (void)hint; (void)purpose;
+    (void)im; (void)hint;
+    ZApp *app = data;
+    app->im_purpose =
+        purpose == ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PASSWORD
+            ? Z_IM_PURPOSE_PASSWORD
+            : (purpose == ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL
+                   ? Z_IM_PURPOSE_NORMAL
+                   : Z_IM_PURPOSE_OTHER);
 }
 static void im_done(void *data, struct zwp_input_method_v2 *im) {
     (void)im;
@@ -1756,6 +1895,15 @@ static void im_done(void *data, struct zwp_input_method_v2 *im) {
     app->im_serial++;   // commit serial = number of done events received
     if (app->im_pending_active != app->im_active) {
         app->im_active = app->im_pending_active;
+        if (!app->im_active) {
+            // The field is gone: forget its context, or the NEXT field inherits
+            // it. A keyboard that carried a password field's purpose forward
+            // would silently stay dumb; one that carried the text forward would
+            // predict the previous field's last word into this one.
+            app->im_purpose = Z_IM_PURPOSE_NORMAL;
+            app->im_surround[0] = '\0';
+            app->im_cursor = 0;
+        }
         if (app->im_active) {
             if (app->im_show_cb) app->im_show_cb(app, app->im_ud);
         } else {
@@ -3226,6 +3374,23 @@ void z_im_backspace(ZApp *app) {
     // Delete one byte before the cursor (ASCII in the MVP); commit the batch.
     zwp_input_method_v2_delete_surrounding_text(app->input_method, 1, 0);
     zwp_input_method_v2_commit(app->input_method, app->im_serial);
+}
+
+ZImPurpose z_im_purpose(ZApp *app) {
+    return app ? app->im_purpose : Z_IM_PURPOSE_NORMAL;
+}
+
+const char *z_im_surrounding(ZApp *app, int *cursor) {
+    if (!app) {
+        if (cursor) {
+            *cursor = 0;
+        }
+        return "";
+    }
+    if (cursor) {
+        *cursor = app->im_cursor;
+    }
+    return app->im_surround;
 }
 
 // --- idle notifications (ext-idle-notify-v1) -------------------------------

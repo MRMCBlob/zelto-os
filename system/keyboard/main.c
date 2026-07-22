@@ -30,6 +30,7 @@
 #include <zelto/ui.h>
 
 #include "common/safe_areas.h"
+#include "predict.h"
 
 typedef struct KbdState {
     bool inited;
@@ -126,6 +127,8 @@ static void on_char(ZApp *app, void *state, void *data) {
         buf[0] = (char)(cp - 32);
     }
     z_im_commit_text(app, buf);
+    fprintf(stderr, "[keyboard] commit '%s'\n", buf);
+    fflush(stderr);
     if (s->shift) {
         s->shift = false;
         z_invalidate(app);
@@ -225,40 +228,146 @@ static void key_name(ZTapAction on_data, void *data, ZAction on_plain, char *buf
     snprintf(buf, n, "?");
 }
 
-// --- the touch-target audit -------------------------------------------------
-// ZELTO_KBD_CAPS=1 measures every cap on the laid-out grid and prints it. The
-// numbers are the assertion; this file does not decide what passes.
+// --- the laid-out grid, as data ---------------------------------------------
+// Every cap the layout produced: its frame, its name, the handler it carries and
+// the character it yields. Read straight off the tree with z_probe_taps, so it is
+// whatever the last build actually laid out — there is no second description of
+// the keyboard anywhere in this file to drift from the first.
+//
+// Both the touch-target audit and the press classifier work from this, which is
+// the point: the thing that decides what a press meant and the thing that reports
+// how big the targets are cannot disagree about where the keys are.
 #define AUDIT_MAX 64
-typedef struct CapAudit {
+typedef struct CapSet {
     int n;
-    struct {
-        char name[16];
-        float x, y, w, h;
-    } cap[AUDIT_MAX];
-} CapAudit;
+    char name[AUDIT_MAX][16];
+    ZKbdKey key[AUDIT_MAX];
+    ZTapAction on_data[AUDIT_MAX];
+    void *data[AUDIT_MAX];
+    ZAction on_plain[AUDIT_MAX];
+} CapSet;
 
 static float in_pt(float units) {
     return units * (float)Z_TYPE_DEN / (float)Z_TYPE_NUM;
 }
 
-static void audit_cap(void *ud, ZTapAction on_data, void *data, ZAction on_plain,
-                      float x, float y, float w, float h) {
-    CapAudit *a = ud;
+static void collect_cap(void *ud, ZTapAction on_data, void *data,
+                        ZAction on_plain, float x, float y, float w, float h) {
+    CapSet *a = ud;
     if (a->n >= AUDIT_MAX) {
         return;
     }
-    key_name(on_data, data, on_plain, a->cap[a->n].name,
-             sizeof(a->cap[a->n].name));
-    a->cap[a->n].x = x;
-    a->cap[a->n].y = y;
-    a->cap[a->n].w = w;
-    a->cap[a->n].h = h;
-    a->n++;
+    int i = a->n++;
+    key_name(on_data, data, on_plain, a->name[i], sizeof(a->name[i]));
+    a->key[i].x = x;
+    a->key[i].y = y;
+    a->key[i].w = w;
+    a->key[i].h = h;
+    // The LETTER a cap yields, or 0. Only a-z: the language model is a table of
+    // English letter pairs, so a digit or a bracket on the symbols layer must get
+    // no vote rather than a made-up one.
+    char c = (on_data == on_char) ? (char)(intptr_t)data : 0;
+    a->key[i].ch = (c >= 'a' && c <= 'z') ? c : 0;
+    a->on_data[i] = on_data;
+    a->data[i] = data;
+    a->on_plain[i] = on_plain;
 }
 
+static void collect_caps(ZApp *app, CapSet *a) {
+    a->n = 0;
+    z_probe_taps(app, collect_cap, a);
+}
+
+// --- the press classifier ----------------------------------------------------
+// See system/keyboard/predict.h for why a press is classified rather than
+// hit-tested, and what the two rules are that it must never break.
+//
+// THE CONTEXT IS THE FIELD'S, NOT OURS. The prefix comes from text-input-v3's
+// surrounding text (relayed by the compositor since P21, read since P47), not
+// from an echo of what this keyboard has committed. A field that was pasted into,
+// whose caret was moved, or that the app cleared, is a different prefix, and a
+// keyboard predicting from its own history would be confidently wrong about all
+// three.
+static bool predict_on(ZApp *app) {
+    const char *e = getenv("ZELTO_KBD_PREDICT");
+    if (e && e[0] == '0') {
+        return false;   // the negative control: geometry, no model
+    }
+    // A password is not language. Adaptive targets, auto-capitalisation and the
+    // double-space period all assume the string is a word; a password is exactly
+    // the string for which that assumption is wrong and unfixable from the app's
+    // side, so iOS turns them off here and so does this.
+    return z_im_purpose(app) != Z_IM_PURPOSE_PASSWORD;
+}
+
+// The text before the cursor, which is all the model reads.
+static const char *kbd_prefix(ZApp *app) {
+    int cursor = 0;
+    const char *s = z_im_surrounding(app, &cursor);
+    static char buf[Z_TEXTFIELD_CAP];
+    int n = cursor;
+    if (n < 0) { n = 0; }
+    if (n > (int)sizeof(buf) - 1) { n = (int)sizeof(buf) - 1; }
+    memcpy(buf, s, (size_t)n);
+    buf[n] = '\0';
+    return buf;
+}
+
+// Which cap a press at (x, y) meant, without pressing it. Split out from the
+// resolver so the audit can ask the SAME question the finger asks.
+static int kbd_pick(ZApp *app, const CapSet *a, float x, float y, char *why,
+                    size_t why_n) {
+    return z_kbd_classify(a->key, a->n, x, y, kbd_prefix(app), predict_on(app),
+                          why, why_n);
+}
+
+// The tap resolver (z_tap_resolver): this surface answers "what did that press
+// mean?" itself. Installed once, in kbd_body.
+static bool kbd_resolve(ZApp *app, void *state, float x, float y) {
+    KbdState *s = state;
+    if (!s->visible) {
+        return false;   // parked off the bottom: nothing here to press
+    }
+    CapSet a;
+    collect_caps(app, &a);
+    if (a.n == 0) {
+        return false;
+    }
+    char why[32];
+    int i = kbd_pick(app, &a, x, y, why, sizeof(why));
+    if (i < 0) {
+        return false;
+    }
+    // What the RECTANGLES would have said, logged beside what was chosen. This is
+    // the line that makes the difference visible: on a press in the gutter the
+    // geometric answer is "nothing at all", and on a corrected miss it is the
+    // neighbour.
+    ZProbeHit g = z_probe_at(app, x, y);
+    char gname[16] = "-";
+    if (g.found) {
+        key_name(g.on_data, g.data, g.on_plain, gname, sizeof(gname));
+    }
+    // Dispatch through the probe rather than calling the handler directly: it
+    // hit-tests the CHOSEN cap's own centre and runs whatever the walk finds
+    // there, so a cap that something is painted over still misbehaves visibly
+    // instead of being typed anyway. hit/ran carry that claim into the log.
+    ZProbeTap r = z_probe_tap(app, a.on_data[i], a.data[i], a.on_plain[i]);
+    fprintf(stderr,
+            "[keyboard] press x=%.0f y=%.0f geom='%s' chose='%s' why=%s "
+            "prefix='%s' lm=%s hit=%s ran=%s\n",
+            x, y, gname, a.name[i], why, kbd_prefix(app),
+            predict_on(app) ? z_lm_name() : "off",
+            r.hit_same ? "same" : "DIFFERENT", r.ran ? "yes" : "no");
+    fflush(stderr);
+    return true;
+}
+
+// --- the touch-target audit -------------------------------------------------
+// ZELTO_KBD_CAPS=1 measures every cap on the laid-out grid and prints it. The
+// numbers are the assertion; this file does not decide what passes.
 static void audit_caps(ZApp *app) {
-    CapAudit a = {0};
-    z_probe_taps(app, audit_cap, &a);
+    CapSet a;
+    collect_caps(app, &a);
 
     float min_w = 0.0f, min_h = 0.0f;
     for (int i = 0; i < a.n; i++) {
@@ -268,60 +377,84 @@ static void audit_caps(ZApp *app) {
         fprintf(stderr,
                 "[keyboard] cap '%s' x=%.0f y=%.0f w=%.0f h=%.0f "
                 "(%.1fpt x %.1fpt)\n",
-                a.cap[i].name, a.cap[i].x, a.cap[i].y, a.cap[i].w, a.cap[i].h,
-                in_pt(a.cap[i].w), in_pt(a.cap[i].h));
-        if (i == 0 || a.cap[i].w < min_w) {
-            min_w = a.cap[i].w;
+                a.name[i], a.key[i].x, a.key[i].y, a.key[i].w, a.key[i].h,
+                in_pt(a.key[i].w), in_pt(a.key[i].h));
+        if (i == 0 || a.key[i].w < min_w) {
+            min_w = a.key[i].w;
         }
-        if (i == 0 || a.cap[i].h < min_h) {
-            min_h = a.cap[i].h;
+        if (i == 0 || a.key[i].h < min_h) {
+            min_h = a.key[i].h;
         }
     }
     fprintf(stderr,
             "[keyboard] caps: %d total, smallest %.0fx%.0f units "
-            "(%.1fpt x %.1fpt)\n",
-            a.n, min_w, min_h, in_pt(min_w), in_pt(min_h));
+            "(%.1fpt x %.1fpt), targets=%s\n",
+            a.n, min_w, min_h, in_pt(min_w), in_pt(min_h),
+            predict_on(app) ? z_lm_name() : "geometry");
 
-    // Per row: are the caps uniform, and how much of the row hits NOTHING?
+    // Per row: are the caps uniform, how much of the row PAINTS nothing, and how
+    // much of it MEANS nothing?
     //
-    // The second number is the one nobody had. A cap is a rounded face with a
-    // KEY_GAP between it and the next, and that gap belongs to no key — a press
-    // that lands in it reaches the material behind and does nothing. iOS gives
-    // its caps hit regions that meet in the gutter, so its keyboard has no dead
-    // strips at all; this one does, and their width is printed here so the claim
-    // is a measurement rather than an impression.
+    // The two are different questions and P46 only had the first. A cap is a
+    // rounded face with a KEY_GAP between it and the next, and that gap is
+    // painted by no key — 11 units, about 15% of every row. Under plain
+    // rectangles it was also HIT by no key: a press there reached the material
+    // behind and did nothing, which is the "dead" number P46 printed and could
+    // not fix without a paint-vs-hit split the toolkit lacks.
+    //
+    // The classifier is that split, arrived at from the other end. It never
+    // needed the toolkit to grow a hit region, because it does not ask which
+    // rectangle contains the point — it asks which key the point most likely
+    // MEANT, and every point on the strip means something. So `gutter` is still
+    // ~15% (nothing has been repainted) and `dead` is 0. Both are printed,
+    // because a run in which they were equal again would be the classifier
+    // silently not running, and one number cannot show that.
+    //
+    // `dead` is measured through kbd_pick — the same function the finger's
+    // resolver calls — at one-unit steps across the row, so it is an answer about
+    // the real press path and not about a formula written twice.
     for (int i = 0; i < a.n; i++) {
-        if (i > 0 && a.cap[i].y == a.cap[i - 1].y) {
+        if (i > 0 && a.key[i].y == a.key[i - 1].y) {
             continue;             // same row, already summarised
         }
-        float y = a.cap[i].y;
-        float lo = a.cap[i].x, hi = a.cap[i].x + a.cap[i].w;
+        float y = a.key[i].y;
+        float lo = a.key[i].x, hi = a.key[i].x + a.key[i].w;
         float covered = 0.0f, cmin = 0.0f, cmax = 0.0f;
         int cells = 0, chars = 0;
         for (int j = 0; j < a.n; j++) {
-            if (a.cap[j].y != y) {
+            if (a.key[j].y != y) {
                 continue;
             }
-            covered += a.cap[j].w;
-            if (a.cap[j].x < lo) { lo = a.cap[j].x; }
-            if (a.cap[j].x + a.cap[j].w > hi) { hi = a.cap[j].x + a.cap[j].w; }
+            covered += a.key[j].w;
+            if (a.key[j].x < lo) { lo = a.key[j].x; }
+            if (a.key[j].x + a.key[j].w > hi) { hi = a.key[j].x + a.key[j].w; }
             cells++;
             // Uniformity is a claim about the CHARACTER caps: a modifier is
             // deliberately 1.6x or 5.6x a letter, so folding them in would make
             // every row look ragged and hide the thing being watched for.
-            if (!a.cap[j].name[1]) {
-                if (chars == 0 || a.cap[j].w < cmin) { cmin = a.cap[j].w; }
-                if (chars == 0 || a.cap[j].w > cmax) { cmax = a.cap[j].w; }
+            if (!a.name[j][1]) {
+                if (chars == 0 || a.key[j].w < cmin) { cmin = a.key[j].w; }
+                if (chars == 0 || a.key[j].w > cmax) { cmax = a.key[j].w; }
                 chars++;
             }
         }
         float span = hi - lo;
+        int dead = 0, sampled = 0;
+        for (float x = lo; x <= hi; x += 1.0f) {
+            sampled++;
+            if (kbd_pick(app, &a, x, y + a.key[i].h * 0.5f, NULL, 0) < 0) {
+                dead++;
+            }
+        }
         fprintf(stderr,
                 "[keyboard] row y=%.0f: %d caps, span %.0f, covered %.0f, "
-                "dead %.0f (%.1f%%), char widths %.0f..%.0f\n",
+                "gutter %.0f (%.1f%%), dead %d of %d (%.1f%%), "
+                "char widths %.0f..%.0f\n",
                 y, cells, span, covered, span - covered,
-                span > 0.0f ? 100.0f * (span - covered) / span : 0.0f, cmin,
-                cmax);
+                span > 0.0f ? 100.0f * (span - covered) / span : 0.0f, dead,
+                sampled, sampled > 0 ? 100.0f * (float)dead / (float)sampled
+                                     : 0.0f,
+                cmin, cmax);
     }
     fflush(stderr);
 }
@@ -371,15 +504,37 @@ static void tap_tick(ZApp *app, void *ud) {
         fflush(stderr);
         return;
     }
-    char name[16];
+    char tok[32];
     const char *end = strchr(p, ',');
     size_t len = end ? (size_t)(end - p) : strlen(p);
-    if (len >= sizeof(name)) {
-        len = sizeof(name) - 1;
+    if (len >= sizeof(tok)) {
+        len = sizeof(tok) - 1;
     }
-    memcpy(name, p, len);
-    name[len] = '\0';
+    memcpy(tok, p, len);
+    tok[len] = '\0';
     s->tapped++;
+
+    // A token is a key name, optionally followed by a DELIBERATE MISS:
+    // "l@-45" presses 45 units left of where the layout put the 'l' cap's centre,
+    // "e@0:20" 20 units below it. The offsets are coordinate-free in the sense
+    // that matters — they are relative to the frame the layout answered with, so
+    // they move when the keyboard moves — and they are the only way to test the
+    // thing this keyboard is FOR: a press that is not on the key.
+    char name[sizeof(tok)];
+    float off_x = 0.0f, off_y = 0.0f;
+    {
+        char *at = strchr(tok, '@');
+        if (at) {
+            *at = '\0';
+            char *colon = strchr(at + 1, ':');
+            if (colon) {
+                *colon = '\0';
+                off_y = (float)atof(colon + 1);
+            }
+            off_x = (float)atof(at + 1);
+        }
+        snprintf(name, sizeof(name), "%s", tok);
+    }
 
     ZTapAction on_data;
     void *data;
@@ -390,18 +545,35 @@ static void tap_tick(ZApp *app, void *ud) {
         z_after(app, 250, tap_tick, s);
         return;
     }
-    ZProbeTap t = z_probe_tap(app, on_data, data, on_plain);
+    ZProbeTap t = z_probe_frame(app, on_data, data, on_plain);
     if (!t.found) {
         // Not a crash: on the symbols layer there is no 'q' and no SHIFT, and a
         // test that asks for one should read a specific line saying so.
         fprintf(stderr, "[keyboard] tap '%s': NOT ON THIS LAYER\n", name);
-    } else {
-        fprintf(stderr,
-                "[keyboard] tap '%s' cap x=%.0f y=%.0f w=%.0f h=%.0f hit=%s "
-                "ran=%s\n",
-                name, t.x, t.y, t.w, t.h, t.hit_same ? "same" : "DIFFERENT",
-                t.ran ? "yes" : "no");
+        fflush(stderr);
+        z_after(app, 250, tap_tick, s);
+        return;
     }
+    float px = t.x + t.w * 0.5f + off_x;
+    float py = t.y + t.h * 0.5f + off_y;
+    // What the RECTANGLES say is at the point about to be pressed, taken BEFORE
+    // pressing it and reported separately. This is what stops the whole exercise
+    // from being vacuous: "the keyboard typed hello" proves nothing unless the
+    // presses really were off the keys, and the only witness to that is the plain
+    // geometric walk saying it found the neighbour, or nothing at all.
+    ZProbeHit g = z_probe_at(app, px, py);
+    char gname[16] = "-";
+    if (g.found) {
+        key_name(g.on_data, g.data, g.on_plain, gname, sizeof(gname));
+    }
+    fprintf(stderr,
+            "[keyboard] tap '%s' cap x=%.0f y=%.0f w=%.0f h=%.0f at %.0f,%.0f "
+            "off %.0f,%.0f geom='%s'\n",
+            name, t.x, t.y, t.w, t.h, px, py, off_x, off_y, gname);
+    fflush(stderr);
+    // Then press it the way a finger does — through the app's own tap path, which
+    // is the resolver. There is no second dispatch route for a test to take.
+    z_probe_press(app, px, py);
     fflush(stderr);
     // A gap wide enough for the rebuild a modifier triggers: shift and the layer
     // key both change what the NEXT cap is, and the next resolve reads the tree
@@ -606,6 +778,10 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         s->inited = true;
         s->anim = z_animated_value(app, 0.0f);
         z_im_bind(app, on_show, on_hide, s);
+        // This surface resolves its own presses (P47). Everything that makes a
+        // 32pt cap typeable lives behind this one call; see kbd_resolve and
+        // system/keyboard/predict.h.
+        z_tap_resolver(app, kbd_resolve);
         // Headless test hook: ZELTO_KBD_SHOW=1 raises the keyboard on the first
         // build (without a real text-input focus handshake) so the QWERTY layout is
         // screenshot-verifiable. Keys go nowhere with no focused field — this is a

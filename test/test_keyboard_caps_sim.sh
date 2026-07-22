@@ -183,17 +183,39 @@ zt_expect_eq "4" "$rows" \
 zt_expect_eq "0" "$ragged" \
     "a row's character caps are NOT all the same width — a cap is sized by the letter printed on it instead of by its share of the row (see $LOG1)"
 
-# The dead gutter between caps. KEY_GAP is a real gap that belongs to no key, so
-# some of the strip hits nothing; this pins how much. Not a pass/fail judgement
-# on 44pt — see the note at the foot of this file — but a lint that catches the
-# gutters silently widening.
-worst_dead="$(sed -n 's/.*dead [0-9]*\.\?[0-9]* (\([0-9]*\)\.[0-9]*%).*/\1/p' "$LOG1" |
+# The dead gutter, which is now ZERO — and the reason it is zero is not that the
+# caps grew.
+#
+# The audit prints two numbers per row and they answer different questions.
+# `gutter` is how much of the row PAINTS no key: KEY_GAP times the number of gaps,
+# about 15%, and it has not moved because nothing has been repainted. `dead` is
+# how much of the row MEANS no key, sampled a unit at a time through the same
+# function the finger's resolver calls. Under plain rectangles the two were the
+# same number, which is what P46 measured and could not fix without a paint-vs-hit
+# split the toolkit does not have. The P47 classifier is that split arrived at
+# from the other end: it never asks which rectangle contains the point, it asks
+# which key the point most likely MEANT, and every point on a keyboard means
+# something.
+#
+# Both are read here on purpose. `dead` alone could go to zero by the audit not
+# running; `gutter` staying at its P46 value is the positive control that says the
+# geometry is unchanged and it is the resolution that moved.
+worst_gutter="$(sed -n 's/.*gutter [0-9]*\.\?[0-9]* (\([0-9]*\)\.[0-9]*%).*/\1/p' "$LOG1" |
+    sort -n | tail -1)"
+if [ -z "$worst_gutter" ]; then
+    zt_fail "no row reported its painted-gutter share" "'gutter N (P%)'" "absent (see $LOG1)"
+elif [ "$worst_gutter" -ge 20 ]; then
+    zt_fail "more than a fifth of a keyboard row paints no key at all — the gaps between the caps have widened" \
+        "< 20% gutter" "$worst_gutter% (see $LOG1)"
+fi
+
+worst_dead="$(sed -n 's/.*dead [0-9]* of [0-9]* (\([0-9]*\)\.[0-9]*%).*/\1/p' "$LOG1" |
     sort -n | tail -1)"
 if [ -z "$worst_dead" ]; then
-    zt_fail "no row reported its dead-gutter share" "'dead N (P%)'" "absent (see $LOG1)"
-elif [ "$worst_dead" -ge 20 ]; then
-    zt_fail "more than a fifth of a keyboard row hits nothing at all" \
-        "< 20% dead" "$worst_dead% (see $LOG1)"
+    zt_fail "no row reported its dead share" "'dead N of M (P%)'" "absent (see $LOG1)"
+else
+    zt_expect_eq "0" "$worst_dead" \
+        "part of a keyboard row resolves to NO key — a press there reaches the material behind and does nothing. The classifier (system/keyboard/predict.h) is supposed to make every point on the strip mean something (see $LOG1)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -215,9 +237,9 @@ if ! grep -q '\[keyboard\] caps: ' "$LOG2"; then
     zt_done
 fi
 
-if ! grep -q "tap '5' cap .* hit=same ran=yes" "$LOG2"; then
+if ! grep -q "chose='5' .* hit=same ran=yes" "$LOG2"; then
     zt_fail "'5' was not on the grid after pressing the layer key — the key marked 123 did not switch layers" \
-        "tap '5' ... hit=same ran=yes" "$(grep -m1 "tap '5'" "$LOG2" || echo absent) (see $LOG2)"
+        "chose='5' ... hit=same ran=yes" "$(grep -m1 "tap '5'" "$LOG2" || echo absent) (see $LOG2)"
 fi
 got2="$(sed -n "s/.*\[notepad\] field='\(.*\)' len=.*/\1/p" "$LOG2" | tail -1)"
 zt_expect_eq "5" "$got2" \
@@ -237,14 +259,17 @@ fi
 # 390pt-wide phone with a ten-key row, by anyone — iOS's own key caps are about
 # 32pt wide for exactly this reason, and the guideline is not what its keyboard
 # obeys. Vertically the ROW PITCH is 88 units = 47.6pt, which does clear 44pt;
-# the cap paints 77 of that and the remaining 11 is the dead gutter measured
-# above.
+# the cap paints 77 of that and the remaining 11 is the gutter measured above.
 #
-# So the honest finding is not "the caps fail the touch target" but "the caps
-# are at the geometric maximum in the tight axis, and the gutters between them
-# belong to no key". Closing those gutters needs the toolkit to separate what a
-# node PAINTS from what it can be HIT in (a hit-slop), which does not exist
-# today; the numbers are printed by the audit every run so the next phase argues
-# from them instead of from a guideline.
+# P47 RESOLVED THIS BY DECIDING IT WAS THE WRONG QUESTION. P46's honest finding
+# was "the caps are at the geometric maximum in the tight axis, and the gutters
+# between them belong to no key", with the fix filed as needing a paint-vs-hit
+# split the toolkit lacks. It did not need one. A keyboard's targets are not
+# rectangles at all: they are a classifier over where the finger landed and what
+# is likely to come next, so they overlap, they move on every keystroke, and they
+# tile the whole strip with nothing left over. The cap stays 32pt because it is
+# drawn 32pt; the region that yields its letter is whatever the argmax says. See
+# system/keyboard/predict.h, and test_keyboard_predict_sim for the claim that a
+# press inside the 'k' cap can correctly be an 'l'.
 # ---------------------------------------------------------------------------
 zt_done
