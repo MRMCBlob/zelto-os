@@ -154,8 +154,26 @@ ZAP=""
 #
 # Both are independent of EXPECT/NOMARKER: a shot may have a marker AND a pixel
 # check. The lint at the foot of the file counts a failure of either.
+#
+# AND THE THIRD CHANNEL: LOGSAYS (P47). A surface with almost no text cannot be
+# asked what is on it — EXPECT matches laid-out STRINGS, and the status bar's
+# content is a drawn radio, a drawn plane and a drawn battery cell. A pixel check
+# does not work there either (see the note on the deleted `bar` region below), so
+# those five shots were the last ones verified by nothing.
+#
+# LOGSAYS='<extended regex>' is matched against the shot's whole boot log, which
+# is where a surface that draws marks can SAY what it drew:
+#
+#     [bar] marks radio=cellular:4 wifi=on lock=off battery=100 charging=no
+#
+# It is a weaker claim than EXPECT and the difference matters: EXPECT reads the
+# laid-out tree, LOGSAYS reads what a surface reports about itself. What it
+# catches is every way these shots have actually been wrong — a seed not
+# arriving, the bar not observing the broker, airplane not overriding the radios.
+# What it cannot catch is the bar deciding correctly and then drawing nothing.
 EXPECT=""
 MUSTNOT=""
+LOGSAYS=""
 NOMARKER=""
 PIXEL=""
 PIXELMEAN=""
@@ -192,9 +210,10 @@ run_shot() {
     # Declared before the ONLY filter, so a filtered run cannot hide a shot that
     # never said what it contains.
     local expect="$EXPECT" mustnot="$MUSTNOT" nomarker="$NOMARKER"
-    local pixel="$PIXEL" pixelmean="$PIXELMEAN"
-    EXPECT=""; MUSTNOT=""; NOMARKER=""; PIXEL=""; PIXELMEAN=""
-    if [ -z "$expect" ] && [ -z "$mustnot" ] && [ -z "$nomarker" ]; then
+    local pixel="$PIXEL" pixelmean="$PIXELMEAN" logsays="$LOGSAYS"
+    EXPECT=""; MUSTNOT=""; NOMARKER=""; PIXEL=""; PIXELMEAN=""; LOGSAYS=""
+    if [ -z "$expect" ] && [ -z "$mustnot" ] && [ -z "$nomarker" ] &&
+       [ -z "$logsays" ]; then
         echo "    !! $name declares neither EXPECT nor NOMARKER"
         MARKERLESS+=("$name")
         MARKER_FAIL=1
@@ -297,6 +316,18 @@ run_shot() {
             MARKER_FAIL=1
         else
             echo "    absent (as claimed): $mustnot"
+        fi
+    fi
+
+    # What a MARK-DRAWING surface says it drew. See the note over LOGSAYS above.
+    if [ -n "$logsays" ] && [ -s "$png" ]; then
+        if grep -Eq "$logsays" "$dir/log"; then
+            echo "    reported: $logsays"
+        else
+            echo "    !! $name did not report what it claims: /$logsays/"
+            echo "       (see $dir/log)"
+            MARKERLESS+=("$name: no log line matching /$logsays/")
+            MARKER_FAIL=1
         fi
     fi
 
@@ -598,8 +629,16 @@ run_shot 19-consent "Permission consent dialog (Allow / Deny modal)" 7 \
 # through five design phases. Spawned standalone over a sharing app with the
 # candidate app_ids zsysd would have resolved, plus the ZELTO_SHARE_* pair zsysd
 # passes it in the environment so the preview row has something to preview.
+# 10s, not 8. This is the only shot in the catalogue that shows the share sheet
+# SETTLED — 19b and 19c pin it mid-motion with ZELTO_SHARE_* and are deterministic
+# — so it is the only one whose marker depends on an entrance spring having
+# finished. At 8s it passed twice and then failed with every string reported
+# `offscreen` at y=1481 on a 1440-tall screen: the sheet was still below the
+# bottom edge when the probe fired 250ms before the capture. A marker that flakes
+# is worse than no marker, because the next person spends the run after it
+# looking for a layout bug that is not there.
 EXPECT='zelto-chooser\|Zelto OS design tokens' \
-run_shot 19a-share-sheet "Share sheet: preview, target row, actions (bottom sheet)" 8 \
+run_shot 19a-share-sheet "Share sheet: preview, target row, actions (bottom sheet)" 10 \
     SIM_APP=zelto-notes \
     SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
     ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens"
@@ -756,23 +795,34 @@ run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset Lo
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
 # ===========================================================================
 SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t4\nsys.brightness\t5\n' \
-NOMARKER='the status bars radios and battery are GLYPHS (system/common/glyphs.h); its only text is the clock, which every frame has. The states are seeded settings, asserted by test_settings_broker_sim and test_power_services_sim. A PIXEL check on the bar strip was written and DELETED on the evidence: a glyph change moves the 720x81 box by 0.13-0.33, and the clock in the same box moves it more, between boots — see the PIXEL note at the head of this file.' \
+NOMARKER='the bars radios and battery are GLYPHS (system/common/glyphs.h) and its only text is the clock, so EXPECT has nothing to match; a PIXEL check on the strip was written and DELETED on the evidence (a glyph moves the 720x81 box by 0.13-0.33 and the clock in the same box moves it more). LOGSAYS is the third channel: the bar reports the marks it built.' \
+LOGSAYS='\[bar\] marks radio=cellular:4 wifi=on .* charging=no' \
     run_shot 21-bar-wifi-bright "Status bar: full cellular + Wi-Fi, brightness high" 6
 # Weak cellular: the unlit bars stay drawn (TEXT_FAINT), so the mark keeps its
 # silhouette at every level instead of shrinking.
 SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t1\nsys.brightness\t5\n' \
 NOMARKER='as 21: a cellular level is four drawn bars, not a string.' \
+LOGSAYS='\[bar\] marks radio=cellular:1 wifi=on' \
     run_shot 21a-bar-signal-low "Status bar: one cellular bar lit of four" 6
 # Airplane mode REPLACES the bars with the plane (the radios are off, so a signal
 # reading beside it would state the opposite of the truth).
-SEED='sys.wifi\t0\nsys.airplane\t1\nsys.brightness\t2\n' \
-NOMARKER='as 21: airplane mode replaces the bars with a drawn plane.' \
+# Wi-Fi is seeded ON here, deliberately. It used to be seeded off, and that made
+# the shot unable to fail the thing it is named for: with the radio already down,
+# "airplane mode turns the radios off" and "airplane mode does nothing" produce
+# the same frame and the same marks. Found by negative-testing the LOGSAYS channel
+# — removing the override from the bar changed nothing, because there was nothing
+# to override. Seeded on, `wifi=off` can only come from the override.
+SEED='sys.wifi\t1\nsys.airplane\t1\nsys.brightness\t2\n' \
+NOMARKER='as 21: airplane mode replaces the bars with a drawn plane. The mark is the claim AND so is the absence of the other one: radio=airplane can only be reported by the branch that drops the cellular glyph, and wifi=off proves airplane overrode the radios rather than merely adding a plane beside them.' \
+LOGSAYS='\[bar\] marks radio=airplane wifi=off' \
     run_shot 22-bar-airplane "Status bar: airplane mode, brightness low" 6
 SEED='sys.battery_pct\t8\nsys.battery_charging\t0\n' \
-NOMARKER='as 21: the battery is a drawn cell; the percentage is not printed in the bar.' \
+NOMARKER='as 21: the battery is a drawn cell; the percentage is not printed in the bar, which is exactly why the bar has to report it.' \
+LOGSAYS='\[bar\] marks .* battery=8 charging=no' \
     run_shot 23-bar-lowbatt "Status bar: low battery (8%)" 6 ZELTO_FAKE_BATTERY=0
 SEED='sys.battery_pct\t64\nsys.battery_charging\t1\n' \
 NOMARKER='as 21: charging is a bolt drawn inside the battery cell.' \
+LOGSAYS='\[bar\] marks .* battery=64 charging=yes' \
     run_shot 24-bar-charging "Status bar: charging (64%)" 6 ZELTO_FAKE_BATTERY=0
 
 # ===========================================================================

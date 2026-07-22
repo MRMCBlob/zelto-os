@@ -77,15 +77,31 @@ the viewport and keys each (`key`) so the reconciler reuses them across scrolls.
 `Grow(n, view)` weights a child's share of free main-axis space; `Spacer()` is a
 flexible gap.
 
+**`Grow` divides the SLACK; `Share` divides the AXIS** (P46), and for a GRID you
+almost always want the second:
+
+```c
+Share(1.0f, cell);     // = CSS flex: N — drop the intrinsic, weights split the row
+```
+
+`Grow` measures each child first and shares out only what is left over, so the
+content leaks into the final size: two `Grow(1)` siblings come out equal only if
+they hold the same thing. Every keyboard cap was as wide as the letter printed on
+it for twenty-five phases — `w` 69 units against `i` 49 in the same row — and
+latching shift re-measured the uppercase glyphs and moved every key sideways under
+the finger. The Control Center's toggle grid had the same defect, each cell as
+wide as the word under it.
+
 ### Content
 
 ```c
 Rect(.color = Z_COLOR_PRIMARY, .width = 80, .height = 80, .radius = 12);  // solid box
 Text(const char *fmt, ...);              // printf-style, ONE line, never wraps
 WrapText(app, s, .width = 480, .size = Z_FONT_FOOTNOTE);  // prose, broken to a column
+EllipsizeText(app, s, .width = 240, .size = Z_FONT_BODY); // one line, cut, real U+2026
 Image(const char *source);               // Planned
 Button(ZAction onTap, const char *fmt, ...);
-TextField(.value = s, .on_change = cb, .placeholder = "…");
+TextField(app, &field, "placeholder");   // ZTextField field; .secure / .autocap
 Switch(.value = b, .on_change = cb);
 Slider(.value = f, .on_change = cb, .min = 0, .max = 1);
 Spinner(.size = Z_SPINNER_SMALL);
@@ -207,6 +223,42 @@ The limit worth knowing: a view that does not learn its width until arrange time
 cannot wrap. That is the point at which the single-pass layout would have to become a
 measure-under-constraint protocol, and nothing in the OS has needed it yet.
 
+### …and text you did not write has to be CUT
+
+Wrapping is for prose **you** wrote. A filename, an app id, a contact's name — a
+string that arrived from somewhere else, in a row whose height is fixed — must be
+truncated instead, because wrapping it grows the row by however many lines the
+data happens to need:
+
+```c
+EllipsizeText(app, task->title, .width = tw, .size = Z_FONT_SUBHEAD);
+```
+
+It measures and cuts on a UTF-8 boundary, trims trailing spaces and appends a real
+`U+2026` (21.45 units at Body against 24.38 for three periods). A string that
+already fits comes back untouched. The result is a plain `Text` whose intrinsic
+width is `<= .width`, which is the actual guarantee — the row it sits in cannot
+overflow.
+
+**Overflow is invisible in the frames**, which is why this needs a primitive
+rather than care: `arrange()` clamps a `Text`'s frame to its parent's inner box
+while the renderer draws from the origin and does not clip, so an over-long string
+has a perfectly reasonable `w` and paints straight through it.
+`ZELTO_PROBE_TAPS=1` reports any `Text` needing more room than its box.
+
+### Measuring text
+
+Never estimate a text metric — ask the face:
+
+```c
+float z_line_height(ZApp *app, ZFont size);   // the same call layout makes
+```
+
+A `font * 1.31` fudge lasted one phase: the true ratio runs 1.3182 at Caption down
+to 1.2529 at Display (FreeType rounds ascender/descender to whole pixels), so it
+over-reserved at the top and **under**-reserved at Caption — the one direction it
+promised never to fail in.
+
 ## Callbacks & actions
 
 Handlers are named functions. A `ZAction` fires on tap or keyboard activation; a
@@ -287,8 +339,60 @@ same one a `Scroll`/`List` in that position uses — for programmatic control
 (e.g. scroll-to-top). `ZFocus` traversal beyond the first focusable view is
 **Planned**.
 
+## Driving a surface without coordinates
+
+Every harness this project has thrown away died the same way: it tapped a number
+read off a screenshot, the layout moved, and the tap started landing on whatever
+was there instead — silently, because a tap that hits nothing still returns. The
+fix is to stop being the one who decides *where* a control is. After `arrange()`
+every node carries its frame, so a test names the control by its **handler** and
+the toolkit answers.
+
+```c
+ZProbeTap z_probe_tap(app, on_data, data, on_plain);   // resolve, hit-test, DISPATCH
+ZProbeTap z_probe_frame(app, on_data, data, on_plain); // resolve only (aim elsewhere)
+ZProbeHit z_probe_at(app, x, y);                       // what the RECTANGLES say — no dispatch
+void      z_probe_taps(app, visitor, ud);              // every tappable, with its frame
+void      z_probe_press(app, x, y);                    // THE tap path, as a finger takes it
+```
+
+`z_probe_tap` reports three separate claims and only the first is about the test:
+`found` (a node with this handler is in the laid-out tree), `hit_same` (the real
+hit walk at the centre of that frame came back with *that* node — the claim every
+coordinate tap made implicitly and none ever checked), and `ran`. It dispatches
+what the **hit** found, not what it resolved, so a disagreement makes the wrong
+thing really happen.
+
+`ZELTO_PROBE_TAPS=1` dumps every tappable and every string per surface, tagged by
+process and by `offscreen`; `ZELTO_PROBE_AT=<ms>` moves the dump to one moment.
+`ZELTO_TAP_LABEL` presses a control by the words on it.
+
+**Frames are SURFACE coordinates.** A screenshot is the screen, and a client is
+never told where the compositor put its surface — not only layer surfaces: the
+launcher is 720x1359 on a 720x1440 screen, because the status bar's exclusive zone
+pushes it down. A probe frame can never become a box on a PNG.
+
+## Owning the press
+
+A tap handler hears about a press once, when it is over. That is enough for a
+button and not for a surface whose keys repeat, whose targets move, or whose
+release lands on a control the press created:
+
+```c
+void z_tap_resolver(app, fn);   // bool fn(app, state, x, y) — "I decided what that meant"
+void z_press_hook(app, fn);     // fn(app, state, Z_PRESS_DOWN|MOVE|UP, x, y)
+double z_now_seconds(void);     // the monotonic clock timers and springs run on
+```
+
+The resolver runs on release **before** the rectangle walk; return false to fall
+through. `zelto-keyboard` is the only client of both — see
+[../../platform/soft-keyboard.md](../../platform/soft-keyboard.md) for why a
+keyboard cannot resolve presses by rectangle at all.
+
 ## See also
 
 - [system.md](system.md) — storage, net, notifications.
 - [platform.md](platform.md) — lifecycle, permissions, background.
 - [gfx.md](gfx.md) — low-level drawing / custom views.
+- [../../platform/soft-keyboard.md](../../platform/soft-keyboard.md) — text input,
+  adaptive touch targets, `z_im_*`.

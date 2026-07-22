@@ -8,6 +8,8 @@ catalog page under [../../ui/components/](../../ui/components/) with examples.
 | Component | Signature | Catalog |
 |---|---|---|
 | `Text` | `Text(content, options?)` | [text](../../ui/components/text.md) |
+| `WrapText` | `WrapText(content, width, size?)` | prose broken to a pixel column |
+| `EllipsizeText` | `EllipsizeText(content, width, size?)` | one line, cut, real `…` |
 | `Image` | `Image(source, options?)`, `Image.icon(name)`, `Image.adaptive(l, d)` | [image](../../ui/components/image.md) |
 | `Button` | `Button(title, onTap, options?)`, `Button.icon(name, onTap)` | [button](../../ui/components/button.md) |
 | `TextField` | `TextField(options)` | [textfield](../../ui/components/textfield.md) |
@@ -22,6 +24,30 @@ catalog page under [../../ui/components/](../../ui/components/) with examples.
 | `Navigator` | `Navigator(options)` | [navbar](../../ui/components/navbar.md) |
 | `TabView` | `TabView(tabs, options?)` | [tabbar](../../ui/components/tabbar.md) |
 | `Sheet`/`Modal`/`Alert`/`Dialog` | `(options, child?)` | [sheet](../../ui/components/sheet.md) |
+
+### `Text` does not wrap and does not truncate
+
+It measures to ONE line however long the string is — the toolkit does not wrap it,
+clip it, or warn — so a paragraph in a fixed-width card paints straight through
+the edge. That is not hypothetical: the JS Demo's two paragraphs did exactly that
+until P46, because a script app had no way to wrap at all.
+
+Both replacements need the **width at build time** (the split happens against the
+real font, before any layout pass exists), so read it from `appSize()` rather than
+writing a number:
+
+```js
+const textW = () => appSize().width - 2 * PAGE_PAD;
+
+WrapText("A long description that will not fit on one line.", textW(), Font.subhead)
+EllipsizeText(`saved: ${note.text}`, textW(), Font.caption)
+```
+
+Which one depends on **who wrote the string**. Prose you wrote wraps. A filename,
+an app id, a name that arrived from somewhere else goes in a row of fixed height
+and has to be cut, or the row grows by however many lines the data happens to
+need — which is the case a script app hits most, since almost everything it
+displays came from elsewhere.
 
 ## Modifiers
 

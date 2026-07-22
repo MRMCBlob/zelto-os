@@ -43,6 +43,9 @@ typedef struct BarState {
     int64_t lock_now;     // sys.lock_now counter (a long-press on the bar bumps it)
     int64_t battery_pct;  // P23: 0..100 (from the zsysd power source)
     bool charging;        // P23: sys.battery_charging
+    // The last set of marks reported (P47), so the line below is emitted on a
+    // CHANGE rather than on every rebuild — the bar rebuilds each minute anyway.
+    char marks[128];
 } BarState;
 
 // Long-press anywhere on the bar: manually lock now (bump sys.lock_now, which
@@ -152,6 +155,50 @@ static ZView bar_body(ZApp *app, BarState *state) {
                : (state->battery_pct <= 20 ? Z_COLOR_DANGER : Z_COLOR_TEXT);
     cluster.children[k++] =
         zelto_glyph_battery(state->battery_pct, bat, Z_COLOR_BORDER);
+
+    // WHAT THIS BAR JUST BUILT, in words (P47).
+    //
+    // Every other surface in the system can be asked what is on it: ZELTO_PROBE_TAPS
+    // dumps every laid-out string, and the shot catalogue matches its EXPECT markers
+    // against exactly that. The status bar cannot answer, because it has almost no
+    // text — a radio is four drawn bars, airplane is a drawn plane, the battery is a
+    // drawn cell. Its only string is the clock, which every frame has.
+    //
+    // That left five catalogue shots (21, 21a, 22, 23, 24) verified by nothing at
+    // all, and the obvious pixel check does not work either: a glyph changing moves
+    // the whole 720x81 strip by 0.13-0.33, and the CLOCK in the same box moves it
+    // more between boots. So the bar says it out loud instead. This is CLAUDE.md's
+    // "if an actuation has no log line, add one" applied to a RENDER.
+    //
+    // Read what it CLAIMS carefully: this is what the bar decided to put in the
+    // tree, not proof that pixels landed. It is built from the same locals the
+    // cluster above is built from, one line up, so it cannot drift from the marks;
+    // what it catches is the bar failing to observe the broker, a seed not
+    // arriving, or airplane mode not overriding the radios — which is every way
+    // these five shots have ever been wrong.
+    //
+    // On CHANGE only: the bar rebuilds every minute for the clock, and a line per
+    // rebuild would bury the boot log for no extra information.
+    {
+        char marks[128];
+        if (state->airplane) {
+            snprintf(marks, sizeof(marks),
+                     "radio=airplane wifi=%s lock=%s battery=%d charging=%s",
+                     wifi_live ? "on" : "off", state->lock_enabled ? "on" : "off",
+                     (int)state->battery_pct, state->charging ? "yes" : "no");
+        } else {
+            snprintf(marks, sizeof(marks),
+                     "radio=cellular:%d wifi=%s lock=%s battery=%d charging=%s",
+                     (int)state->signal, wifi_live ? "on" : "off",
+                     state->lock_enabled ? "on" : "off", (int)state->battery_pct,
+                     state->charging ? "yes" : "no");
+        }
+        if (strcmp(marks, state->marks) != 0) {
+            snprintf(state->marks, sizeof(state->marks), "%s", marks);
+            fprintf(stderr, "[bar] marks %s\n", marks);
+            fflush(stderr);
+        }
+    }
 
     // TRANSPARENT. The bar paints no background, so on the home the wallpaper runs
     // right up under the clock (the way it does on a phone) instead of being cut
