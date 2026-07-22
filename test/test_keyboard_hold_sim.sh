@@ -103,6 +103,23 @@ zt_expect_eq "hé" "$(field_of "$LOG1")" \
     "the accent was not committed: expected the tapped 'h' then 'é' from the popup, and NOT a plain 'e' (a hold must not also type the letter it was held on) (see $LOG1)"
 
 # ---------------------------------------------------------------------------
+# Run 1b — the UPPER-CASE accent (P48). Shift, then the same held slide onto 'é',
+# must commit 'É'. The slide target stays ">é" because the popup cell's IDENTITY
+# is its stored lower-case pointer (the case is applied at commit, not in the
+# table); asking for ">É" would be asking for a cell that does not exist. This is
+# the fix for P47's known gap — the letters that most need the capital are the
+# ones a name starts with, which a dictionary cannot help with.
+# ---------------------------------------------------------------------------
+LOG1U="$(run_boot upper "SHIFT,e~700>é")"
+alive "$LOG1U"
+if ! grep -q "commit 'É' (accent of 'e')" "$LOG1U"; then
+    zt_fail "holding 'e' with shift held did not commit the UPPER-CASE 'É' — accent_upper is not applying the case at commit" \
+        "commit 'É' (accent of 'e')" "$(grep -m1 "accent of 'e'" "$LOG1U" || echo absent) (see $LOG1U)"
+fi
+zt_expect_eq "É" "$(field_of "$LOG1U")" \
+    "a shifted accent must commit its capital: À/Ö are exactly the marks a name starts with, which is why lower-case-only read as a bug (see $LOG1U)"
+
+# ---------------------------------------------------------------------------
 # Run 2 — the same hold, RELEASED WITHOUT SLIDING.
 #
 # The popup opens above the key, so a finger that lifts where it landed is not

@@ -47,7 +47,7 @@
 #                        proves the inequality that makes it so), so a test that
 #                        only checked the letter would pass with the guarantee
 #                        gone. It checks that the RULE decided.
-#   the password purpose ignored  -> run 4 types "hello" and logs lm=bigram
+#   the password purpose ignored  -> run 4 types "hello" and logs lm=trie+bigram
 #   the surrounding-text relay dropped (im_surrounding_text back to a stub)
 #                     -> run 1 types "heklp" with prefix='' on every press
 set -uo pipefail
@@ -142,11 +142,13 @@ if ! grep -q "chose='o' why=model-over-'p'" "$LOG1"; then
         "chose='o' why=model-over-'p'" "$(grep -m1 "geom='p'" "$LOG1" || echo absent) (see $LOG1)"
 fi
 # Which model answered. The seam in predict.h allows a dictionary to replace the
-# bigram table without the hit path changing; this line is how a reader of a
-# failing log knows which one was in the image.
-if ! grep -q "lm=bigram" "$LOG1"; then
+# bigram table without the hit path changing, and in P48 it did: the model is
+# "trie+bigram" — a prefix tree over the shipped word list, backed off to the
+# letter-pair table off the dictionary. This line is how a reader of a failing log
+# knows which one was in the image.
+if ! grep -q "lm=trie+bigram" "$LOG1"; then
     zt_fail "no press reported which language model resolved it" \
-        "lm=bigram" "$(grep -m1 'lm=' "$LOG1" || echo absent) (see $LOG1)"
+        "lm=trie+bigram" "$(grep -m1 'lm=' "$LOG1" || echo absent) (see $LOG1)"
 fi
 # The context came from the FIELD, not from an echo of our own keystrokes. If the
 # surrounding-text relay were dropped every prefix would be empty and the model
@@ -173,9 +175,9 @@ if ! grep -q "geom='k' chose='k' why=geometry" "$LOG2"; then
     zt_fail "with the model off the press inside 'k' did not resolve to 'k' by geometry" \
         "geom='k' chose='k' why=geometry" "$(grep -m1 "geom='k'" "$LOG2" || echo absent) (see $LOG2)"
 fi
-if grep -q "lm=bigram" "$LOG2"; then
+if grep -q "lm=trie+bigram" "$LOG2"; then
     zt_fail "ZELTO_KBD_PREDICT=0 did not turn the language model off" \
-        "lm=off on every press" "$(grep -m1 'lm=bigram' "$LOG2") (see $LOG2)"
+        "lm=off on every press" "$(grep -m1 'lm=trie' "$LOG2") (see $LOG2)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -229,9 +231,9 @@ zt_expect_eq "5" "$(sed -n "s/.*\[notepad\] field='.*' len=\([0-9]*\).*/\1/p" "$
 LOG4="$(run_boot secure "$MISSES" ZELTO_NOTEPAD_SECURE=1)"
 alive "$LOG4"
 
-if grep -q "lm=bigram" "$LOG4"; then
+if grep -q "lm=trie+bigram" "$LOG4"; then
     zt_fail "the language model stayed on for a PASSWORD field — the content purpose is not reaching the keyboard, or it is not being honoured" \
-        "lm=off on every press" "$(grep -m1 'lm=bigram' "$LOG4") (see $LOG4)"
+        "lm=off on every press" "$(grep -m1 'lm=trie' "$LOG4") (see $LOG4)"
 fi
 zt_expect_eq "heklp" "$(field_of "$LOG4")" \
     "a secure field must receive exactly the keys that were pressed, uncorrected (see $LOG4)"
