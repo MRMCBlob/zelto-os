@@ -384,6 +384,12 @@ typedef struct ZTextField {
     // period — because a password is precisely the string those get wrong, and
     // "the keyboard corrected my password" is unfixable from the app's side.
     bool secure;
+    // Ask the keyboard to auto-capitalise sentences in this field (P47). It is
+    // the FIELD's call and not the keyboard's, which is why text-input-v3 carries
+    // a content hint for it: a note wants sentence case, a username does not, and
+    // nothing the keyboard can see tells the two apart. Off by default because C
+    // zero-initialises the struct — a field that wants it says so.
+    bool autocap;
     // Fired from the app loop after the buffer changes (a committed string, a
     // backspace, a paste or a cut), with the live app + the app state pointer.
     // NULL = ignore.
@@ -524,6 +530,10 @@ typedef enum ZImPurpose {
     Z_IM_PURPOSE_OTHER,
 } ZImPurpose;
 ZImPurpose z_im_purpose(ZApp *app);
+
+// Does the focused field want its sentences capitalised (content hint
+// AUTO_CAPITALIZATION)? False when no field is focused or the app never asked.
+bool z_im_autocap(ZApp *app);
 
 // The focused field's text as the APP last reported it, and where the cursor is
 // in it (byte offset). This is the surrounding-text half of text-input-v3, which
@@ -1168,6 +1178,13 @@ void z_idle_cancel(ZIdle *idle);
 typedef void (*ZTimerCb)(ZApp *app, void *ud);
 void z_after(ZApp *app, int ms, ZTimerCb cb, void *ud);
 void z_after_cancel(ZApp *app);
+
+// The monotonic clock the toolkit's own timers and springs run on (seconds since
+// an arbitrary epoch, never jumping). For an app measuring an INTERVAL between
+// two events — the keyboard's double-tap window on shift — where wall-clock time
+// would be wrong across an NTP step and where a timer is the wrong shape because
+// the second event may never come.
+double z_now_seconds(void);
 
 // ---------------------------------------------------------------------------
 // Repeating tick (widget refresh cadence).

@@ -224,6 +224,7 @@ struct ZApp {
     // dropped them on the floor. The keyboard needs both: the purpose to know a
     // password field, the surrounding text to know what has been typed.
     ZImPurpose im_purpose;
+    bool im_autocap;                 // content hint AUTO_CAPITALIZATION
     char im_surround[Z_TEXTFIELD_CAP];
     int im_cursor;
     // The APP side of surrounding text: what we last told the compositor, so a
@@ -231,6 +232,7 @@ struct ZApp {
     char ti_sent[Z_TEXTFIELD_CAP];
     int ti_sent_cursor;
     bool ti_sent_secure;
+    bool ti_sent_autocap;
 
     // Clipboard (P22). Copy/Cut take ownership of the CLIPBOARD selection through
     // the CORE wl_data_device (data_device_mgr + data_device): a wl_data_source is
@@ -604,13 +606,17 @@ static void render(ZApp *app) {
             want && app->ti_enabled &&
             (strcmp(app->ti_sent, app->active_field->text) != 0 ||
              app->ti_sent_cursor != app->active_field->caret ||
-             app->ti_sent_secure != app->active_field->secure);
+             app->ti_sent_secure != app->active_field->secure ||
+             app->ti_sent_autocap != app->active_field->autocap);
         if (want && (!app->ti_enabled || ctx_changed)) {
             if (!app->ti_enabled) {
                 zwp_text_input_v3_enable(app->text_input);
             }
             zwp_text_input_v3_set_content_type(
-                app->text_input, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+                app->text_input,
+                app->active_field->autocap
+                    ? ZWP_TEXT_INPUT_V3_CONTENT_HINT_AUTO_CAPITALIZATION
+                    : ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
                 app->active_field->secure
                     ? ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PASSWORD
                     : ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
@@ -624,6 +630,7 @@ static void render(ZApp *app) {
                      app->active_field->text);
             app->ti_sent_cursor = app->active_field->caret;
             app->ti_sent_secure = app->active_field->secure;
+            app->ti_sent_autocap = app->active_field->autocap;
         } else if (!want && app->ti_enabled) {
             zwp_text_input_v3_disable(app->text_input);
             zwp_text_input_v3_commit(app->text_input);
@@ -633,6 +640,7 @@ static void render(ZApp *app) {
             app->ti_sent[0] = '\0';
             app->ti_sent_cursor = -1;
             app->ti_sent_secure = false;
+            app->ti_sent_autocap = false;
         }
     }
 
@@ -1880,8 +1888,10 @@ static void im_text_change_cause(void *data, struct zwp_input_method_v2 *im,
 }
 static void im_content_type(void *data, struct zwp_input_method_v2 *im,
                             uint32_t hint, uint32_t purpose) {
-    (void)im; (void)hint;
+    (void)im;
     ZApp *app = data;
+    app->im_autocap =
+        (hint & ZWP_TEXT_INPUT_V3_CONTENT_HINT_AUTO_CAPITALIZATION) != 0;
     app->im_purpose =
         purpose == ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PASSWORD
             ? Z_IM_PURPOSE_PASSWORD
@@ -1901,6 +1911,7 @@ static void im_done(void *data, struct zwp_input_method_v2 *im) {
             // would silently stay dumb; one that carried the text forward would
             // predict the previous field's last word into this one.
             app->im_purpose = Z_IM_PURPOSE_NORMAL;
+            app->im_autocap = false;
             app->im_surround[0] = '\0';
             app->im_cursor = 0;
         }
@@ -3378,6 +3389,10 @@ void z_im_backspace(ZApp *app) {
 
 ZImPurpose z_im_purpose(ZApp *app) {
     return app ? app->im_purpose : Z_IM_PURPOSE_NORMAL;
+}
+
+bool z_im_autocap(ZApp *app) {
+    return app && app->im_autocap;
 }
 
 const char *z_im_surrounding(ZApp *app, int *cursor) {

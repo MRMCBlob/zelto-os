@@ -176,6 +176,12 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     // in place since P21 except the two ends.
     const char *secure = getenv("ZELTO_NOTEPAD_SECURE");
     state->note.secure = secure && secure[0] == '1';
+    // A note is prose, so it asks the keyboard for sentence case (content hint
+    // AUTO_CAPITALIZATION). ZELTO_NOTEPAD_NOAUTOCAP=1 turns it off for the
+    // keyboard tests that are about WHICH KEY a press resolved to: a capital in
+    // every expected string would be a second variable in every assertion, and
+    // the first thing a reader would have to rule out on a failure.
+    state->note.autocap = !getenv("ZELTO_NOTEPAD_NOAUTOCAP");
     if (echo && echo[0] && !state->autofocused) {
         state->autofocused = true;
         z_app_focus_field(app, &state->note);

@@ -111,6 +111,32 @@ The prefix comes from **text-input-v3 surrounding text**, relayed since P21 and
 read since P47 — not from an echo of the keyboard's own keystrokes, which would
 be wrong the moment anything else edited the field.
 
+## Text rules
+
+Three behaviours people expect, all of which are rules about the **text** rather
+than state machines on keys — so all three are answered from text-input-v3's
+surrounding text, not from an echo of what the keyboard committed (an echo is
+wrong the moment a paste, a caret move or an app clearing the field happens):
+
+| Rule | Condition | Gated on |
+|---|---|---|
+| **double-space period** | the text ends `<alnum><space>` and you press space | not a password field |
+| **auto-capitalise** | the text is empty, ends `.`/`?`/`!` + space(s), or ends in a newline | the field's `autocap` hint |
+| **caps lock** | two shift presses inside 0.35s | — |
+
+Auto-capitalisation is **derived, not latched** — recomputed whenever the field's
+contents change, which is what makes it right after a paste ending in "?" and
+what turns it off again mid-word. Pressing shift while it is on overrides it for
+that position only.
+
+Caps lock is a third shift state, not a second flag, and the cap says which:
+the arrow gains a bar under it. A one-shot shift and a lock produce different
+text from an identical-looking press, so the mark has to distinguish them.
+
+Its one cost is **latency**: the app re-declares surrounding text on the build
+after a commit, so two presses closer together than a frame round-trip see the
+same context.
+
 ## App API
 
 ```c

@@ -32,10 +32,39 @@
 #include "common/safe_areas.h"
 #include "predict.h"
 
+// How close two shift presses have to be to mean CAPS LOCK. The same window
+// every double-tap on a phone uses; long enough that a deliberate second press
+// lands inside it, short enough that "shift, think, shift" does not.
+#define KBD_DOUBLE_TAP_S 0.35
+
+// Shift is three states, not a bool (P47). A one-shot shift and a caps lock are
+// different keys wearing the same cap, and a phone tells them apart by how you
+// press it: once for the next letter, twice quickly to lock.
+typedef enum ShiftState {
+    SHIFT_OFF,
+    SHIFT_ONCE,   // the next letter, then back off
+    SHIFT_LOCK,   // until pressed again
+} ShiftState;
+
 typedef struct KbdState {
     bool inited;
     bool visible;      // a text field is focused (input method active)
-    bool shift;        // one-shot uppercase for the next letter
+    ShiftState shift;  // what the SHIFT KEY is set to
+    double last_shift_s;   // for the double-tap window
+    // AUTO-CAPITALISATION is not a state of the shift key, it is a fact about the
+    // text: at a sentence start the next letter is upper case whether or not
+    // anyone pressed anything. Kept separately so that pressing shift can turn it
+    // OFF (auto_off) rather than toggling it to doubly-on, and so that it is
+    // recomputed — not remembered — every time the field's contents change.
+    bool auto_shift;
+    bool auto_off;         // the user overrode the auto-capital for this position
+    char last_ctx[Z_TEXTFIELD_CAP];   // the context auto_shift was computed from
+    // ...and whether last_ctx has ever been WRITTEN. Not redundant: the first
+    // context an empty field reports is "", which compares equal to a zeroed
+    // last_ctx, so a plain strcmp says "nothing changed" at exactly the moment
+    // the answer matters most — the first letter of an empty field is the
+    // commonest sentence start there is.
+    bool ctx_seen;
     bool symbols;      // symbols/numbers layer instead of letters
     ZAnimated *anim;   // 0 = parked off the bottom, 1 = fully up
     // P45 KBD harness: type a string by itself, one character per tick, once a
@@ -111,43 +140,167 @@ static void type_tick(ZApp *app, void *ud) {
 static void on_hide(ZApp *app, void *ud) {
     KbdState *s = ud;
     s->visible = false;
-    s->shift = false;
+    s->shift = SHIFT_OFF;
+    s->auto_shift = false;
+    s->auto_off = false;
+    s->last_ctx[0] = '\0';
+    s->ctx_seen = false;
     s->symbols = false;
     z_animated_spring(s->anim, 0.0f);
     z_invalidate(app);
 }
 
+// --- what the field says ----------------------------------------------------
+// THE CONTEXT IS THE FIELD'S, NOT OURS. Everything below — the prediction prefix,
+// the double-space period, auto-capitalisation — is a rule about the text BEFORE
+// THE CURSOR, and the keyboard cannot see the field. It reads text-input-v3's
+// surrounding text, relayed by the compositor since P21 into an SDK stub that
+// dropped it until P47. An echo of the keyboard's own keystrokes would have been
+// the obvious alternative and would be wrong the moment anything else touched the
+// field: a paste, a caret move, an app clearing the buffer.
+//
+// The one thing it costs is LATENCY. The app re-declares its surrounding text on
+// the build after a commit, so two presses closer together than a frame round
+// trip see the same context. That is a real limitation of doing it this way and
+// the reason it is done this way anyway: the alternative is a second copy of the
+// text that is right until it is not.
+static const char *kbd_prefix(ZApp *app) {
+    int cursor = 0;
+    const char *s = z_im_surrounding(app, &cursor);
+    static char buf[Z_TEXTFIELD_CAP];
+    int n = cursor;
+    if (n < 0) { n = 0; }
+    if (n > (int)sizeof(buf) - 1) { n = (int)sizeof(buf) - 1; }
+    memcpy(buf, s, (size_t)n);
+    buf[n] = '\0';
+    return buf;
+}
+
+// Is the language machinery allowed to run at all? See predict.h; a password is
+// exactly the string these rules get wrong.
+static bool predict_on(ZApp *app) {
+    const char *e = getenv("ZELTO_KBD_PREDICT");
+    if (e && e[0] == '0') {
+        return false;   // the negative control: geometry, no model
+    }
+    return z_im_purpose(app) != Z_IM_PURPOSE_PASSWORD;
+}
+
+// Does the text before the cursor START A SENTENCE? Empty field, or a terminator
+// followed by space(s), or a fresh line. Only asked when the FIELD declared that
+// it wants sentence case (content hint AUTO_CAPITALIZATION) — a note does, a
+// username does not, and nothing the keyboard can see tells them apart.
+static bool sentence_start(const char *p) {
+    int n = (int)strlen(p);
+    if (n == 0) {
+        return true;
+    }
+    if (p[n - 1] == '\n') {
+        return true;
+    }
+    int i = n - 1;
+    while (i >= 0 && p[i] == ' ') {
+        i--;
+    }
+    if (i == n - 1) {
+        return false;   // mid-word: no space between us and the last letter
+    }
+    return i >= 0 && (p[i] == '.' || p[i] == '?' || p[i] == '!');
+}
+
+// The one question every character key asks: upper or lower?
+static bool kbd_upper(const KbdState *s) {
+    if (s->shift == SHIFT_LOCK) {
+        return true;
+    }
+    if (s->shift == SHIFT_ONCE) {
+        return true;
+    }
+    return s->auto_shift && !s->auto_off;
+}
+
 // --- key handlers -----------------------------------------------------------
-// A character key: commit the (shift-cased) byte, then clear one-shot shift.
+// A character key: commit the (shift-cased) byte, then spend the one-shot shift.
 static void on_char(ZApp *app, void *state, void *data) {
     KbdState *s = state;
     int cp = (int)(intptr_t)data;
     char buf[2] = {(char)cp, '\0'};
-    if (s->shift && cp >= 'a' && cp <= 'z') {
+    if (kbd_upper(s) && cp >= 'a' && cp <= 'z') {
         buf[0] = (char)(cp - 32);
     }
     z_im_commit_text(app, buf);
     fprintf(stderr, "[keyboard] commit '%s'\n", buf);
     fflush(stderr);
-    if (s->shift) {
-        s->shift = false;
+    if (s->shift == SHIFT_ONCE) {
+        s->shift = SHIFT_OFF;   // spent. A LOCK is not.
         z_invalidate(app);
     }
 }
 static void on_shift(ZApp *app, void *state) {
     KbdState *s = state;
-    s->shift = !s->shift;
+    double now = z_now_seconds();
+    bool dbl = (now - s->last_shift_s) < KBD_DOUBLE_TAP_S;
+    s->last_shift_s = now;
+    if (s->shift == SHIFT_LOCK) {
+        s->shift = SHIFT_OFF;      // a locked shift unlocks on the next press
+        s->auto_off = true;
+    } else if (dbl) {
+        s->shift = SHIFT_LOCK;     // two presses inside the window
+        s->auto_off = false;
+    } else if (kbd_upper(s)) {
+        // It was on — possibly because auto-capitalisation put it on, which is
+        // why this is not a plain toggle. Turning it off has to say so, or the
+        // next build recomputes auto_shift and turns it back on.
+        s->shift = SHIFT_OFF;
+        s->auto_off = true;
+    } else {
+        s->shift = SHIFT_ONCE;
+        s->auto_off = false;
+    }
+    fprintf(stderr, "[keyboard] shift %s%s\n",
+            s->shift == SHIFT_LOCK ? "LOCK"
+                                   : (s->shift == SHIFT_ONCE ? "once" : "off"),
+            s->auto_off ? " (auto overridden)" : "");
+    fflush(stderr);
     z_invalidate(app);
 }
 static void on_symbols(ZApp *app, void *state) {
     KbdState *s = state;
     s->symbols = !s->symbols;
-    s->shift = false;
+    s->shift = SHIFT_OFF;
     z_invalidate(app);
 }
+// SPACE, and the DOUBLE-SPACE PERIOD.
+//
+// Two spaces in a row become ". " — the rule every phone has had for fifteen
+// years, and the reason nobody reaches for the symbols layer to end a sentence.
+// It is a rule about the TEXT, so it is answered from the field's surrounding
+// text: if what is already there is a word followed by one space, this second
+// space replaces that space with a full stop. The replacement goes back through
+// the same input-method channel as everything else (delete one, commit two), so
+// the field's own undo, selection and caret arithmetic see an ordinary edit.
+//
+// Off in a password field for the same reason prediction is: a password may end
+// in a space, and a keyboard that turned it into a full stop would be unfixable
+// from the app's side.
 static void on_space(ZApp *app, void *state) {
-    (void)state;
-    z_im_commit_text(app, " ");
+    KbdState *s = state;
+    (void)s;
+    const char *p = kbd_prefix(app);
+    int n = (int)strlen(p);
+    bool period = predict_on(app) && n >= 2 && p[n - 1] == ' ' &&
+                  ((p[n - 2] >= 'a' && p[n - 2] <= 'z') ||
+                   (p[n - 2] >= 'A' && p[n - 2] <= 'Z') ||
+                   (p[n - 2] >= '0' && p[n - 2] <= '9'));
+    if (period) {
+        z_im_backspace(app);
+        z_im_commit_text(app, ". ");
+        fprintf(stderr, "[keyboard] double-space period after '%s'\n", p);
+    } else {
+        z_im_commit_text(app, " ");
+        fprintf(stderr, "[keyboard] commit ' '\n");
+    }
+    fflush(stderr);
 }
 static void on_backspace(ZApp *app, void *state) {
     (void)state;
@@ -280,39 +433,10 @@ static void collect_caps(ZApp *app, CapSet *a) {
 
 // --- the press classifier ----------------------------------------------------
 // See system/keyboard/predict.h for why a press is classified rather than
-// hit-tested, and what the two rules are that it must never break.
+// hit-tested, and what the two rules are that it must never break. The prefix and
+// the on/off decision are kbd_prefix / predict_on, next to the key handlers that
+// share them.
 //
-// THE CONTEXT IS THE FIELD'S, NOT OURS. The prefix comes from text-input-v3's
-// surrounding text (relayed by the compositor since P21, read since P47), not
-// from an echo of what this keyboard has committed. A field that was pasted into,
-// whose caret was moved, or that the app cleared, is a different prefix, and a
-// keyboard predicting from its own history would be confidently wrong about all
-// three.
-static bool predict_on(ZApp *app) {
-    const char *e = getenv("ZELTO_KBD_PREDICT");
-    if (e && e[0] == '0') {
-        return false;   // the negative control: geometry, no model
-    }
-    // A password is not language. Adaptive targets, auto-capitalisation and the
-    // double-space period all assume the string is a word; a password is exactly
-    // the string for which that assumption is wrong and unfixable from the app's
-    // side, so iOS turns them off here and so does this.
-    return z_im_purpose(app) != Z_IM_PURPOSE_PASSWORD;
-}
-
-// The text before the cursor, which is all the model reads.
-static const char *kbd_prefix(ZApp *app) {
-    int cursor = 0;
-    const char *s = z_im_surrounding(app, &cursor);
-    static char buf[Z_TEXTFIELD_CAP];
-    int n = cursor;
-    if (n < 0) { n = 0; }
-    if (n > (int)sizeof(buf) - 1) { n = (int)sizeof(buf) - 1; }
-    memcpy(buf, s, (size_t)n);
-    buf[n] = '\0';
-    return buf;
-}
-
 // Which cap a press at (x, y) meant, without pressing it. Split out from the
 // resolver so the audit can ask the SAME question the finger asks.
 static int kbd_pick(ZApp *app, const CapSet *a, float x, float y, char *why,
@@ -635,13 +759,33 @@ static ZView glyph_on(const char *label, ZColor ink) {
 #define MARK_W_RETURN (MARK_H * 24.0f / 22.0f)
 #define MARK_STROKE ((float)Z_PT(2))             // 3 — the ink, at the glyph's scale
 
-static ZView mark_shift(ZColor ink) {
+// The shift arrow, and — when caps lock is on — the BAR under it. The bar is not
+// decoration: a one-shot shift and a caps lock produce visibly different text
+// from the same-looking key, so the cap has to say which one it is set to. Every
+// phone draws exactly this, and the alternative (a lit key for both) is the state
+// people complain about not being able to see.
+static ZView mark_shift(ZColor ink, bool locked) {
     static const float arrow[] = {0.50f, 0.12f, 0.88f, 0.50f, 0.68f, 0.50f,
                                   0.68f, 0.82f, 0.32f, 0.82f, 0.32f, 0.50f,
                                   0.12f, 0.50f};
+    static const float arrow_lock[] = {0.50f, 0.08f, 0.88f, 0.46f, 0.68f, 0.46f,
+                                       0.68f, 0.70f, 0.32f, 0.70f, 0.32f, 0.46f,
+                                       0.12f, 0.46f};
+    static const float bar[] = {0.32f, 0.86f, 0.68f, 0.86f};
+    if (!locked) {
+        return Frame(MARK_H, MARK_H,
+            Stroke(.points = arrow, .count = 7, .thickness = MARK_STROKE,
+                   .color = ink, .closed = true));
+    }
     return Frame(MARK_H, MARK_H,
-        Stroke(.points = arrow, .count = 7, .thickness = MARK_STROKE, .color = ink,
-               .closed = true));
+        ZStack(
+            Frame(MARK_H, MARK_H,
+                Stroke(.points = arrow_lock, .count = 7,
+                       .thickness = MARK_STROKE, .color = ink, .closed = true)),
+            Frame(MARK_H, MARK_H,
+                Stroke(.points = bar, .count = 2, .thickness = MARK_STROKE,
+                       .color = ink)),
+            .align = Z_ALIGN_CENTER));
 }
 static ZView mark_delete(ZColor ink) {
     static const float body[] = {0.36f, 0.20f, 0.94f, 0.20f, 0.94f, 0.80f,
@@ -675,7 +819,7 @@ static ZView mark_return(ZColor ink) {
 
 // A single character key (letter or symbol), tap commits it.
 static ZView char_key(KbdState *s, char c) {
-    char up = (s->shift && c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    char up = (kbd_upper(s) && c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
     char lbl[2] = {up, '\0'};
     return OnTapData(on_char, (void *)(intptr_t)c,
         key_cap(glyph(lbl), NULL, 1.0f, Z_COLOR_SURFACE_4));
@@ -727,8 +871,9 @@ static ZView keyboard_grid(KbdState *s) {
     ZColor spi = Z_COLOR_TEXT;          // its ink
     // Shift latched: a LIGHT key with dark ink, the way a phone shows it (this is
     // the same "lit" treatment as an active Control Center toggle).
-    ZColor shift_bg = s->shift ? Z_COLOR_PRIMARY : sp;
-    ZColor shift_ink = s->shift ? Z_COLOR_ON_PRIMARY : spi;
+    bool lit = kbd_upper(s);
+    ZColor shift_bg = lit ? Z_COLOR_PRIMARY : sp;
+    ZColor shift_ink = lit ? Z_COLOR_ON_PRIMARY : spi;
 
     ZView row1 = char_row(s, s->symbols ? "1234567890" : "qwertyuiop", false);
     ZView row2 = char_row(s, s->symbols ? "@#$%&-+()/" : "asdfghjkl",
@@ -739,8 +884,9 @@ static ZView keyboard_grid(KbdState *s) {
                      .grow = 1.0f};
     int k = 0;
     if (!s->symbols) {
-        r3.children[k++] = mark_key(mark_shift(shift_ink), on_shift, 1.6f,
-                                    shift_bg);
+        r3.children[k++] = mark_key(
+            mark_shift(shift_ink, s->shift == SHIFT_LOCK), on_shift, 1.6f,
+            shift_bg);
     }
     const char *r3c = s->symbols ? ".,?!'\";:" : "zxcvbnm";
     for (const char *p = r3c; *p; p++) {
@@ -793,6 +939,33 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
                          getenv("ZELTO_KBD_SYMBOLS")[0] == '1';
             z_animated_set(s->anim, 1.0f);
         }
+    }
+
+    // AUTO-CAPITALISATION, recomputed rather than remembered.
+    //
+    // It is a fact about the text, so it is derived from the text every time the
+    // text changes — not latched when a full stop is typed. That distinction is
+    // what makes it survive everything the keyboard did not do: a paste ending in
+    // "?", the app clearing the field, a caret moved back into the middle of a
+    // word. All three arrive here as a new surrounding text and are answered
+    // correctly without a single special case.
+    //
+    // auto_off is cleared on the same edge. It means "the user overrode the
+    // capital HERE"; once the text moves on, here is somewhere else.
+    if (predict_on(app) && z_im_autocap(app)) {
+        const char *ctx = kbd_prefix(app);
+        if (!s->ctx_seen || strcmp(ctx, s->last_ctx) != 0) {
+            s->ctx_seen = true;
+            snprintf(s->last_ctx, sizeof(s->last_ctx), "%s", ctx);
+            bool want = sentence_start(ctx);
+            fprintf(stderr, "[keyboard] auto-capital %s after '%s'\n",
+                    want ? "on" : "off", ctx);
+            fflush(stderr);
+            s->auto_shift = want;
+            s->auto_off = false;
+        }
+    } else if (s->auto_shift) {
+        s->auto_shift = false;
     }
 
     // Reserve our height only while shown (app shrinks to keep the field above

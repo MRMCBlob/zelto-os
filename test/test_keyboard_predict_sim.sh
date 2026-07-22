@@ -83,7 +83,8 @@ run_boot() {
         SHOT="$dir/frame.png" SHOT_DELAY=16 \
         ZELTO_DATA_DIR="$dir/data" SIM_RUNTIME_DIR="$dir/xdg" \
         SIM_APP=zelto-notepad \
-        ZELTO_NOTEPAD_ECHO=1 ZELTO_KBD_TAP="$taps" \
+        ZELTO_NOTEPAD_ECHO=1 ZELTO_NOTEPAD_NOAUTOCAP=1 \
+        ZELTO_KBD_TAP="$taps" \
         bash "$REPO_ROOT/meta/run-sim.sh" > "$dir/log" 2>&1
     echo "$dir/log"
 }
