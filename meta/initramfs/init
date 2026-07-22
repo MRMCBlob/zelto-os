@@ -47,6 +47,42 @@ else
     mount -t tmpfs none "$ZELTO_DATA_DIR" 2>/dev/null
 fi
 mkdir -p "$ZELTO_DATA_DIR/apps"
+
+# P45 test hook: seed the brokered settings store BEFORE zsysd starts.
+#
+# WHY THIS EXISTS. Every harness that used to drive a system setting did it by
+# TAPPING the Settings app, at coordinates copied off a screenshot — which is
+# precisely why five of them rotted into unconditional passes when P40 deleted
+# the app drawer they navigated through. A setting is state, not a gesture, and a
+# test of what a setting DOES should not have to re-derive a tile's x/y every
+# time the launcher changes.
+#
+# zsysd persists to $ZELTO_DATA_DIR/settings.conf as TAB-separated key/value and
+# reads it at startup, so writing that file here is the same path a previous
+# boot's write would have taken. Format: zelto.seedsettings=key:value,key:value
+# (commas separate pairs, a colon separates key from value).
+case " $(cat /proc/cmdline 2>/dev/null) " in
+    *" zelto.seedsettings="*)
+        seed=$(cat /proc/cmdline)
+        seed=${seed##*zelto.seedsettings=}
+        seed=${seed%% *}
+        : > "$ZELTO_DATA_DIR/settings.conf"
+        # No arrays in this shell; split on commas with the field separator.
+        OLDIFS=$IFS
+        IFS=,
+        for pair in $seed; do
+            k=${pair%%:*}
+            v=${pair#*:}
+            [ -n "$k" ] && [ "$k" != "$pair" ] && printf '%s\t%s\n' "$k" "$v" \
+                >> "$ZELTO_DATA_DIR/settings.conf"
+        done
+        IFS=$OLDIFS
+        sync
+        echo "[zelto-init] seeded settings.conf:"
+        cat "$ZELTO_DATA_DIR/settings.conf"
+        ;;
+esac
+
 # Periodic flush: push the page cache through virtio-blk to the host image so a
 # write is durable even if QEMU is killed without a clean unmount. Apps fsync on
 # every write too; this is belt-and-suspenders for the two-boot persistence test.
@@ -199,6 +235,21 @@ launch_shell() {
     done
     if [ -e "$XDG_RUNTIME_DIR/wayland-0" ]; then
         echo "[zelto-init] launching System UI (bar + launcher)..."
+        # P45 KBD harness: the ON-SCREEN KEYBOARD types the word by itself, so
+        # this has to be exported BEFORE zelto-keyboard starts below. It commits
+        # through input-method-v2 the moment a field is really focused, which is
+        # the same relay a tapped key cap drives — and needs no key coordinates,
+        # which is what rotted the old harness. Hardware keys cannot substitute:
+        # the SDK's kb_key never inserts text into a field.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" zelto.kbdtype="*)
+                kt=$(cat /proc/cmdline)
+                kt=${kt##*zelto.kbdtype=}
+                kt=${kt%% *}
+                [ -n "$kt" ] && export ZELTO_KBD_TYPE="$kt" && \
+                    echo "[zelto-init] keyboard will type '$kt'"
+                ;;
+        esac
         # The system-service broker (zsysd): the permission authority. Started
         # before the shell so an app's z_perm_request reaches it; it inherits
         # WAYLAND_DISPLAY + ZELTO_FONT so the consent dialog it spawns on a
@@ -248,6 +299,37 @@ launch_shell() {
                 [ -x /usr/bin/zelto-notes ] && /usr/bin/zelto-notes &
                 sleep 1
                 [ -x /usr/bin/zelto-notepad ] && /usr/bin/zelto-notepad &
+                ;;
+        esac
+        # P45 ACTUATE harness: auto-launch the networking demo, for the same
+        # reason as the clipboard demo above — the test is about whether the
+        # airplane setting GATES a request, not about hitting a launcher tile.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" zelto.actuate=1 "*)
+                sleep 2
+                # ZELTO_FETCH_AUTO makes the demo issue its GET by itself, so the
+                # test observes whether the request is GATED rather than whether a
+                # button can be hit at coordinates from an old screenshot.
+                [ -x /usr/bin/zelto-fetch ] && \
+                    ZELTO_FETCH_AUTO=1 /usr/bin/zelto-fetch &
+                ;;
+        esac
+        # P45 KBD harness: Notepad, with its note field pre-focused and its save
+        # armed to fire once N characters have been TYPED into it. The harness
+        # then only has to send key events — no tile tap, no field tap, and no
+        # key-cap coordinates, which is what rotted the old one.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" zelto.kbd="*)
+                nchars=$(cat /proc/cmdline)
+                nchars=${nchars##*zelto.kbd=}
+                nchars=${nchars%% *}
+                # EIGHT seconds, not two. Notepad must be the LAST toplevel to
+                # map, or the launcher maps after it and takes the keyboard
+                # focus back — measured: notepad went ACTIVE at 18.4s and
+                # inactive at 19.9s, and every key after that went nowhere.
+                sleep 8
+                [ -x /usr/bin/zelto-notepad ] && \
+                    ZELTO_NOTEPAD_AUTOSAVE="$nchars" /usr/bin/zelto-notepad &
                 ;;
         esac
     else

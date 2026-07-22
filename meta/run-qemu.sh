@@ -149,6 +149,27 @@ harness_rotted() {
     exit 2
 }
 
+# P45 RESOLVED THE REST OF THEM, and two of the three did not come back here.
+#
+# ACTUATE=1 and KBD=1 were rewritten in place (above/below): both needed the
+# real target, ACTUATE because a brokered setting has to actuate a real
+# compositor surface and KBD because it is a two-boot ext4 persistence test.
+#
+# SETTINGS=1, VOLUME=1 and LOCK=1 moved to the SIMULATOR instead, because
+# nothing in what they assert needs an ARM guest: they are zsysd, its observer
+# clients, and a settings.conf. A QEMU two-boot costs ~6 minutes under TCG and
+# cannot run from test/run-tests.sh; two sim boots cost seconds and land in the
+# suite with everything else, where they will actually be run. The "reboot" is a
+# second sim boot pointed at the same ZELTO_DATA_DIR.
+harness_superseded() {
+    echo "!! $1=1 is GONE, and its claim is not: it now lives in $2."
+    echo "   Rewritten in P45 as a SIMULATOR test — same assertions, no ARM guest,"
+    echo "   no tap coordinates, and it runs as part of test/run-tests.sh instead"
+    echo "   of needing a six-minute TCG boot nobody starts."
+    echo "   Run it with:  test/run-tests.sh -k '$3'"
+    exit 2
+}
+
 if [ "${HEADLESS:-0}" = "1" ]; then
     echo "==> launching QEMU headless; frame -> $OUT/frame.ppm after ${SHOT_DELAY}s"
     rm -f "$OUT/frame.ppm" "$OUT/frame-after.ppm"
@@ -660,7 +681,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # under TCG: keep SHOT_DELAY high; the grab strip is a thin top region so the
     # pull-down swipe MUST start just below the 40px bar (y ~ 72).
     if [ "${SETTINGS:-0}" = "1" ]; then
-        harness_rotted SETTINGS \n            "It swipes up to open the deleted app drawer and taps a Settings tile at the drawer grid's coordinates."
+        harness_superseded SETTINGS test/test_settings_broker_sim.sh '*settings_broker*'
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
         # Settings drawer tile: apps are alphabetical by name in a 4-col grid; on
@@ -787,179 +808,128 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         echo "==> settings test done; frames in $OUT/frame-settings-*.png"
         exit 0
     fi
-
-    # P19 settings ACTUATION (ACTUATE=1): prove the brokered toggles now DO
-    # something system-wide, not just recolour a chip. THREE actuations + the bar
-    # as a third independent broker reader, then persistence. A TWO-BOOT test
-    # against the same data.img (the var is ACTUATE, not BRIGHT/DIM, to avoid
-    # clobbering a shell env var):
-    #   Boot #1 — home (bar shows a green Wi-Fi dot + a mid brightness pip). Open
-    #     the drawer, launch Settings. Step Brightness DOWN to 1 -> the whole app
-    #     area visibly DIMS (the zelto-dim OVERLAY scrim) AND the bar's brightness
-    #     pip shrinks. Toggle Airplane ON -> the bar grows an orange airplane dot
-    #     and greys the Wi-Fi dot. Open the drawer, launch Fetch, tap Fetch -> the
-    #     GET FAILS immediately ("request failed", NO consent modal) because
-    #     sys.airplane gates the network path. Sync + kill (brightness=1,
-    #     airplane=1 persisted to /var/zelto).
-    #   Boot #2 — FRESH QEMU, SAME disk: at boot the dim overlay reads
-    #     sys.brightness=1 back from disk so the screen is ALREADY dimmed, and the
-    #     bar shows the airplane dot — both persisted. Launch Settings (shows
-    #     Brightness 1, Airplane On), turn Airplane OFF + step Brightness back to 5
-    #     -> the screen un-dims. Launch Fetch -> consent -> Allow -> 200 OK (the
-    #     network is restored: airplane off => GET succeeds). The off/on proof.
-    # Coordinates are overridable (rerun SKIP_BUILD=1 + overrides to retune to the
-    # rendered layout). Boot is slow under TCG: keep SHOT_DELAY high. Use launchtap
-    # (zero-hold) for drawer launches so a held tap can't flake into the long-press.
+    # P19 settings ACTUATION (ACTUATE=1), REWRITTEN IN P45.
+    #
+    # THE CLAIM: a brokered toggle does something SYSTEM-WIDE, not just recolour
+    # its own chip. That is the one claim none of the other harnesses carry —
+    # QSPERSIST proves a setting SURVIVES a power cycle, and the shot catalogue
+    # proves a chip LOOKS right, but neither proves the setting reaches anything.
+    # Two actuations are tested here:
+    #   1. sys.brightness -> the zelto-dim OVERLAY paints a real scrim.
+    #   2. sys.airplane   -> libzelto's net path REFUSES a request outright.
+    #
+    # WHY IT HAD TO BE REWRITTEN. The old version navigated the app drawer P40
+    # deleted and tapped the three-button nav bar P40 deleted, at coordinates
+    # copied off screenshots, and ended in an unconditional `exit 0` — so from P40
+    # to P44 it injected a swipe that now means Home, tapped wherever stale
+    # numbers landed, and reported success. P44 disabled it rather than deleting
+    # it, because the claim is covered nowhere else.
+    #
+    # WHAT REPLACED THE TAPS. A setting is STATE, not a gesture. `zelto.seedsettings=`
+    # on the kernel cmdline writes settings.conf before zsysd starts — the same
+    # file a previous boot's write would have left — so the test sets the state
+    # directly and observes what the system does about it. No coordinates exist to
+    # re-derive, so this cannot rot the way its predecessor did.
+    #
+    # THE ASSERTION IS ON THE SERIAL LOG, and both actuations had to be made
+    # SAYABLE first (P45 added the two lines; P43 hit the same wall with
+    # "capture: suppressed" — an anonymous line cannot carry which thing happened):
+    #   [dim] sys.brightness=N -> scrim alpha=A
+    #   zelto: net: request refused (airplane mode)
+    #
+    # EVERY RUN CARRIES ITS OWN CONTROL, which is the design P43 established for
+    # the capture-privacy test: "X did not happen" passes trivially if the boot
+    # never got far enough for X to be possible. So boot 2 is not a repeat — it is
+    # the OFF case, and it must show the scrim GONE and the request NOT refused,
+    # from the same image, the same binaries and the same delay as boot 1.
     if [ "${ACTUATE:-0}" = "1" ]; then
-        harness_rotted ACTUATE \n            "It taps the deleted three-button nav bar (NAV_HOME_X/Y) AND swipes up to the deleted app drawer."
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        SWIPE_X="${SWIPE_X:-640}"
-        # Home favourites row (y~115): Cards 172, Fetch 484, Notepad 796, Notes 1108.
-        FETCH_FAV_X="${FETCH_FAV_X:-484}"; FAV_Y="${FAV_Y:-115}"
-        NAV_HOME_X="${NAV_HOME_X:-630}"; NAV_HOME_Y="${NAV_HOME_Y:-757}"
-        SETTINGS_X="${SETTINGS_X:-786}"; SETTINGS_Y="${SETTINGS_Y:-317}"
-        # Settings app rows (label left, On/Off chip right at x~890), measured off
-        # frame-actuate-settings: Wi-Fi 265, Mute 331, Bright-boost 397, Airplane 463.
-        AIR_X="${AIR_X:-890}"; AIR_Y="${AIR_Y:-463}"          # Airplane toggle chip
-        # Brightness stepper row (y~529): "-" at x~811, the number, "+" at x~897.
-        BRIGHT_DEC_X="${BRIGHT_DEC_X:-811}"
-        BRIGHT_INC_X="${BRIGHT_INC_X:-897}"
-        BRIGHT_ROW_Y="${BRIGHT_ROW_Y:-529}"
-        # The "Fetch" button bar is centred ~y356 (taps at 392 land in the gap below
-        # it and never fire the GET — measured off frame-actuate-fetch-app).
-        FETCH_BTN_X="${FETCH_BTN_X:-640}"; FETCH_BTN_Y="${FETCH_BTN_Y:-356}"
-        ALLOW_X="${ALLOW_X:-894}"; ALLOW_Y="${ALLOW_Y:-527}"
-        NET_PORT="${NET_PORT:-8080}"
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
+        SERIAL_DIM="$OUT/actuate-on.log"
+        SERIAL_UNDIM="$OUT/actuate-off.log"
+        mkdir -p "$OUT"
 
-        have_socat=0
-        command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-        qmp() {
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
-        }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
-        launchtap() { move "$1" "$2"; sleep 0.3; btn down; btn up; }
-        drag() {
-            local x="$1" y1="$2" y2="$3"
-            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
-            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
-            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
-            move "$x" "$y2"; sleep 0.4; btn up
-        }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        actuate_boot() {
-            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
-            rm -f "$QMP_SOCK"
+        # The boot has to reach zcomp + zsysd + the dim overlay + the demo app
+        # before anything is observable. P44 measured the launcher activating
+        # around 23s of guest time and much more wall time under TCG, and found
+        # the inherited SHOT_DELAY of 16 fired during udev coldplug. Same floor
+        # here, for the same reason; raise it on a slower host, never lower it.
+        ACT_DELAY="${SHOT_DELAY:-16}"
+        if [ "$ACT_DELAY" -lt 150 ]; then
+            ACT_DELAY=150
+            echo "==> SHOT_DELAY raised to ${ACT_DELAY}s: the dim overlay and the"
+            echo "    demo app have to be up before the log is read."
+        fi
+
+        # Boot once with a seeded settings store, capturing the serial console.
+        act_boot() {
+            local logfile="$1" seed="$2"
+            rm -f "$logfile"
             qemu-system-aarch64 "${common[@]}" \
-                -append "$KCMD" \
+                -append "$KCMD zelto.seedsettings=$seed zelto.actuate=1" \
                 -display none \
-                -serial mon:stdio \
-                -qmp "unix:$QMP_SOCK,server,nowait" &
+                -serial "file:$logfile" &
             QPID=$!
-        }
-        actuate_kill() {
+            sleep "$ACT_DELAY"
             sync
             kill "$QPID" 2>/dev/null || true
             wait "$QPID" 2>/dev/null || true
         }
 
-        # Host HTTP endpoint (guest reaches it at 10.0.2.2) for the Fetch proof.
-        NET_SRV_PID=""
-        if command -v python3 >/dev/null 2>&1; then
-            SERVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zelto-www.XXXXXX")"
-            printf 'Hello from the Zelto host! (P19 airplane off => GET works)\n' \
-                > "$SERVE_DIR/hello.txt"
-            echo "==> [actuate] host HTTP server on :$NET_PORT ($SERVE_DIR)"
-            ( cd "$SERVE_DIR" && python3 -m http.server "$NET_PORT" ) \
-                >/dev/null 2>&1 &
-            NET_SRV_PID=$!
-            sleep 1
+        # The LAST scrim alpha the dim overlay reported, or "".
+        scrim_alpha_from() {
+            sed -n 's/.*\[dim\] sys\.brightness=[0-9-]* -> scrim alpha=\([0-9]*\).*/\1/p' \
+                "$1" 2>/dev/null | tail -1 | tr -d '\r'
+        }
+        # `|| true` is load-bearing: grep -c exits 1 when the count is ZERO, and
+        # under `set -e` that aborts the harness in the middle of the control
+        # boot — the boot whose whole job is to find nothing.
+        airplane_refusals_in() {
+            grep -c "net: request refused (airplane mode)" "$1" 2>/dev/null \
+                | tr -d '\r' || true
+        }
+
+        echo "==> [actuate 1/2] brightness=1 + airplane=1: the ON case"
+        act_boot "$SERIAL_DIM" "sys.brightness:1,sys.airplane:1"
+        A_ON="$(scrim_alpha_from "$SERIAL_DIM")"
+        R_ON="$(airplane_refusals_in "$SERIAL_DIM")"
+        echo "    scrim alpha: ${A_ON:-<none>}   airplane refusals: ${R_ON:-0}"
+
+        echo "==> [actuate 2/2] brightness=5 + airplane=0: the CONTROL"
+        act_boot "$SERIAL_UNDIM" "sys.brightness:5,sys.airplane:0"
+        A_OFF="$(scrim_alpha_from "$SERIAL_UNDIM")"
+        R_OFF="$(airplane_refusals_in "$SERIAL_UNDIM")"
+        echo "    scrim alpha: ${A_OFF:-<none>}   airplane refusals: ${R_OFF:-0}"
+
+        rc=0
+        if [ -z "$A_ON" ] || [ -z "$A_OFF" ]; then
+            echo "!! FAIL: the dim overlay never reported a scrim alpha."
+            echo "   zelto-dim did not start, or never read sys.brightness."
+            echo "   Without that line there is no actuation to assert on."
+            echo "   (see $SERIAL_DIM / $SERIAL_UNDIM)"; rc=1
+        elif [ "$A_ON" -le "$A_OFF" ]; then
+            echo "!! FAIL: brightness did not actuate the screen."
+            echo "     brightness=1 produced scrim alpha $A_ON"
+            echo "     brightness=5 produced scrim alpha $A_OFF"
+            echo "   A dimmer level must produce a STRONGER scrim. Equal values"
+            echo "   mean the overlay is not reading the setting at all."; rc=1
+        elif [ "$A_OFF" -ne 0 ]; then
+            echo "!! FAIL: brightness=5 should mean NO dim, but the scrim is $A_OFF."
+            echo "   The control is supposed to be un-dimmed; if it is not, the"
+            echo "   comparison above proves nothing about the setting."; rc=1
+        elif [ "${R_ON:-0}" -lt 1 ]; then
+            echo "!! FAIL: airplane mode did not gate the network."
+            echo "   sys.airplane=1 and zelto-fetch still issued its request"
+            echo "   without the net path refusing it (see $SERIAL_DIM)."; rc=1
+        elif [ "${R_OFF:-0}" -ne 0 ]; then
+            echo "!! FAIL: a request was refused for airplane mode with"
+            echo "   sys.airplane=0 ($R_OFF refusal(s) in the control boot)."
+            echo "   The gate is stuck on, so the ON case above is not evidence."
+            echo "   (see $SERIAL_UNDIM)"; rc=1
         else
-            echo "WARN: python3 not found; Fetch success half can't be checked"
+            echo "==> PASS: brightness actuates (alpha $A_OFF -> $A_ON) and"
+            echo "    airplane gates the network ($R_ON refused, control clean)."
         fi
-
-        echo "==> [actuate boot 1/2] home; bar status cluster (Wi-Fi dot + pip)"
-        actuate_boot
-        sleep "$SHOT_DELAY"
-        shot frame-actuate-home
-        # --- network: airplane OFF (persisted default) => Fetch succeeds ---------
-        echo "==> [actuate 1] launch Fetch (home favourite); GET -> consent -> 200"
-        launchtap "$FETCH_FAV_X" "$FAV_Y"
-        sleep 5; shot frame-actuate-fetch-app
-        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
-        sleep 4; shot frame-actuate-consent      # airplane off: the perm modal shows
-        tap "$ALLOW_X" "$ALLOW_Y"
-        sleep 6; shot frame-actuate-fetch-ok      # 200 OK body (network reachable)
-        # --- brightness: an unambiguous A/B on the Settings stepper -------------
-        echo "==> [actuate 1] Home, open drawer, launch Settings"
-        tap "$NAV_HOME_X" "$NAV_HOME_Y"; sleep 2
-        drag "$SWIPE_X" 690 110            # open the app drawer
-        sleep 4
-        launchtap "$SETTINGS_X" "$SETTINGS_Y"
-        sleep 5; shot frame-actuate-settings
-        # NB: space the stepper taps ~1.6s apart — under TCG libinput drops taps
-        # that arrive faster than it can process ("system too slow"), so rapid
-        # 0.5s taps mostly no-op. 1.6s gaps land every step reliably.
-        echo "==> [actuate 1] Brightness UP to 5 -> NO dim (A); pip widest"
-        for i in 1 2 3 4 5; do tap "$BRIGHT_INC_X" "$BRIGHT_ROW_Y"; sleep 1.6; done
-        shot frame-actuate-bright5               # brightness 5: undimmed (compare B)
-        echo "==> [actuate 1] Brightness DOWN to 1 -> screen DIMS (B); pip min"
-        for i in 1 2 3 4; do tap "$BRIGHT_DEC_X" "$BRIGHT_ROW_Y"; sleep 1.6; done
-        shot frame-actuate-dim                   # brightness 1: zelto-dim scrim, pip min
-        # --- airplane ON -> bar dot + the network gate --------------------------
-        echo "==> [actuate 1] Airplane ON -> bar airplane dot; Wi-Fi greys"
-        tap "$AIR_X" "$AIR_Y"
-        sleep 3; shot frame-actuate-airplane
-        echo "==> [actuate 1] Home -> Fetch again; GET FAILS (airplane gate, no modal)"
-        tap "$NAV_HOME_X" "$NAV_HOME_Y"; sleep 2
-        launchtap "$FETCH_FAV_X" "$FAV_Y"
-        sleep 5
-        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
-        sleep 4; shot frame-actuate-fetch-fail   # "request failed", NO consent modal
-        echo "==> [actuate 1] sync + shutdown (brightness=1, airplane=1 persisted)"
-        sleep 3
-        actuate_kill
-
-        echo "==> [actuate boot 2/2] REBOOT same disk; dim + airplane persisted"
-        actuate_boot
-        sleep "$SHOT_DELAY"
-        shot frame-actuate-reboot                # home dimmed at b=1 + bar airplane dot
-        echo "==> [actuate 2] open drawer, launch Settings -> Brightness 1, Airplane On"
-        drag "$SWIPE_X" 690 110
-        sleep 4
-        launchtap "$SETTINGS_X" "$SETTINGS_Y"
-        sleep 5; shot frame-actuate-reboot-settings
-        actuate_kill
-        [ -n "$NET_SRV_PID" ] && kill "$NET_SRV_PID" 2>/dev/null || true
-        echo "==> actuate test done; frames in $OUT/frame-actuate-*.png"
-        exit 0
+        echo "==> settings actuation test done; logs in $OUT/actuate-*.log"
+        exit "$rc"
     fi
 
     # P23 volume + battery (VOLUME=1): prove the two hardware indicators every
@@ -982,7 +952,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     #     (the setting survived). Coordinates overridable; TCG boot is slow so keep
     #     SHOT_DELAY high.
     if [ "${VOLUME:-0}" = "1" ]; then
-        harness_rotted VOLUME \n            "It opens the deleted app drawer to launch Settings."
+        harness_superseded VOLUME test/test_power_services_sim.sh '*power_services*'
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         # Fake battery: start just above the 20% low threshold and drain fast so
         # the low-battery warning fires within the first SHOT_DELAY window.
@@ -1096,7 +1066,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # SKIP_BUILD=1 + overrides to retune from a captured frame). Boot is slow under
     # TCG: keep SHOT_DELAY high. Use launchtap (zero-hold) for drawer launches.
     if [ "${LOCK:-0}" = "1" ]; then
-        harness_rotted LOCK \n            "It opens the deleted app drawer to launch Settings."
+        harness_superseded LOCK test/test_settings_broker_sim.sh '*settings_broker*'
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"
         # Settings drawer tile: alphabetical 4-col grid, row 2 col 3 on a fresh
@@ -1234,168 +1204,139 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     fi
 
     # ---------------------------------------------------------------------
-    # P21 on-screen keyboard (KBD=1): prove a soft QWERTY keyboard auto-appears
-    # when a text field is focused, types into whatever app owns the field via the
-    # text-input-v3 <-> input-method-v2 handshake, and hides again — then that the
-    # typed text persists (it is saved to /var/zelto and survives a reboot). A
-    # TWO-BOOT test against the same data.img (reuses the P11 persistence rig):
-    #   Boot #1 — home; open the drawer (swipe up) and launch Notepad. Its note
-    #     TextField shows a placeholder, no keyboard. TAP THE FIELD -> the QWERTY
-    #     keyboard slides up from the bottom (a real exclusive zone shrinks Notepad
-    #     so the field stays visible above it) and the field shows a caret. Inject
-    #     taps on several letter keys -> the characters appear IN THE FIELD (in
-    #     Notepad, which knows nothing about the keyboard). Tap backspace -> the
-    #     last char is removed. Tap "Add note" -> the typed note is written to the
-    #     SQLite DB on /var/zelto and listed. Tap the keyboard's hide key -> it
-    #     slides away and the field keeps its (now cleared) state. Sync + kill.
-    #   Boot #2 — FRESH QEMU, SAME disk: relaunch Notepad -> the persisted counter
-    #     and the typed note row are read back from /var/zelto (survived the
-    #     reboot). Also confirms the keyboard does NOT show on the home screen (no
-    #     focused field) — frame-kbd-home has no keyboard.
-    # Coordinates are overridable to retune to the rendered layout from a captured
-    # frame (rerun SKIP_BUILD=1 + overrides — first guesses miss). Boot is slow
-    # under TCG: keep SHOT_DELAY high; TCG drops rapid taps so keys are spaced, and
-    # the screendump lags a frame so trust the downstream state.
+    # P21 typed text + persistence (KBD=1), REWRITTEN IN P45.
+    #
+    # THE CLAIM: a note TYPED into a text field is written to /var/zelto and is
+    # still there after a power cycle. That is the only end-to-end exercise of
+    # the text-input path in the project — key event -> the focused ZTextField ->
+    # SQLite -> ext4 -> a fresh process reading it back — and it is covered
+    # nowhere else, which is why P44 disabled this rather than deleting it.
+    #
+    # WHAT IS AND IS NOT COVERED, said plainly. Keys arrive as HARDWARE keys via
+    # QMP send-key: zcomp's keyboard focus -> wl_keyboard -> xkb -> the SDK's
+    # field. The ON-SCREEN KEYBOARD's own relay (text-input-v3 <-> input-method-v2)
+    # is NOT exercised, because driving the OSK means tapping key caps at
+    # coordinates, and stale key-cap coordinates are exactly what rotted the
+    # previous version of this harness. Testing that relay without coordinates
+    # needs a hook into zelto-keyboard itself; it is not covered here.
+    #
+    # NO TAPS AT ALL. `zelto.kbd=<n>` auto-launches Notepad with its note field
+    # pre-focused (z_app_focus_field, so no field tap) and its save armed to fire
+    # once N characters have been typed. The trigger is LENGTH, not a timer:
+    # under TCG the guest clock lags wall time by an unpredictable amount, so any
+    # "save 40 seconds in" would race the keys rather than follow them. Notepad
+    # also skips its "hello world" pre-fill under this flag — a seeded field
+    # would persist a note nobody typed and the test would pass either way.
+    #
+    # THE ASSERTION IS ON THE SERIAL LOG, both halves of it:
+    #   [notepad] saved  #N: <text>   (boot 1 — what was written)
+    #   [notepad] loaded #N: <text>   (boot 2 — what came back off the disk)
+    # `loaded` is printed only for rows read BEFORE this process has written
+    # anything, so it cannot be satisfied by the row the same boot just inserted.
     if [ "${KBD:-0}" = "1" ]; then
-        harness_rotted KBD \n            "It opens the deleted app drawer to launch Notepad, and its key coordinates assume the deleted 64px nav bar."
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        SWIPE_X="${SWIPE_X:-640}"
-        # Notepad drawer tile: alphabetical 4-col grid, row 1 col 3 on a fresh
-        # image (Cards, Fetch, Notepad, Notes). Retune from frame-kbd-drawer.
-        NOTEPAD_X="${NOTEPAD_X:-786}"; NOTEPAD_Y="${NOTEPAD_Y:-165}"
-        # Notepad's note field + the "Add note" button (retune from frame-kbd-app).
-        FIELD_X="${FIELD_X:-640}"; FIELD_Y="${FIELD_Y:-372}"
-        ADD_X="${ADD_X:-640}"; ADD_Y="${ADD_Y:-452}"
-        # Keyboard keys @1280x800. The keyboard sits ABOVE the 64px nav bar, so the
-        # KBD_H=300 strip lands at y~436..736 and the four settled row centres are
-        # ~row1 488, row2 561, row3 634, row4 707. Letters typed: h (row2), i (row1).
-        H_X="${H_X:-751}"; H_Y="${H_Y:-561}"
-        I_X="${I_X:-915}"; I_Y="${I_Y:-488}"
-        BKSP_X="${BKSP_X:-1177}"; BKSP_Y="${BKSP_Y:-634}"   # row3 rightmost (<x)
-        HIDE_X="${HIDE_X:-1183}"; HIDE_Y="${HIDE_Y:-707}"   # row4 rightmost (v)
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
+        SERIAL_K1="$OUT/kbd-boot1.log"
+        SERIAL_K2="$OUT/kbd-boot2.log"
+        mkdir -p "$OUT"
 
-        have_socat=0
-        command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-        qmp() {
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
-        }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.3; btn down; sleep 0.15; btn up; }
-        # Launch tap: press then release as two separate input-send-events over ONE
-        # socat connection, so the down->up gap is ~microseconds of wall time. Two
-        # separate qmp() calls each spawn socat (~100ms+ apart), and the TCG guest
-        # clock jumps ahead unpredictably in that gap — long enough to trip the
-        # drawer icons' long-press (curate menu) or to be dropped. One connection
-        # with two distinct commands is a reliable tap (distinct timestamps dodge
-        # debounce; near-zero gap dodges long-press).
-        launchtap() {
-            move "$1" "$2"; sleep 0.3
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' \
-                '{"execute":"qmp_capabilities"}' \
-                '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":true,"button":"left"}}]}}' \
-                '{"execute":"input-send-event","arguments":{"events":[{"type":"btn","data":{"down":false,"button":"left"}}]}}' \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        drag() {
-            local x="$1" y1="$2" y2="$3"
-            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
-            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
-            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
-            move "$x" "$y2"; sleep 0.4; btn up
-        }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        kbd_boot() {
+        # NO socat, NO QMP. This harness injects nothing at all: the guest is
+        # told what to type on the kernel cmdline and the on-screen keyboard
+        # does it, so there is no host-side input to drive and nothing that can
+        # go stale. QSPERSIST needs socat because a media key has to come from
+        # outside; this one does not.
+
+        # The word to type. Deliberately not a word that appears anywhere else in
+        # the app: "hello"/"world" are Notepad's own pre-fill, so finding one of
+        # those on disk would prove nothing about typing.
+        KBD_WORD="${KBD_WORD:-zelto}"
+        KBD_N=${#KBD_WORD}
+
+        # Same floor and the same reason as QSPERSIST/ACTUATE: the boot has to
+        # reach the compositor, Notepad's focus handshake and the per-character
+        # ticks. Raise on a slower host, never lower.
+        K_DELAY="${SHOT_DELAY:-16}"
+        if [ "$K_DELAY" -lt 150 ]; then
+            K_DELAY=150
+            echo "==> SHOT_DELAY raised to ${K_DELAY}s: the typing happens after"
+            echo "    zcomp, Notepad and the keyboard are up, not during boot."
+        fi
+
+        k_boot() {
+            local logfile="$1" type_it="$2"
+            rm -f "$logfile"
             QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
             rm -f "$QMP_SOCK"
+            local typearg=""
+            [ "$type_it" = "type" ] && typearg="zelto.kbdtype=$KBD_WORD"
             qemu-system-aarch64 "${common[@]}" \
-                -append "$KCMD" \
+                -append "$KCMD zelto.kbd=$KBD_N $typearg" \
                 -display none \
-                -serial mon:stdio \
+                -serial "file:$logfile" \
                 -qmp "unix:$QMP_SOCK,server,nowait" &
             QPID=$!
-        }
-        kbd_kill() {
+            # The guest types by itself once the field is focused, so there is
+            # nothing to inject and nothing to time from out here — only a wait
+            # long enough for the boot, the focus handshake, the per-character
+            # ticks and the fsync.
+            sleep "$K_DELAY"
             sync
             kill "$QPID" 2>/dev/null || true
             wait "$QPID" 2>/dev/null || true
         }
 
-        echo "==> [kbd boot 1/2] home (no keyboard; no focused field)"
-        kbd_boot
-        sleep "$SHOT_DELAY"
-        shot frame-kbd-home
-        echo "==> [kbd 1] open drawer + launch Notepad"
-        drag "$SWIPE_X" 690 110
-        # Let the drawer slide-up fully settle: a launch tap on a mid-slide tile
-        # misses (tile still moving) and simply does nothing.
-        sleep 8; shot frame-kbd-drawer            # read the Notepad tile y off this
-        launchtap "$NOTEPAD_X" "$NOTEPAD_Y"
-        sleep 6; shot frame-kbd-app               # Notepad: field + Add note, no kbd
-        echo "==> [kbd 1] tap the note field -> keyboard slides up"
-        tap "$FIELD_X" "$FIELD_Y"
-        # Let the slide-up spring fully settle before typing: under TCG it takes
-        # several wall seconds, and key taps that land mid-slide hit above the keys.
-        sleep 18; shot frame-kbd-shown            # QWERTY fully up; field has a caret
-        echo "==> [kbd 1] type 'h' then 'i' -> chars land in the field"
-        tap "$H_X" "$H_Y"
-        sleep 2
-        tap "$I_X" "$I_Y"
-        sleep 3; shot frame-kbd-typed             # field shows "hi" (allow for shot lag)
-        echo "==> [kbd 1] backspace -> one char removed"
-        tap "$BKSP_X" "$BKSP_Y"
-        sleep 3; shot frame-kbd-backspace         # field shows "h"
-        echo "==> [kbd 1] tap hide -> keyboard slides away, field keeps its text"
-        tap "$HIDE_X" "$HIDE_Y"
-        # Let the slide-DOWN fully complete so Notepad relayouts to full height and
-        # the Add-note button returns to its keyboard-down position before we tap it.
-        sleep 7; shot frame-kbd-hidden            # keyboard gone, Notepad full; "h" kept
-        echo "==> [kbd 1] Add note -> the typed note is written to /var/zelto"
-        tap "$ADD_X" "$ADD_Y"
-        sleep 2; shot frame-kbd-added             # note row "#1: h" listed; field cleared
-        echo "==> [kbd 1] sync + shutdown"
-        sleep 3
-        kbd_kill
+        # BOTH halves carry the note's NUMBER, not just its text, and that is what
+        # makes the test immune to stale disk state. data.img is reused across
+        # runs, so /var/zelto already holds rows from previous harnesses — the
+        # first version of this compared text alone and read an old "hello world"
+        # off the disk, which is a row boot 1 never wrote.
+        #
+        # saved  = the LAST save of boot 1 (the one this run made).
+        # loaded = the FIRST row boot 2 printed, i.e. the NEWEST (the query is
+        #          ORDER BY id DESC, so `tail` would return the OLDEST row —
+        #          exactly the stale one).
+        # Requiring #N and the text to match means only the row this run wrote
+        # can satisfy it.
+        saved_in()  { sed -n 's/.*\[notepad\] saved #\([0-9]*\): \(.*\)/\1|\2/p'  "$1" 2>/dev/null | tail -1 | tr -d '\r'; }
+        loaded_in() { sed -n 's/.*\[notepad\] loaded #\([0-9]*\): \(.*\)/\1|\2/p' "$1" 2>/dev/null | head -1 | tr -d '\r'; }
 
-        echo "==> [kbd boot 2/2] REBOOT same disk; typed note + counter persisted"
-        kbd_boot
-        sleep "$SHOT_DELAY"
-        shot frame-kbd-reboot                      # home, no keyboard
-        echo "==> [kbd 2] open drawer + relaunch Notepad -> note row survived"
-        drag "$SWIPE_X" 690 110
-        sleep 8
-        launchtap "$NOTEPAD_X" "$NOTEPAD_Y"
-        sleep 6; shot frame-kbd-persisted          # loaded count=N + the typed row
-        kbd_kill
-        echo "==> kbd test done; frames in $OUT/frame-kbd-*.png"
-        exit 0
+        echo "==> [kbd boot 1/2] fresh boot; type into the focused field and save"
+        k_boot "$SERIAL_K1" type
+        S1="$(saved_in "$SERIAL_K1")"
+        echo "    boot 1 saved: ${S1:-<nothing>}"
+
+        echo "==> [kbd boot 2/2] REBOOT the SAME disk; Notepad must read it back"
+        k_boot "$SERIAL_K2" notype
+        L2="$(loaded_in "$SERIAL_K2")"
+        echo "    boot 2 loaded: ${L2:-<nothing>}"
+
+        rc=0
+        if [ -z "$S1" ]; then
+            echo "!! FAIL: boot 1 never saved a note. The field's length trigger"
+            echo "   did not fire, so either the keys never reached the focused"
+            echo "   TextField or Notepad never started (see $SERIAL_K1)."; rc=1
+        elif [ "${S1#*|}" != "$KBD_WORD" ]; then
+            # THE VACUITY GUARD. add_note falls back to "note number N" when the
+            # field is empty, so a save can happen with nothing typed. That would
+            # persist fine and prove nothing about text input.
+            echo "!! FAIL: boot 1 saved '${S1#*|}', not the typed '$KBD_WORD'."
+            echo "   The save ran but the characters did not reach the field, so"
+            echo "   this run would only have tested the DB, not typing."; rc=1
+        elif [ -z "$L2" ]; then
+            echo "!! FAIL: the typed note did not survive the reboot — boot 2 read"
+            echo "   NO rows back off /var/zelto (see $SERIAL_K2)."; rc=1
+        elif [ "$L2" != "$S1" ]; then
+            echo "!! FAIL: boot 2's newest row is not the one boot 1 wrote."
+            echo "     boot 1 saved  #${S1%%|*}: '${S1#*|}'"
+            echo "     boot 2 loaded #${L2%%|*}: '${L2#*|}'"
+            echo "   data.img is reused across runs, so a matching TEXT alone can"
+            echo "   come from an older run; the note NUMBER is what ties the row"
+            echo "   to this one."; rc=1
+        else
+            echo "==> PASS: '$KBD_WORD' was typed into the field on boot 1, saved"
+            echo "    as note #${S1%%|*}, and read back off the disk by a fresh"
+            echo "    process on boot 2."
+        fi
+        echo "==> typed-text persistence test done; logs in $OUT/kbd-boot*.log"
+        exit "$rc"
     fi
 
     # P22 system clipboard + text selection (CLIP=1): prove select/copy/paste moves

@@ -29,6 +29,7 @@
 // while the whole app area visibly dims. A real phone dims the bar too; here the
 // bar doubling as the state read-out wins.
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,6 +46,7 @@ typedef struct DimState {
     bool inited;
     bool subscribed;
     int64_t brightness;   // 1..5 (5 = brightest / no dim)
+    int logged_alpha;     // last alpha reported to the log (-1 = none yet)
 } DimState;
 
 // Map a brightness level (1..5) to the scrim's alpha (0..255).
@@ -73,6 +75,9 @@ static ZView dim_body(ZApp *app, DimState *s) {
         s->inited = true;
         s->brightness =
             z_setting_get_int("sys.brightness", ZELTO_DEFAULT_BRIGHTNESS);
+        // -1, not 0: level 5 means alpha 0, and the NO-DIM case is the control a
+        // dimming test is worthless without. It has to report itself too.
+        s->logged_alpha = -1;
     }
     // Subscribe once (ctrl_fd is up by the first build), like the shade.
     if (!s->subscribed) {
@@ -83,6 +88,19 @@ static ZView dim_body(ZApp *app, DimState *s) {
     z_layer_set_input_none(app);
 
     int a = dim_alpha(s->brightness);
+    // ACTUATION, ON THE RECORD. Until P45 this surface said nothing, so the only
+    // way to test "brightness actually dims the screen" was to photograph it and
+    // measure pixels — which is why the harness that tried it navigated through
+    // the app drawer and rotted when the drawer was deleted. The scrim's alpha IS
+    // the actuation, so it is logged whenever it changes: a serial line can carry
+    // "level N produced scrim A" and a screenshot cannot carry it without a
+    // control frame beside it.
+    if (a != s->logged_alpha) {
+        s->logged_alpha = a;
+        fprintf(stderr, "[dim] sys.brightness=%lld -> scrim alpha=%d\n",
+                (long long)s->brightness, a);
+        fflush(stderr);
+    }
     if (a <= 0) {
         // Level 5: paint nothing, so the surface is fully transparent (no dim,
         // no cost). Unpainted pixels stay alpha 0 -> the app shows through.

@@ -586,7 +586,7 @@ static ZView lock_notifs(ZApp *app, LockState *s) {
             continue;
         }
         col.children[k++] = Frame(cw, 0.0f,
-            zelto_notif_card(s->notifs[i].app_id, s->notifs[i].title,
+            zelto_notif_card(app, cw, s->notifs[i].app_id, s->notifs[i].title,
                              s->notifs[i].body, NULL, false));
         shown++;
     }

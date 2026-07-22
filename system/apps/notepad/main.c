@@ -11,6 +11,7 @@
 // the same disk image the relaunched app shows the same count (not reset to 0)
 // and the same DB rows. Maps a plain xdg_toplevel below the bar.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zelto/ui.h>
@@ -27,6 +28,9 @@ typedef struct NotepadState {
     ZTextField note;               // typed note text (P21 soft-keyboard demo)
     ZTextField title;              // a 2nd field (P22): copy a word from `note`
                                    // and paste it here to prove in-app text move
+    bool wrote_this_boot;          // an INSERT has happened in this process
+    bool autosaved;                // ZELTO_NOTEPAD_AUTOSAVE has fired once
+    bool autofocused;              // the note field was focused for the harness
 } NotepadState;
 
 // Reload the most-recent rows from the DB into the display snapshot.
@@ -45,6 +49,14 @@ static void refresh_rows(NotepadState *s) {
         const char *note = z_rows_str(r, 1);
         snprintf(s->rows[s->row_count], sizeof(s->rows[s->row_count]),
                  "#%lld: %s", (long long)n, note ? note : "");
+        // The read-back half of the pair above. Logged only for rows loaded
+        // BEFORE this process has written anything, so a two-boot test can tell
+        // "came off ext4" from "we just inserted it".
+        if (!s->wrote_this_boot) {
+            fprintf(stderr, "[notepad] loaded #%lld: %s\n", (long long)n,
+                    note ? note : "");
+            fflush(stderr);
+        }
         s->row_count++;
     }
     z_rows_free(r);
@@ -62,9 +74,15 @@ static void ensure_init(NotepadState *s) {
     // Pre-fill the note field so there is a word to select for the P22 clipboard
     // demo without first typing it (typing still works — tap the field). Two words
     // so a long-press selects just one (proving word-, not whole-field, selection).
-    snprintf(s->note.text, sizeof(s->note.text), "hello world");
-    s->note.len = (int)strlen(s->note.text);
-    s->note.caret = s->note.anchor = s->note.len;
+    //
+    // NOT pre-filled under the P45 KBD harness: that test's whole point is that
+    // what ends up on disk is what was TYPED, and a field seeded with "hello
+    // world" would persist a note nobody entered and pass either way.
+    if (!getenv("ZELTO_NOTEPAD_AUTOSAVE")) {
+        snprintf(s->note.text, sizeof(s->note.text), "hello world");
+        s->note.len = (int)strlen(s->note.text);
+        s->note.caret = s->note.anchor = s->note.len;
+    }
     s->db = z_db_open("notepad");
     if (s->db) {
         z_db_exec(s->db,
@@ -79,6 +97,7 @@ static void ensure_init(NotepadState *s) {
 // field is empty it falls back to an auto-generated label so a tap still works.
 static void add_note(ZApp *app, void *state) {
     NotepadState *s = state;
+    s->wrote_this_boot = true;
     s->count++;
     z_prefs_set_int("count", s->count);
     if (s->db) {
@@ -90,6 +109,12 @@ static void add_note(ZApp *app, void *state) {
         }
         z_db_run(s->db, "INSERT INTO notes(n, note) VALUES(?, ?)",
                  z_args(s->count, note));
+        // On the record, so a two-boot test can assert what was WRITTEN against
+        // what a later boot reads back. Without this the only evidence a note
+        // survived is a screenshot of a list, which cannot distinguish "loaded
+        // from disk" from "still in memory".
+        fprintf(stderr, "[notepad] saved #%lld: %s\n", (long long)s->count, note);
+        fflush(stderr);
         refresh_rows(s);
     }
     // Clear the field for the next note.
@@ -118,6 +143,25 @@ static ZView rows_panel(NotepadState *s) {
 
 static ZView notepad_body(ZApp *app, NotepadState *state) {
     ensure_init(state);
+
+    // P45 KBD harness hooks. The old harness opened the app drawer P40 deleted
+    // and tapped key caps at coordinates measured off a screenshot; both are
+    // gone, so the field is focused here and the save fires on TYPED LENGTH
+    // rather than on a timer. Length, not time, is what makes it deterministic:
+    // under TCG the guest clock lags wall time by an unpredictable amount, so
+    // any "save 40s after launch" would race the keys instead of following them.
+    const char *autosave = getenv("ZELTO_NOTEPAD_AUTOSAVE");
+    if (autosave && autosave[0]) {
+        if (!state->autofocused) {
+            state->autofocused = true;
+            z_app_focus_field(app, &state->note);   // no tap, no coordinates
+        }
+        int want = atoi(autosave);
+        if (!state->autosaved && want > 0 && state->note.len >= want) {
+            state->autosaved = true;
+            add_note(app, state);
+        }
+    }
 
     // Content is TOP-anchored (a leading fixed gap + a single trailing Spacer), so
     // the two text fields keep the same y whether the keyboard is up or down — the

@@ -11,6 +11,7 @@
 // networking 10.0.2.2 is the host, where the NET=1 harness runs a tiny HTTP
 // server. Maps a plain xdg_toplevel below the bar.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zelto/ui.h>
@@ -24,6 +25,7 @@ typedef struct FetchState {
     bool pending;         // a request is in flight
     bool done;            // a response has come back
     bool error;           // the last result was an error
+    bool armed;           // ZELTO_FETCH_AUTO timer scheduled once
     char body[640];       // the fetched body (or a status line)
 } FetchState;
 
@@ -67,6 +69,20 @@ static void do_fetch(ZApp *app, void *state) {
 
 static ZView fetch_body(ZApp *app, FetchState *state) {
     state->app = app;   // capture for the off-loop net callback
+
+    // Headless test hook (P45): ZELTO_FETCH_AUTO=1 issues the GET on its own a
+    // beat after the first build, so a harness can test whether the request is
+    // GATED without tapping a button. The ACTUATE harness needs exactly this —
+    // its predecessor tapped "Fetch" at coordinates measured off a screenshot,
+    // which is the habit that rotted five harnesses into unconditional passes.
+    // Same shape as ZELTO_CONSENT_AUTO in the consent dialog.
+    if (!state->armed) {
+        state->armed = true;
+        const char *au = getenv("ZELTO_FETCH_AUTO");
+        if (au && au[0] && au[0] != '0') {
+            z_after(app, 600, do_fetch, state);
+        }
+    }
 
     ZColor panel_bg = state->error  ? Z_COLOR_DANGER_DIM
                       : state->done ? Z_COLOR_ACCENT_DIM

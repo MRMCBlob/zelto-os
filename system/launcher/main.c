@@ -548,8 +548,35 @@ static ZView vgap(float h) {
 #define GRID_TOP ((float)ZELTO_BAR_H + 20.0f)
 #define MAX_ROWS 20              // per-page occupancy height cap
 #define MAX_PAGES 8              // carousel cap
-// page dots + dock, then the home-indicator strip under all of it.
-#define BOTTOM_RESERVE (208.0f + (float)ZELTO_HOMEBAR_H)
+
+// A Text's height is its font's ascent + descent, which is NOT a compile-time
+// constant — it comes from the face. Satoshi measures ~1.31x the pixel size, and
+// that ratio is what lets a RESERVE be derived from the type scale instead of
+// re-measured by hand every time the scale moves. It is an estimate, and the
+// estimate is deliberately on the generous side: over-reserving costs a few
+// units of blank space, under-reserving pushes a row off the screen.
+#define LINE_H(font) ((float)(font) * 131.0f / 100.0f)
+
+// The bottom bar, DERIVED from what it holds rather than declared.
+//
+// It was `208.0f + ZELTO_HOMEBAR_H` — a number naming a sum it was not computed
+// from, which is the exact shape of the `KBD_H 300` that P44 found hiding 36
+// units of slack. Measured against its parts this one carried ~18: the bar is a
+// vertical stack of page dots, the dock plate and a home-indicator gap, padded
+// and spaced. Now it says so, so a taller dock icon cannot silently overflow the
+// space reserved for it.
+#define BAR_PAD 14.0f            // the bottom bar's own padding
+#define BAR_GAP 12.0f            // between dots, dock and the indicator gap
+#define DOTS_H 10.0f             // the tallest page indicator (the Library quad)
+#define DOCK_PAD 14.0f           // the dock plate's inset around its icons
+#define DOCK_GAP 18.0f           // between dock icons
+// The dock's icon is smaller than a home tile (see the dock section below); it
+// lives up here because BOTTOM_RESERVE is derived from it and a macro is
+// expanded where it is USED, which is above the dock's own code.
+#define DOCK_ICON 88.0f
+#define DOCK_PLATE_H (DOCK_ICON + 2.0f * DOCK_PAD)
+#define BOTTOM_RESERVE (2.0f * BAR_PAD + 3.0f * BAR_GAP + DOTS_H \
+                        + DOCK_PLATE_H + (float)ZELTO_HOMEBAR_H)
 #define ICON_SIZE 104.0f
 // The corner is a FRACTION of the icon (Z_RADIUS_ICON — Apple's icon-grid
 // proportion), not a fixed px, so the tile keeps its shape at every size it is
@@ -1328,7 +1355,8 @@ static ZView app_cell_content(const AppEntry *e) {
 // The dock rides on its own MATERIAL — a translucent, rounded plate the wallpaper
 // shows through — which is what separates it from the grid above without drawing
 // a line.
-#define DOCK_ICON 88.0f
+// DOCK_ICON, DOCK_PAD and DOCK_GAP are defined with the grid metrics at the top
+// of the file, because BOTTOM_RESERVE is derived from them and is spent above.
 #define DOCK_MAX 4
 
 // Which apps are in the dock. Persisted as a CSV of app ids (home.dock); with no
@@ -1369,7 +1397,9 @@ static ZView dock_view(void) {
     if (g_n_dock <= 0) {
         return Spacer();
     }
-    const float pad = 14.0f, gap = 18.0f;
+    // From the same constants BOTTOM_RESERVE is derived from — if these were a
+    // second copy, the reserve would go stale the moment the plate was retuned.
+    const float pad = DOCK_PAD, gap = DOCK_GAP;
     ZStackOpts row = {.spacing = gap, .align = Z_ALIGN_CENTER, .padding = pad};
     int k = 0;
     for (int i = 0; i < g_n_dock && k < Z_MAX_CHILDREN - 1; i++) {
@@ -1501,7 +1531,26 @@ static ZView raster_layer(LauncherState *s, int rows) {
 // already sorted), over a search field. It reuses the home's cell metrics and
 // app_cell_content verbatim — an app icon must be the same object here as it is
 // on home, or paging into the Library reads as arriving in a different program.
-#define LIB_TOP 116.0f   // the title + search field above the grid
+// The title + search field above the grid — DERIVED, because the literal it
+// replaces was measurably wrong.
+//
+// It was 116, and P43 roughly doubled the type scale (Z_FONT_TITLE 28 -> 51)
+// without touching it. Measured off a re-shot frame: the grid's first icon row
+// starts at y=278 with GRID_TOP at 101, so the title, the field and the three
+// gaps really consume 177 — the reserve was SIXTY-ONE UNITS SHORT. lib_rows()
+// spends this on `avail`, so an under-reservation means it can fit one more row
+// than there is room for and the last row runs under the dock. It is invisible
+// today only because there are twelve apps and the row count is not the binding
+// constraint; it becomes visible the moment a device has enough apps.
+//
+// The same rescale left a second copy of the same mistake below: the non-first
+// Library pages hold the grid down with a bare `vgap(52)` meant to match the
+// search field's height, and the field now stands ~62. Both now come from the
+// parts, so the type scale can move again without dragging either out of true.
+#define LIB_FIELD_PAD 12.0f      // z_text_field's own padding (sdk/src/view.c)
+#define LIB_FIELD_H (2.0f * LIB_FIELD_PAD + LINE_H(Z_FONT_BODY))
+#define LIB_TOP (GRID_GAP + LINE_H(Z_FONT_TITLE) + GRID_GAP + LIB_FIELD_H \
+                 + GRID_GAP)
 
 // Case-insensitive substring test. strcasestr is a GNU extension and this file
 // is built -Wpedantic, so the scan is written out.
@@ -1594,7 +1643,10 @@ static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
         col.children[k++] = Frame(s->surface_w - 2.0f * GRID_PAD, 0.0f,
             TextField(app, &s->search, "Search"));
     } else {
-        col.children[k++] = vgap(52.0f);   // hold the grid at the same height
+        // Hold the grid at the same height as page 1, which means matching the
+        // SEARCH FIELD's height — so it is the field's height, not a literal that
+        // was right when Body was 17pt-as-pixels and is 10 units out now.
+        col.children[k++] = vgap(LIB_FIELD_H);
     }
 
     if (n == 0) {
@@ -2092,8 +2144,9 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // the space back (lib_rows reserves the keyboard instead of BOTTOM_RESERVE).
     ZView bottom = NULL;
     if (!searching) {
-        ZStackOpts bstack = {.spacing = 12, .align = Z_ALIGN_CENTER,
-                             .padding = state->rearrange ? 28.0f : 14.0f};
+        ZStackOpts bstack = {.spacing = BAR_GAP, .align = Z_ALIGN_CENTER,
+                             .padding = state->rearrange ? 2.0f * BAR_PAD
+                                                         : BAR_PAD};
         int bk = 0;
         bstack.children[bk++] = Spacer();
         // Dots stay up in rearrange too: they are the only readout of which page
