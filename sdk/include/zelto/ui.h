@@ -514,6 +514,13 @@ void z_im_commit_text(ZApp *app, const char *utf8);
 // Delete one byte before the cursor in the focused field (backspace).
 void z_im_backspace(ZApp *app);
 
+// Delete `before` bytes before the cursor in one edit. What a held delete key
+// switches to once it has been repeating long enough to mean "get rid of that
+// word" — as ONE delete_surrounding_text rather than N backspaces, so the field
+// sees a single edit and the keyboard is not racing its own surrounding-text
+// updates while it decides how much is left to remove.
+void z_im_delete(ZApp *app, int before);
+
 // What KIND of field has focus (text-input-v3's content purpose, relayed to the
 // input method by the compositor). The keyboard reads it to decide what it is
 // allowed to do: a PASSWORD field must not get adaptive touch targets, must not
@@ -1876,6 +1883,42 @@ ZProbeHit z_probe_at(ZApp *app, float x, float y);
 // One resolver per app. Passing NULL removes it.
 typedef bool (*ZTapResolver)(ZApp *app, void *state, float x, float y);
 void z_tap_resolver(ZApp *app, ZTapResolver fn);
+
+// ---------------------------------------------------------------------------
+// Press phases (P47) — the whole gesture, not just its end.
+//
+// A tap handler hears about a press once, when it is over. That is enough for a
+// button and not enough for a keyboard, which has three things to do WHILE a
+// finger is down: show the preview callout above it, notice that it has been
+// there long enough to mean "hold", and follow it as it slides onto an accent in
+// the popup that hold opened.
+//
+// The toolkit already has an OnLongPress recognizer (P16) and this is not a
+// replacement for it: OnLongPress fires once, on a node, and tells you nothing
+// about the finger before or after. A surface that owns its own press timing —
+// because its keys repeat, accelerate and then change what they delete — needs
+// the phases.
+//
+//   Z_PRESS_DOWN   a finger landed, at (x, y) in surface pixels
+//   Z_PRESS_MOVE   it moved, still down (every motion event, not only past slop)
+//   Z_PRESS_UP     it lifted. Fired BEFORE the tap path, so a surface can decide
+//                  here whether the release still means a tap; a tap resolver
+//                  that returns true then suppresses the ordinary dispatch.
+//
+// One hook per app. NULL removes it.
+typedef enum ZPressPhase {
+    Z_PRESS_DOWN,
+    Z_PRESS_MOVE,
+    Z_PRESS_UP,
+} ZPressPhase;
+typedef void (*ZPressCb)(ZApp *app, void *state, ZPressPhase phase, float x,
+                         float y);
+void z_press_hook(ZApp *app, ZPressCb fn);
+
+// Drive one phase, exactly as the pointer listener does — what a test presses and
+// holds with. Pair it with z_probe_press for the release: DOWN, wait, (MOVE,)
+// then z_probe_press, which is the same UP-then-resolve the finger takes.
+void z_probe_press_phase(ZApp *app, ZPressPhase phase, float x, float y);
 
 // Drive the surface's tap path at a point, exactly as a finger's release does:
 // the resolver first, the rectangle walk if it declines. This is what a test

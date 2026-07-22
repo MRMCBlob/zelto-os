@@ -312,6 +312,10 @@ struct ZApp {
     // Tap resolver (P47): this surface answers "what did that press mean?" itself.
     // See the contract in zelto/ui.h; zelto-keyboard is the only client.
     ZTapResolver tap_resolver;
+    // ...and the whole gesture, not just its end: down / move / up, for a surface
+    // that owns its own press timing (the keyboard's preview callout, its hold,
+    // its repeating delete, and the slide onto an accent).
+    ZPressCb press_hook;
 
     // One-shot timer (z_after). Not tied to seat activity — a plain wall-clock
     // deadline the app loop bounds its poll() on, firing `after_cb` once. Drives
@@ -904,6 +908,24 @@ void z_tap_resolver(ZApp *app, ZTapResolver fn) {
     }
 }
 
+void z_press_hook(ZApp *app, ZPressCb fn) {
+    if (app) {
+        app->press_hook = fn;
+    }
+}
+
+static void press_phase(ZApp *app, ZPressPhase phase, double x, double y) {
+    if (app->press_hook) {
+        app->press_hook(app, app->state, phase, (float)x, (float)y);
+    }
+}
+
+void z_probe_press_phase(ZApp *app, ZPressPhase phase, float x, float y) {
+    if (app) {
+        press_phase(app, phase, (double)x, (double)y);
+    }
+}
+
 void z_probe_press(ZApp *app, float x, float y) {
     if (!app || !app->root) {
         return;
@@ -1400,6 +1422,13 @@ static void pointer_motion(void *data, struct wl_pointer *p, uint32_t time,
     app->ptr_x = wl_fixed_to_double(sx);
     app->ptr_y = wl_fixed_to_double(sy);
 
+    // Every motion while a finger is down, not only the ones past the pan slop
+    // (P47): a slide from a key onto the accent above it is a few units and would
+    // never cross it. Fired before the recognizer below so a surface tracking the
+    // press sees the point even on a gesture the toolkit is about to claim.
+    if (app->ptr_down) {
+        press_phase(app, Z_PRESS_MOVE, app->ptr_x, app->ptr_y);
+    }
     if (!app->ptr_down || app->long_pressed) {
         // Once a long-press has fired the gesture is consumed: ignore motion
         // until release so it can neither start a pan nor re-fire.
@@ -1506,6 +1535,8 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
         app->long_press_armed = app->long_press_target != NULL;
         // Press feedback: highlight the tappable control under the finger (P31).
         press_begin(app);
+        // A surface that owns its own press timing hears about it here (P47).
+        press_phase(app, Z_PRESS_DOWN, app->ptr_x, app->ptr_y);
         return;
     }
     // Release.
@@ -1514,25 +1545,15 @@ static void pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
     }
     app->ptr_down = false;
     app->long_press_armed = false;
+    // BEFORE any of the branches below, because a surface that has been tracking
+    // this press needs to know it ended whichever way the gesture is classified —
+    // a keyboard whose finger lifted mid-drag must still put its callout away.
+    press_phase(app, Z_PRESS_UP, app->ptr_x, app->ptr_y);
     if (app->long_pressed) {
         // The long-press already handled this gesture; swallow the tap/pan-end.
-        //
-        // Except on a surface that resolves its own taps (P47). Press-hold-slide-
-        // release is one gesture with TWO decisions in it — the hold opens the
-        // accent popup, the release picks the accent — and the second one arrives
-        // as exactly this release, at a point that is now over a control the hold
-        // created. Swallowing it unconditionally is what makes a long-press menu
-        // impossible to finish without lifting and tapping again. The resolver
-        // gets the release point and says whether it meant anything; if it
-        // declines, the swallow stands (a long-press that opened nothing must not
-        // also emit the tap it suppressed).
         app->long_pressed = false;
         app->panning = false;
         press_release(app);
-        if (app->tap_resolver) {
-            app->tap_resolver(app, app->state, (float)app->ptr_x,
-                              (float)app->ptr_y);
-        }
         return;
     }
     if (!app->panning) {
@@ -3384,6 +3405,15 @@ void z_im_backspace(ZApp *app) {
     }
     // Delete one byte before the cursor (ASCII in the MVP); commit the batch.
     zwp_input_method_v2_delete_surrounding_text(app->input_method, 1, 0);
+    zwp_input_method_v2_commit(app->input_method, app->im_serial);
+}
+
+void z_im_delete(ZApp *app, int before) {
+    if (!app || !app->input_method || before <= 0) {
+        return;
+    }
+    zwp_input_method_v2_delete_surrounding_text(app->input_method,
+                                                (uint32_t)before, 0);
     zwp_input_method_v2_commit(app->input_method, app->im_serial);
 }
 

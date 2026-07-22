@@ -37,6 +37,21 @@
 // lands inside it, short enough that "shift, think, shift" does not.
 #define KBD_DOUBLE_TAP_S 0.35
 
+// How long a finger has to stay on a key before the press means "hold" — the
+// accent popup on a letter, the repeating delete on backspace. Deliberately the
+// same number for both, because a user learns ONE duration for "press and wait"
+// and a key that needed a different one would feel broken rather than different.
+#define KBD_HOLD_S 0.5
+
+// The repeating delete, as a cadence rather than a count. Time, not repetitions,
+// because a repeat that accelerated every N deletions would run at a different
+// speed on a field with two characters left in it than on a full one.
+#define KBD_REPEAT_S 0.15         // the first, comfortable cadence
+#define KBD_REPEAT_FAST_S 0.06    // after KBD_REPEAT_ACCEL_S of holding
+#define KBD_REPEAT_ACCEL_S 1.2
+#define KBD_REPEAT_WORD_S 2.0     // after this, whole words at a time
+#define KBD_REPEAT_WORD_GAP_S 0.25
+
 // Shift is three states, not a bool (P47). A one-shot shift and a caps lock are
 // different keys wearing the same cap, and a phone tells them apart by how you
 // press it: once for the next letter, twice quickly to lock.
@@ -76,6 +91,37 @@ typedef struct KbdState {
     int tapped;
     bool tapping;
     bool audited;
+
+    // --- the live press (P47) ------------------------------------------------
+    // A tap handler hears about a press once, when it is over. A keyboard has
+    // three things to do while the finger is still down: show what it is about to
+    // type, notice the press has become a HOLD, and follow the finger onto an
+    // accent. All of that is driven from z_press_hook, and all of it lives here
+    // because body() must be able to draw it without asking anything.
+    bool down;
+    float px, py;             // where the finger is now
+    double down_s;            // when it landed
+    bool hold_fired;          // the hold did something; the release is spent
+    char hold_name[16];       // the cap it went down on
+    // What the CLASSIFIER says the press means, refreshed on every move. This is
+    // what the callout shows — see the note over kbd_callout for why it is that
+    // and not the cap under the finger.
+    bool preview;
+    char preview_ch[8];
+    char shown_ch[8];         // the last one logged, so the log is one per change
+    float preview_x, preview_y, preview_w, preview_h;
+    // The accent popup: open, whose, and the frame of the cap it belongs to.
+    bool accents;
+    char accent_base;
+    float base_x, base_y, base_w, base_h;
+    // The repeating delete.
+    bool repeating;
+    int repeats;
+    double next_repeat_s;
+    bool word_mode;
+    // The harness's in-flight hold: where it went down, and what it slides onto.
+    float hold_px, hold_py;
+    char slide_to[16];
 } KbdState;
 
 // Commit the next character of ZELTO_KBD_TYPE, then re-arm until the string is
@@ -83,6 +129,8 @@ typedef struct KbdState {
 static void type_tick(ZApp *app, void *ud);
 // Press the next cap named by ZELTO_KBD_TAP. See the note over tap_tick().
 static void tap_tick(ZApp *app, void *ud);
+// The end of a held press (a "NAME~ms" token). See the note over hold_release().
+static void hold_release(ZApp *app, void *ud);
 
 // --- input-method show/hide (driven by the compositor) ---------------------
 static void on_show(ZApp *app, void *ud) {
@@ -305,6 +353,64 @@ static void on_space(ZApp *app, void *state) {
 static void on_backspace(ZApp *app, void *state) {
     (void)state;
     z_im_backspace(app);
+    fprintf(stderr, "[keyboard] backspace\n");
+    fflush(stderr);
+}
+
+// --- accents ----------------------------------------------------------------
+// The alternates a letter offers when you hold it. A phone keyboard has no room
+// for a dead-key layer and no room for a second alphabet, so the accents live
+// UNDER the letters they belong to and appear only while a finger is on one.
+//
+// The strings are static and their POINTERS are the identity the popup's caps
+// carry as tap data — which is what lets the probe resolve "the é key" without a
+// coordinate, exactly as a character cap is resolved by its codepoint.
+static const struct AccentRow {
+    char base;
+    const char *alt[8];
+    int n;
+} ACCENTS[] = {
+    {'a', {"à", "á", "â", "ä", "ã", "å"}, 6},
+    {'c', {"ç"}, 1},
+    {'e', {"è", "é", "ê", "ë"}, 4},
+    {'i', {"ì", "í", "î", "ï"}, 4},
+    {'n', {"ñ"}, 1},
+    {'o', {"ò", "ó", "ô", "ö", "õ"}, 5},
+    {'s', {"ß"}, 1},
+    {'u', {"ù", "ú", "û", "ü"}, 4},
+    {'y', {"ÿ"}, 1},
+};
+#define N_ACCENTS ((int)(sizeof(ACCENTS) / sizeof(ACCENTS[0])))
+
+static const struct AccentRow *accents_for(char base) {
+    for (int i = 0; i < N_ACCENTS; i++) {
+        if (ACCENTS[i].base == base) {
+            return &ACCENTS[i];
+        }
+    }
+    return NULL;
+}
+
+// Committing an accent closes the popup, and spends a one-shot shift the way any
+// other letter would.
+//
+// The marks are LOWER CASE only. Upper-case accents are a second table and the
+// shift key is not the reason to add it: the letters that need them most are the
+// ones a name starts with, which is the case a dictionary — not a table — should
+// be answering. Written down rather than left as an omission because "hold shift,
+// hold e" silently giving a lower-case è is the kind of thing that reads as a bug.
+static void on_accent(ZApp *app, void *state, void *data) {
+    KbdState *s = state;
+    const char *acc = data;
+    z_im_commit_text(app, acc);
+    fprintf(stderr, "[keyboard] commit '%s' (accent of '%c')\n", acc,
+            s->accent_base);
+    fflush(stderr);
+    s->accents = false;
+    if (s->shift == SHIFT_ONCE) {
+        s->shift = SHIFT_OFF;
+    }
+    z_invalidate(app);
 }
 static void on_enter(ZApp *app, void *state) {
     (void)state;
@@ -445,6 +551,27 @@ static int kbd_pick(ZApp *app, const CapSet *a, float x, float y, char *why,
                           why, why_n);
 }
 
+// While the accent popup is open, ONLY its cells are candidates. The letters
+// underneath are still laid out and still tappable, and a release that resolved
+// to one of them would type the letter you were trying to put a mark on.
+static void keep_accents_only(CapSet *a) {
+    int k = 0;
+    for (int i = 0; i < a->n; i++) {
+        if (a->on_data[i] != on_accent) {
+            continue;
+        }
+        if (k != i) {
+            snprintf(a->name[k], sizeof(a->name[k]), "%s", a->name[i]);
+            a->key[k] = a->key[i];
+            a->on_data[k] = a->on_data[i];
+            a->data[k] = a->data[i];
+            a->on_plain[k] = a->on_plain[i];
+        }
+        k++;
+    }
+    a->n = k;
+}
+
 // The tap resolver (z_tap_resolver): this surface answers "what did that press
 // mean?" itself. Installed once, in kbd_body.
 static bool kbd_resolve(ZApp *app, void *state, float x, float y) {
@@ -456,6 +583,40 @@ static bool kbd_resolve(ZApp *app, void *state, float x, float y) {
     collect_caps(app, &a);
     if (a.n == 0) {
         return false;
+    }
+    // A release that ends an ACCENT gesture. The popup is above the key, so the
+    // finger has slid off the cap it started on — which is the point, and which
+    // is why this cannot be an ordinary tap: the press and the release are on two
+    // different controls and only the second one decides.
+    //
+    // Releasing anywhere that is NOT over the popup commits NOTHING. That is the
+    // deliberate choice: a hold you did not follow through has to be cancellable,
+    // and the alternative (commit the nearest accent, or fall back to the base
+    // letter) means an accidental hold silently changes what you typed.
+    if (s->accents) {
+        keep_accents_only(&a);
+        s->accents = false;
+        int i = a.n > 0 ? z_kbd_nearest(a.key, a.n, x, y) : -1;
+        bool inside = i >= 0 && x >= a.key[i].x && x <= a.key[i].x + a.key[i].w &&
+                      y >= a.key[i].y && y <= a.key[i].y + a.key[i].h;
+        if (inside) {
+            z_probe_tap(app, a.on_data[i], a.data[i], a.on_plain[i]);
+        } else {
+            fprintf(stderr,
+                    "[keyboard] accent popup dismissed at %.0f,%.0f (nothing "
+                    "committed)\n",
+                    x, y);
+            fflush(stderr);
+        }
+        z_invalidate(app);
+        return true;
+    }
+    // A release that ends a hold which already did something — the repeating
+    // delete. The keys it deleted are what the gesture meant; emitting a tap on
+    // top of them would delete one more.
+    if (s->hold_fired) {
+        s->hold_fired = false;
+        return true;
     }
     char why[32];
     int i = kbd_pick(app, &a, x, y, why, sizeof(why));
@@ -484,6 +645,165 @@ static bool kbd_resolve(ZApp *app, void *state, float x, float y) {
             r.hit_same ? "same" : "DIFFERENT", r.ran ? "yes" : "no");
     fflush(stderr);
     return true;
+}
+
+// --- the live press ---------------------------------------------------------
+// What the callout shows, refreshed on every move: run the classifier at the
+// current point and remember its answer plus the frame of the cap that won.
+static void refresh_preview(ZApp *app, KbdState *s) {
+    CapSet a;
+    collect_caps(app, &a);
+    if (a.n == 0) {
+        s->preview = false;
+        return;
+    }
+    int i = kbd_pick(app, &a, s->px, s->py, NULL, 0);
+    if (i < 0) {
+        s->preview = false;
+        return;
+    }
+    snprintf(s->hold_name, sizeof(s->hold_name), "%s", a.name[i]);
+    s->base_x = a.key[i].x;
+    s->base_y = a.key[i].y;
+    s->base_w = a.key[i].w;
+    s->base_h = a.key[i].h;
+    // Only character caps get a callout. A modifier's mark is not obscured by the
+    // finger in the way a 32pt letter is, and iOS shows one for exactly the same
+    // set — the callout is there so you can read what you hit, not to celebrate
+    // every press.
+    if (a.key[i].ch) {
+        char c = a.key[i].ch;
+        if (kbd_upper(s) && c >= 'a' && c <= 'z') {
+            c = (char)(c - 32);
+        }
+        snprintf(s->preview_ch, sizeof(s->preview_ch), "%c", c);
+        s->preview = true;
+    } else if (!a.name[i][1]) {
+        snprintf(s->preview_ch, sizeof(s->preview_ch), "%s", a.name[i]);
+        s->preview = true;   // a digit or a symbol cap
+    } else {
+        s->preview = false;
+    }
+    s->preview_x = a.key[i].x;
+    s->preview_y = a.key[i].y;
+    s->preview_w = a.key[i].w;
+    s->preview_h = a.key[i].h;
+    // Logged on CHANGE, not per build (the hold ticks at 40Hz), and with the
+    // geometric answer beside it — because the whole question about this callout
+    // is which of the two it shows, and a log line naming only one of them could
+    // not settle it.
+    if (s->preview && strcmp(s->preview_ch, s->shown_ch) != 0) {
+        snprintf(s->shown_ch, sizeof(s->shown_ch), "%s", s->preview_ch);
+        ZProbeHit g = z_probe_at(app, s->px, s->py);
+        char gname[16] = "-";
+        if (g.found) {
+            key_name(g.on_data, g.data, g.on_plain, gname, sizeof(gname));
+        }
+        fprintf(stderr, "[keyboard] callout '%s' (geom '%s')\n", s->preview_ch,
+                gname);
+        fflush(stderr);
+    }
+}
+
+// z_press_hook: the finger, from landing to lifting.
+static void kbd_press(ZApp *app, void *state, ZPressPhase phase, float x,
+                      float y) {
+    KbdState *s = state;
+    if (!s->visible) {
+        return;
+    }
+    s->px = x;
+    s->py = y;
+    if (phase == Z_PRESS_DOWN) {
+        s->down = true;
+        s->down_s = z_now_seconds();
+        s->hold_fired = false;
+        s->repeating = false;
+        s->repeats = 0;
+        s->word_mode = false;
+        refresh_preview(app, s);
+    } else if (phase == Z_PRESS_MOVE) {
+        // While the popup is open the callout goes away: the popup IS the
+        // feedback, and a second floating letter over it would be two answers to
+        // the same question.
+        if (!s->accents) {
+            refresh_preview(app, s);
+        }
+    } else {
+        s->down = false;
+        s->preview = false;
+        s->shown_ch[0] = '\0';
+        s->repeating = false;
+    }
+    z_invalidate(app);
+}
+
+// The hold, ticked from body() while a finger is down. It lives on the build
+// rather than on a timer callback because z_after is ONE shared slot (the P45
+// note on ZELTO_PROBE_AT) and the harness's tap sequence already owns it — two
+// state machines on one slot is how the second one silently stops running.
+static void kbd_hold_tick(ZApp *app, KbdState *s) {
+    double now = z_now_seconds();
+    double held = now - s->down_s;
+    z_tick_every(app, 40);
+    if (!s->hold_fired && held >= KBD_HOLD_S) {
+        const struct AccentRow *r =
+            s->hold_name[0] && !s->hold_name[1] ? accents_for(s->hold_name[0])
+                                                : NULL;
+        if (r) {
+            s->accents = true;
+            s->accent_base = r->base;
+            s->hold_fired = true;
+            fprintf(stderr, "[keyboard] accents open for '%c' (%d)\n", r->base,
+                    r->n);
+            fflush(stderr);
+        } else if (strcmp(s->hold_name, "BKSP") == 0) {
+            s->repeating = true;
+            s->hold_fired = true;
+            s->next_repeat_s = now;   // the first one, immediately
+            fprintf(stderr, "[keyboard] backspace repeat begins\n");
+        } else {
+            s->hold_fired = true;   // a hold on a key with nothing to offer
+            fprintf(stderr, "[keyboard] hold on '%s': nothing to offer\n",
+                    s->hold_name);
+        }
+        fflush(stderr);
+        z_invalidate(app);
+    }
+    if (!s->repeating || now < s->next_repeat_s) {
+        return;
+    }
+    double repeating_for = held - KBD_HOLD_S;
+    // WORDS, not characters, once it has been going long enough to mean "get rid
+    // of that". Sent as ONE delete_surrounding_text rather than N backspaces so
+    // the field sees a single edit — N of them would race the surrounding-text
+    // update this counts FROM, and a stale count deletes the same word twice.
+    if (repeating_for >= KBD_REPEAT_WORD_S) {
+        const char *p = kbd_prefix(app);
+        int n = (int)strlen(p);
+        int i = n;
+        while (i > 0 && p[i - 1] == ' ') { i--; }
+        while (i > 0 && p[i - 1] != ' ') { i--; }
+        int del = n - i;
+        s->word_mode = true;
+        s->repeats++;
+        s->next_repeat_s = now + KBD_REPEAT_WORD_GAP_S;
+        if (del > 0) {
+            z_im_delete(app, del);
+        }
+        fprintf(stderr, "[keyboard] backspace repeat n=%d mode=word deleted %d\n",
+                s->repeats, del);
+    } else {
+        double gap = repeating_for >= KBD_REPEAT_ACCEL_S ? KBD_REPEAT_FAST_S
+                                                         : KBD_REPEAT_S;
+        s->repeats++;
+        s->next_repeat_s = now + gap;
+        z_im_backspace(app);
+        fprintf(stderr,
+                "[keyboard] backspace repeat n=%d mode=char gap=%.0fms\n",
+                s->repeats, gap * 1000.0);
+    }
+    fflush(stderr);
 }
 
 // --- the touch-target audit -------------------------------------------------
@@ -583,6 +903,47 @@ static void audit_caps(ZApp *app) {
     fflush(stderr);
 }
 
+// The end of a held press: slide onto the named target if there is one, then
+// release. Split out of tap_tick because the wait between them is a timer, and
+// because the SLIDE has to resolve a control the HOLD created — the accent cells
+// do not exist until the popup opens, so their frames cannot be looked up before
+// the press.
+static void hold_release(ZApp *app, void *ud) {
+    KbdState *s = ud;
+    float px = s->hold_px, py = s->hold_py;
+    if (s->slide_to[0]) {
+        const struct AccentRow *r = accents_for(s->accent_base);
+        const char *target = NULL;
+        for (int i = 0; r && i < r->n; i++) {
+            if (strcmp(r->alt[i], s->slide_to) == 0) {
+                target = r->alt[i];   // the POINTER is the identity, not the text
+            }
+        }
+        ZProbeTap t = target ? z_probe_frame(app, on_accent,
+                                             (void *)(intptr_t)target, NULL)
+                             : (ZProbeTap){0};
+        if (!t.found) {
+            fprintf(stderr,
+                    "[keyboard] slide to '%s': NO SUCH ACCENT ON SCREEN\n",
+                    s->slide_to);
+            fflush(stderr);
+        } else {
+            px = t.x + t.w * 0.5f;
+            py = t.y + t.h * 0.5f;
+            fprintf(stderr,
+                    "[keyboard] slide to '%s' at %.0f,%.0f (frame %.0f,%.0f "
+                    "%.0fx%.0f)\n",
+                    s->slide_to, px, py, t.x, t.y, t.w, t.h);
+            fflush(stderr);
+            z_probe_press_phase(app, Z_PRESS_MOVE, px, py);
+        }
+    }
+    z_probe_press_phase(app, Z_PRESS_UP, px, py);
+    z_probe_press(app, px, py);
+    fflush(stderr);
+    z_after(app, 250, tap_tick, s);
+}
+
 // Press the next cap named by ZELTO_KBD_TAP, then re-arm.
 //
 // The wait for the slide is not politeness. The grid rides an Offset driven by
@@ -644,9 +1005,31 @@ static void tap_tick(ZApp *app, void *ud) {
     // that matters — they are relative to the frame the layout answered with, so
     // they move when the keyboard moves — and they are the only way to test the
     // thing this keyboard is FOR: a press that is not on the key.
+    //
+    // A token may also be a HOLD, and a hold may end on something the hold itself
+    // created:
+    //   "BKSP~2600"   press, wait 2600ms, release  (the repeating delete)
+    //   "e~600>é"     press, wait 600ms, then SLIDE onto the popup cell that
+    //                 commits "é", and release there
+    // The slide target is named, not measured: the accent's frame is resolved
+    // from the tree the popup laid out, so the gesture follows the popup wherever
+    // it goes — including the top row, where the popup is below the key instead
+    // of above it. There is no coordinate in a hold token either.
     char name[sizeof(tok)];
     float off_x = 0.0f, off_y = 0.0f;
+    int hold_ms = 0;
+    char slide_to[16] = "";
     {
+        char *arrow = strchr(tok, '>');
+        if (arrow) {
+            *arrow = '\0';
+            snprintf(slide_to, sizeof(slide_to), "%s", arrow + 1);
+        }
+        char *tilde = strchr(tok, '~');
+        if (tilde) {
+            *tilde = '\0';
+            hold_ms = atoi(tilde + 1);
+        }
         char *at = strchr(tok, '@');
         if (at) {
             *at = '\0';
@@ -695,8 +1078,25 @@ static void tap_tick(ZApp *app, void *ud) {
             "off %.0f,%.0f geom='%s'\n",
             name, t.x, t.y, t.w, t.h, px, py, off_x, off_y, gname);
     fflush(stderr);
-    // Then press it the way a finger does — through the app's own tap path, which
-    // is the resolver. There is no second dispatch route for a test to take.
+    if (hold_ms > 0) {
+        // A HOLD is the same gesture a finger makes: down, wait, (slide,) up. The
+        // down goes through the press hook, which is what arms everything the hold
+        // is for, and the release goes through the ordinary tap path.
+        s->hold_px = px;
+        s->hold_py = py;
+        snprintf(s->slide_to, sizeof(s->slide_to), "%s", slide_to);
+        z_probe_press_phase(app, Z_PRESS_DOWN, px, py);
+        z_after(app, hold_ms, hold_release, s);
+        return;
+    }
+    // Then press it the way a finger does. A TAP IS ALSO A GESTURE — down, then
+    // up, then the resolve — and emitting only the resolve would make the harness
+    // the one caller in the system that skips the press phases, which is exactly
+    // the shape of gap that leaves a feature (the callout) untested because the
+    // test cannot reach it. The two phases are back to back, so nothing has time
+    // to become a hold.
+    z_probe_press_phase(app, Z_PRESS_DOWN, px, py);
+    z_probe_press_phase(app, Z_PRESS_UP, px, py);
     z_probe_press(app, px, py);
     fflush(stderr);
     // A gap wide enough for the rebuild a modifier triggers: shift and the layer
@@ -918,6 +1318,66 @@ static ZView keyboard_grid(KbdState *s) {
                    .padding = (float)ZELTO_KEY_PAD, .grow = 1.0f)));
 }
 
+// --- the floating layers: the accent popup and the preview callout -----------
+//
+// Both are absolutely placed over the grid, which a plain ZStack cannot do (it
+// centres its children at their own size). The idiom is the home grid's: put the
+// thing in a depth stack and OffsetXY it by (want - centred), where `centred` is
+// (stack - own) / 2. Written once here, in place().
+static ZView place(ZView v, float x, float y, float w, float h, float sw,
+                   float sh) {
+    return OffsetXY(x - (sw - w) / 2.0f, y - (sh - h) / 2.0f, Frame(w, h, v));
+}
+
+// A row of accents. SHARE, not Grow — the P46 lesson applied one layer out: with
+// Grow every cell would be as wide as the mark printed on it, so "ß" and "à"
+// would be different sizes in the same popup and would move as the row changed.
+static ZView accent_row(const struct AccentRow *r) {
+    ZStackOpts row = {.spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
+                      .grow = 1.0f};
+    for (int i = 0; i < r->n && i < Z_MAX_CHILDREN; i++) {
+        row.children[i] = OnTapData(on_accent, (void *)(intptr_t)r->alt[i],
+            Share(1.0f,
+                Background(Z_COLOR_SURFACE_4,
+                    CornerRadius(Z_RADIUS_CHIP,
+                        Frame(0.0f, (float)ZELTO_KEY_H,
+                            HStack(Spacer(),
+                                   Weight(Z_WEIGHT_MEDIUM,
+                                       Foreground(Z_COLOR_TEXT,
+                                           Font(Z_FONT_TITLE2,
+                                                Text("%s", r->alt[i])))),
+                                   Spacer(), .align = Z_ALIGN_CENTER))))));
+    }
+    return Shadow(Z_ELEV_3,
+        Background(Z_COLOR_MATERIAL_THICK,
+            CornerRadius(Z_RADIUS_WIDGET,
+                Padding((float)ZELTO_KEY_PAD,
+                    z_stack(Z_AXIS_HORIZONTAL, &row)))));
+}
+
+// The preview callout: the letter, floating above the key, while a finger is on
+// it. Pure feedback, and the one place the adaptive targets become visible.
+//
+// IT SHOWS WHAT THE CLASSIFIER CHOSE, NOT WHAT IS UNDER THE FINGER, and that is
+// the whole question worth asking about it. Showing the cap under the finger
+// would be the honest-looking option and it would be a lie: the letter that
+// appears is not the letter that will be committed, so the one moment the user
+// could have caught the correction is the moment the keyboard misinforms them.
+// Showing the choice makes the mechanism legible — you see 'l' pop up over a
+// press that landed on 'k', and the keyboard has told you what it is about to do
+// while your finger is still down and you can still slide. iOS shows the chosen
+// key for the same reason.
+static ZView callout(const char *ch) {
+    return Shadow(Z_ELEV_3,
+        Background(Z_COLOR_SURFACE_4,
+            CornerRadius(Z_RADIUS_CHIP,
+                HStack(Spacer(),
+                       Weight(Z_WEIGHT_SEMIBOLD,
+                           Foreground(Z_COLOR_TEXT,
+                               Font(Z_FONT_TITLE2, Text("%s", ch)))),
+                       Spacer(), .align = Z_ALIGN_CENTER))));
+}
+
 // --- body -------------------------------------------------------------------
 static ZView kbd_body(ZApp *app, KbdState *s) {
     if (!s->inited) {
@@ -928,6 +1388,9 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         // 32pt cap typeable lives behind this one call; see kbd_resolve and
         // system/keyboard/predict.h.
         z_tap_resolver(app, kbd_resolve);
+        // ...and it tracks the whole gesture, not just its end: the callout, the
+        // hold that opens the accents, and the repeating delete.
+        z_press_hook(app, kbd_press);
         // Headless test hook: ZELTO_KBD_SHOW=1 raises the keyboard on the first
         // build (without a real text-input focus handshake) so the QWERTY layout is
         // screenshot-verifiable. Keys go nowhere with no focused field — this is a
@@ -983,11 +1446,59 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
     // between the two bottom-anchored bars: the keyboard would take the bottom edge
     // and shove the nav bar up into its own key rows. It gets a heavy tint instead.
 
+    // The hold, ticked while a finger is down: accents, repeating delete.
+    if (s->down) {
+        kbd_hold_tick(app, s);
+    }
+
     // Slide: v animates 0->1; parked slides the whole grid off the bottom edge.
     float v = z_animated_get(s->anim);
     float slide = (1.0f - v) * (float)ZELTO_KBD_H;
     z_full_repaint(app);   // a big translated subtree wants a full repaint
-    return Offset(NULL, slide, keyboard_grid(s));
+
+    ZView grid = Fill(keyboard_grid(s));
+
+    // The floating layers, if any. Both sit ABOVE the key they belong to, and
+    // both fall BELOW it when there is no room — which is not an edge case, it is
+    // the top row: 'q' and 'o' have 14 units of strip above them, and a popup
+    // that clipped there would make the accents on the top row the only ones you
+    // cannot see. Below is worse than above (the finger covers it) and it is the
+    // only other place, so it is where they go, and the fact that they move is
+    // why the position is computed from the cap's frame rather than written down.
+    float sw = (float)z_screen_width(app);
+    float sh = (float)ZELTO_KBD_H;
+    if (s->accents) {
+        const struct AccentRow *r = accents_for(s->accent_base);
+        if (r) {
+            float cw = s->base_w;
+            float pw = r->n * cw + (r->n - 1) * (float)ZELTO_KEY_GAP +
+                       2.0f * (float)ZELTO_KEY_PAD;
+            float ph = (float)ZELTO_KEY_H + 2.0f * (float)ZELTO_KEY_PAD;
+            float x = s->base_x + s->base_w / 2.0f - pw / 2.0f;
+            if (x < 0.0f) { x = 0.0f; }
+            if (x + pw > sw) { x = sw - pw; }
+            float y = s->base_y - ph - (float)ZELTO_KEY_GAP;
+            if (y < 0.0f) {
+                y = s->base_y + s->base_h + (float)ZELTO_KEY_GAP;
+            }
+            grid = ZStack(grid,
+                          place(accent_row(r), x, y, pw, ph, sw, sh),
+                          .align = Z_ALIGN_CENTER);
+        }
+    } else if (s->preview && s->down) {
+        float cw = s->preview_w * 1.35f;
+        float ch = (float)ZELTO_KEY_H;
+        float x = s->preview_x + s->preview_w / 2.0f - cw / 2.0f;
+        if (x < 0.0f) { x = 0.0f; }
+        if (x + cw > sw) { x = sw - cw; }
+        float y = s->preview_y - ch - (float)ZELTO_KEY_GAP;
+        if (y < 0.0f) {
+            y = s->preview_y + s->preview_h + (float)ZELTO_KEY_GAP;
+        }
+        grid = ZStack(grid, place(callout(s->preview_ch), x, y, cw, ch, sw, sh),
+                      .align = Z_ALIGN_CENTER);
+    }
+    return Offset(NULL, slide, grid);
 }
 
 // TOP layer, bottom-anchored, full width, fixed KBD_H height. Exclusive zone is

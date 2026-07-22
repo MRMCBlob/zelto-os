@@ -80,7 +80,18 @@ static void ensure_init(NotepadState *s) {
     // tests' whole point is that what ends up in the field is what was TYPED, and
     // a field seeded with "hello world" would show a note nobody entered and pass
     // either way.
-    if (!getenv("ZELTO_NOTEPAD_AUTOSAVE") && !getenv("ZELTO_NOTEPAD_ECHO")) {
+    //
+    // ZELTO_NOTEPAD_SEED=<text> puts an EXPLICIT starting string in the field,
+    // which the P47 held-delete test needs: what it is measuring is how much a
+    // held backspace removes and in what units, so the text has to be there
+    // before the gesture starts and typing it a cap at a time would spend twenty
+    // seconds of a sim boot proving something two other tests already prove.
+    const char *seed = getenv("ZELTO_NOTEPAD_SEED");
+    if (seed && seed[0]) {
+        snprintf(s->note.text, sizeof(s->note.text), "%s", seed);
+        s->note.len = (int)strlen(s->note.text);
+        s->note.caret = s->note.anchor = s->note.len;
+    } else if (!getenv("ZELTO_NOTEPAD_AUTOSAVE") && !getenv("ZELTO_NOTEPAD_ECHO")) {
         snprintf(s->note.text, sizeof(s->note.text), "hello world");
         s->note.len = (int)strlen(s->note.text);
         s->note.caret = s->note.anchor = s->note.len;

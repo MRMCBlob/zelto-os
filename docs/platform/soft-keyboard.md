@@ -111,6 +111,33 @@ The prefix comes from **text-input-v3 surrounding text**, relayed since P21 and
 read since P47 — not from an echo of the keyboard's own keystrokes, which would
 be wrong the moment anything else edited the field.
 
+## Holding a key
+
+A tap handler hears about a press once, when it is over — enough for a button,
+not for a keyboard. `z_press_hook` delivers the whole gesture (DOWN / MOVE / UP)
+and three behaviours ride on it:
+
+- **Long-press accents.** Hold a letter for 0.5s and its marks appear in a
+  `Share`-divided row *above* the key — or **below** it when there is no room,
+  which is the whole top row (`q`…`p` have 14 units of strip above them). Slide
+  onto one and release. Releasing anywhere else commits **nothing**: a hold you
+  did not follow through has to be cancellable, and the alternatives (nearest
+  accent, or fall back to the base letter) mean an accidental pause silently
+  changes what you typed. Lower-case marks only.
+- **Backspace repeat.** 0.15s cadence, accelerating to 0.06s after 1.2s, then
+  **whole words** after 2.0s — sent as one `delete_surrounding_text(N)`, not N
+  backspaces, so the keyboard is not racing the surrounding-text update it counts
+  the word from. Cadence is a function of **time held**, not of repetitions, so a
+  nearly-empty field does not delete at a different speed from a full one.
+- **Key preview callout.** The letter floats above the finger while pressed. It
+  shows **what the classifier chose, not what is under the finger** — showing the
+  cap would misinform the user at the one moment they can still slide and fix it,
+  and it is the only place the adaptive targets are visible to a person at all.
+
+`OnLongPress` (P16) is not enough for any of these: it fires once, on a node, and
+says nothing about the finger before or after — and the accent release lands on a
+control that did not exist when the press began.
+
 ## Text rules
 
 Three behaviours people expect, all of which are rules about the **text** rather
