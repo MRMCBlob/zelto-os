@@ -404,6 +404,26 @@ typedef struct ZSliderOpts {
 ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts);
 #define Slider(appp, s, ...) z_slider(appp, s, &(ZSliderOpts){__VA_ARGS__})
 
+// The height ONE LINE of text occupies at this size — ascent + descent, straight
+// off the face, the same two numbers layout gives a Text node (layout.c measure,
+// Z_K_TEXT). Available during body(), which is what lets a RESERVE be computed
+// from the type scale instead of estimated from it.
+//
+// It exists because estimating it does not work. The launcher carried
+// `LINE_H(font) = font * 1.31` for exactly one phase, fitted to one measurement
+// of one face at one size and documented as "an estimate, deliberately on the
+// generous side". Measured across the whole scale, the real ratio runs from
+// 1.3182 at Caption (22px) down to 1.2529 at Display (170px) — FreeType rounds
+// ascender and descent to whole pixels at each size, so the ratio wobbles and
+// then falls away. The estimate over-reserved by 9.7 units at Display and, at
+// Caption, UNDER-reserved: 28.82 against a true 29.00, so the one direction it
+// promised never to fail in was the direction it failed in.
+//
+// Measured, and relied on here: the value depends on the SIZE alone. Neither the
+// string nor the weight moves it (Body 40.00 regular, 40.00 bold, 40.00 for
+// "Wgjq") — weight changes advance, not the face's vertical metrics.
+float z_line_height(ZApp *app, ZFont size);
+
 // Focus a field from code (NULL blurs whatever is focused), and ask whether a
 // field currently holds focus. Tapping a TextField already does the first, so
 // most apps never call these — they exist for the app that has to REACT to its

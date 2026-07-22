@@ -550,12 +550,13 @@ static ZView vgap(float h) {
 #define MAX_PAGES 8              // carousel cap
 
 // A Text's height is its font's ascent + descent, which is NOT a compile-time
-// constant — it comes from the face. Satoshi measures ~1.31x the pixel size, and
-// that ratio is what lets a RESERVE be derived from the type scale instead of
-// re-measured by hand every time the scale moves. It is an estimate, and the
-// estimate is deliberately on the generous side: over-reserving costs a few
-// units of blank space, under-reserving pushes a row off the screen.
-#define LINE_H(font) ((float)(font) * 131.0f / 100.0f)
+// constant — it comes from the face. This file estimated it for one phase, as
+// `LINE_H(font) = font * 1.31`, and P46 deleted the estimate: the toolkit knows
+// the real number and a builder can ask for it (z_line_height, zelto/ui.h), so
+// the reserve below is now the same measurement the Text node itself gets rather
+// than a ratio fitted to one face at one size. See the note over z_line_height
+// for what the ratio actually does across the scale — it is not constant, and
+// the direction the estimate promised never to fail in is the one it failed in.
 
 // The bottom bar, DERIVED from what it holds rather than declared.
 //
@@ -1547,10 +1548,17 @@ static ZView raster_layer(LauncherState *s, int rows) {
 // Library pages hold the grid down with a bare `vgap(52)` meant to match the
 // search field's height, and the field now stands ~62. Both now come from the
 // parts, so the type scale can move again without dragging either out of true.
+// Functions rather than macros, because the parts are no longer all compile-time
+// constants: the line heights come off the FACE, which only exists once the app
+// does. Same derivation, same parts, one fewer estimate.
 #define LIB_FIELD_PAD 12.0f      // z_text_field's own padding (sdk/src/view.c)
-#define LIB_FIELD_H (2.0f * LIB_FIELD_PAD + LINE_H(Z_FONT_BODY))
-#define LIB_TOP (GRID_GAP + LINE_H(Z_FONT_TITLE) + GRID_GAP + LIB_FIELD_H \
-                 + GRID_GAP)
+static float lib_field_h(ZApp *app) {
+    return 2.0f * LIB_FIELD_PAD + z_line_height(app, Z_FONT_BODY);
+}
+static float lib_top(ZApp *app) {
+    return GRID_GAP + z_line_height(app, Z_FONT_TITLE) + GRID_GAP
+           + lib_field_h(app) + GRID_GAP;
+}
 
 // Case-insensitive substring test. strcasestr is a GNU extension and this file
 // is built -Wpedantic, so the scan is written out.
@@ -1582,10 +1590,27 @@ static bool lib_matches(const AppEntry *e, const char *q) {
 // keyboard covers the bottom KBD_H of the screen and the compositor does NOT
 // shrink this window (the home is sized to the full output), so the page reserves
 // that height itself instead of the dots + dock it hides.
-static int lib_rows(float sw, float sh, bool searching) {
+static int lib_rows(ZApp *app, float sw, float sh, bool searching) {
     float cell = cell_side(sw);
     float reserve = searching ? ((float)ZELTO_KBD_H + 24.0f) : BOTTOM_RESERVE;
-    float avail = sh - GRID_TOP - LIB_TOP - reserve;
+    float top = lib_top(app);
+    // Say the derived number out loud, once. A reserve is the one kind of metric
+    // whose correctness is a comparison — header reserved against header drawn —
+    // and until P46 the only way to make that comparison was to measure a
+    // screenshot by hand, which is how it stayed 61 units short for two phases.
+    // Now the reserve and the frame can be read off the SAME boot log
+    // (ZELTO_PROBE_TAPS prints where the grid's first row actually landed).
+    static bool said;
+    if (!said) {
+        said = true;
+        fprintf(stderr,
+                "[launcher] library header: top=%.1f = gap %.0f + title %.1f + "
+                "gap %.0f + field %.1f + gap %.0f\n",
+                top, GRID_GAP, z_line_height(app, Z_FONT_TITLE), GRID_GAP,
+                lib_field_h(app), GRID_GAP);
+        fflush(stderr);
+    }
+    float avail = sh - GRID_TOP - top - reserve;
     int r = (int)floorf((avail + GRID_GAP) / (cell + GRID_GAP));
     if (r < 1) {
         r = 1;
@@ -1614,10 +1639,10 @@ static const char *lib_query(const LauncherState *s) {
 
 // How many Library pages the current (possibly filtered) app list needs. Always
 // at least one: an empty result set still has a page to say so on.
-static int lib_page_count(const LauncherState *s, bool searching) {
+static int lib_page_count(ZApp *app, const LauncherState *s, bool searching) {
     int idx[MAX_APPS];
     int n = lib_collect(lib_query(s), idx);
-    int per = GRID_COLS * lib_rows(s->surface_w, s->surface_h, searching);
+    int per = GRID_COLS * lib_rows(app, s->surface_w, s->surface_h, searching);
     int pages = per > 0 ? (n + per - 1) / per : 1;
     return pages < 1 ? 1 : pages;
 }
@@ -1629,7 +1654,7 @@ static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
                                bool searching) {
     int idx[MAX_APPS];
     int n = lib_collect(lib_query(s), idx);
-    int rows = lib_rows(s->surface_w, s->surface_h, searching);
+    int rows = lib_rows(app, s->surface_w, s->surface_h, searching);
     int per = GRID_COLS * rows;
     int start = lp * per;
 
@@ -1646,7 +1671,7 @@ static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
         // Hold the grid at the same height as page 1, which means matching the
         // SEARCH FIELD's height — so it is the field's height, not a literal that
         // was right when Body was 17pt-as-pixels and is 10 units out now.
-        col.children[k++] = vgap(LIB_FIELD_H);
+        col.children[k++] = vgap(lib_field_h(app));
     }
 
     if (n == 0) {
@@ -1945,7 +1970,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         z_app_focus_field(app, NULL);
         searching = false;
     }
-    state->nlib = lib_page_count(state, searching);
+    state->nlib = lib_page_count(app, state, searching);
     // Clamp the settled page in case the sequence (or the filtered list) shrank.
     if (state->page > last_page(state)) {
         state->page = last_page(state);

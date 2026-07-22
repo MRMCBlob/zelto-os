@@ -334,6 +334,17 @@ ZUI *z_app_ui(ZApp *app) { return &app->ui; }
 // The shaping context, for builders that must measure before the tree exists
 // (WrapText). NULL when the font failed to open — callers degrade to one line.
 ZText *z_app_text(ZApp *app) { return app ? app->text : NULL; }
+// One line's height, from the face. Deliberately routed through the SAME call
+// layout's measure() makes for a Z_K_TEXT node, so a reserve computed from this
+// and the node it reserves for cannot disagree. z_text_measure handles a NULL
+// shaper itself (its fontless fallback returns 0.8/0.2 of the size), so the
+// no-face path needs no special case here.
+float z_line_height(ZApp *app, ZFont size) {
+    float ascent = 0.0f, descent = 0.0f;
+    z_text_measure(app ? app->text : NULL, "", (float)size, Z_WEIGHT_REGULAR,
+                   &ascent, &descent);
+    return ascent + descent;
+}
 void *z_app_state(ZApp *app) { return app->state; }
 // Recover the owning app from a foreign-toplevel record.
 static ZApp *rec_app(ZTaskRec *rec) { return rec->app; }

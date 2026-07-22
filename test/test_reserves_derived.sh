@@ -49,6 +49,31 @@ define_body() {   # <file> <name>
     ' "$1"
 }
 
+# The returned expression of `static float <name>(...) { return ...; }`.
+#
+# Two reserves stopped being macros in P46, and for a reason that matters to this
+# lint: their parts are no longer compile-time constants. A line of text is as
+# tall as the FACE says, so the App Library's header can only be derived once the
+# app exists. That is the fix — the estimate the macro needed is gone — so the
+# rule has to follow the reserve into a function rather than let it out of scope.
+# The `return` and the `;` are stripped so what comes back is the EXPRESSION
+# alone — otherwise the bare-literal check below never fires for a function, the
+# word "return" being enough to make `return 177.0f;` look like an expression.
+return_body() {   # <file> <name>
+    awk -v name="$2" '
+        $0 ~ "^static float " name "\\(" { inb = 1; next }
+        inb {
+            body = body $0
+            if ($0 ~ /;/) {
+                sub(/^[[:space:]]*return[[:space:]]*/, "", body)
+                sub(/;.*$/, "", body)
+                print body
+                exit
+            }
+        }
+    ' "$1"
+}
+
 # --- 1. Each reserve is an EXPRESSION over named parts ----------------------
 # A bare number (optionally with a decimal point / f suffix) as the whole body is
 # the bug. Requiring named operands is what makes the reserve move when a part
@@ -57,6 +82,19 @@ assert_derived() {   # <file> <macro> <part> [<part>...]
     local file="$1" macro="$2"; shift 2
     local body
     body="$(define_body "$file" "$macro")"
+    assert_expr "$file" "$macro" "$body" "$@"
+}
+
+# The same rule for a reserve that is a function.
+assert_derived_fn() {   # <file> <fn> <part> [<part>...]
+    local file="$1" fn="$2"; shift 2
+    local body
+    body="$(return_body "$file" "$fn")"
+    assert_expr "$file" "$fn" "$body" "$@"
+}
+
+assert_expr() {   # <file> <name> <body> <part>...
+    local file="$1" macro="$2" body="$3"; shift 3
     if [ -z "$body" ]; then
         zt_fail "$macro is not defined" "a #define" "missing"
         return
@@ -86,31 +124,45 @@ assert_derived "$LAUNCHER" BOTTOM_RESERVE BAR_PAD BAR_GAP DOTS_H DOCK_PLATE_H \
 assert_derived "$LAUNCHER" DOCK_PLATE_H DOCK_ICON DOCK_PAD
 # The App Library's header: the title and the search field, from the TYPE SCALE —
 # which is the dependency that went stale in P43 and stayed stale through P44.
-assert_derived "$LAUNCHER" LIB_TOP GRID_GAP Z_FONT_TITLE LIB_FIELD_H
-assert_derived "$LAUNCHER" LIB_FIELD_H LIB_FIELD_PAD Z_FONT_BODY
+assert_derived_fn "$LAUNCHER" lib_top GRID_GAP Z_FONT_TITLE lib_field_h
+assert_derived_fn "$LAUNCHER" lib_field_h LIB_FIELD_PAD Z_FONT_BODY
 
-# --- 2. The reserve actually covers its contents ----------------------------
-# The lint above proves it is an expression; this proves the expression is BIG
-# ENOUGH. Recomputed here in the test's own arithmetic, against the value
-# measured off a rendered frame (the App Library grid's first icon row starts at
-# y=278 with GRID_TOP at 101, so the header consumes 177).
-lineh() { awk -v f="$1" 'BEGIN { printf "%.1f", f * 131.0 / 100.0 }'; }
-title_px="$(sed -n 's/.*Z_FONT_TITLE = Z_TYPE(\([0-9]*\)).*/\1/p' \
-    "$REPO_ROOT/sdk/include/zelto/ui.h" | head -1)"
-body_px="$(sed -n 's/.*Z_FONT_BODY = Z_TYPE(\([0-9]*\)).*/\1/p' \
-    "$REPO_ROOT/sdk/include/zelto/ui.h" | head -1)"
-num="$(sed -n 's/^#define Z_TYPE_NUM \([0-9]*\).*/\1/p' \
-    "$REPO_ROOT/sdk/include/zelto/ui.h" | head -1)"
-if [ -n "$title_px" ] && [ -n "$body_px" ] && [ -n "$num" ]; then
-    t=$(( title_px * num / 100 ))
-    b=$(( body_px * num / 100 ))
-    lib_top="$(awk -v t="$(lineh "$t")" -v b="$(lineh "$b")" \
-        'BEGIN { printf "%d", 16 + t + 16 + (2 * 12 + b) + 16 }')"
-    if [ "$lib_top" -lt 177 ]; then
-        zt_fail "LIB_TOP no longer covers the header it reserves for" \
-                ">= 177 (measured off a rendered frame)" "$lib_top"
-    fi
+# --- 2. Nothing ESTIMATES a line height -------------------------------------
+# What section 2 used to be: a recomputation of LIB_TOP here in the test's own
+# arithmetic, checked against 177 units measured by hand off a screenshot. It had
+# to exist because the launcher's derivation ran through
+# `LINE_H(font) = font * 1.31` — an estimate fitted to one face at one size — so
+# "derived from its parts" did not imply "the right size", and the test needed a
+# second, independent copy of the estimate to catch the drift.
+#
+# P46 deleted the estimate. lib_top() now calls z_line_height(), which is the
+# SAME z_text_measure() call layout makes for the Text node it is reserving for,
+# so reserve and content cannot disagree by construction and there is nothing
+# left for an independent recomputation to disagree with. Verified once, on a
+# 720x1440 sim boot: the launcher logged `library header: top=177.0` and
+# ZELTO_PROBE_TAPS put the grid's first icon row at y=278 = GRID_TOP 101 + 177,
+# exactly. (The old estimate came to 179.4 — 2.4 units of phantom reserve.)
+#
+# So what is left to guard is that the estimate does not come BACK. Any constant
+# ratio applied to a font size is the bug, whatever it is called.
+#
+# Comments are stripped first — this file DESCRIBES the deleted estimate, and a
+# lint that fires on its own explanation of why the estimate is gone teaches the
+# next person to delete the explanation.
+CODE="$(sed 's,//.*,,' "$LAUNCHER")"
+EST_RE='(LINE_H|[0-9]+\.[0-9]+f?[[:space:]]*[*/][[:space:]]*(\(float\))?[[:space:]]*Z_FONT_|Z_FONT_[A-Z0-9_]+[[:space:]]*\*[[:space:]]*[0-9]+\.[0-9]+)'
+if printf '%s\n' "$CODE" | grep -qE "$EST_RE"; then
+    zt_fail "the launcher estimates a line height again instead of measuring it — z_line_height() asks the face, and the face is the only thing that knows" \
+            "no constant ratio applied to a font size" \
+            "$(printf '%s\n' "$CODE" | grep -nE "$EST_RE" | head -1)"
 fi
+# And the derivation must go through the measurement, not around it.
+for fn in lib_top lib_field_h; do
+    if ! return_body "$LAUNCHER" "$fn" | grep -q 'z_line_height'; then
+        zt_fail "$fn() does not measure its text" "z_line_height(...)" \
+                "$(return_body "$LAUNCHER" "$fn" | tr -s ' ')"
+    fi
+done
 
 # --- 3. No second copy of a part ------------------------------------------
 # The derivation is only real if the layout code spends the SAME constants. A
