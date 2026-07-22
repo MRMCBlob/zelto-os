@@ -1,26 +1,33 @@
-// The language model, bigram edition. See the seam's contract in predict.h.
+// The letter-pair model. P47's whole language model; P48's BACKOFF.
 //
-// WHAT THIS MODEL CAN AND CANNOT DO, because the difference shows up in the
-// keyboard's behaviour and it should not be a mystery which one is running:
-// it knows that 'l' often follows 'e' and that 'k' almost never does, so a press
-// in the gutter between them after "he" resolves to 'l'. It does NOT know the
-// word "hello" — it has no idea a word is being spelled at all. Two consequences
-// a dictionary would not have: it cannot grow the SPACE bar when what you have
-// typed is a complete word (the one Kocienda-keyboard behaviour most visible to a
-// user), and it gets no better with a longer prefix, because it only ever reads
-// the last letter.
+// WHAT IT CAN AND CANNOT DO, which is why it is no longer the whole model: it
+// knows that 'l' often follows 'e' and that 'k' almost never does, so a press in
+// the gutter between them after "he" resolves to 'l'. It does NOT know the word
+// "hello" — it has no idea a word is being spelled at all. Two consequences,
+// both of which P47 wrote down as known limitations and P48 closed with
+// lm_trie.c: it cannot grow the SPACE bar when what you have typed is a complete
+// word (the one Kocienda-keyboard behaviour most visible to a user), and it gets
+// no better with a longer prefix, because it only ever reads the last letter.
 //
-// It is compiled in: 26 unigram frequencies, 26 word-initial frequencies and ~130
+// WHY IT IS STILL HERE. A prefix tree over 1620 words is sharper than this
+// everywhere inside those 1620 words and has literally nothing to say outside
+// them, which is where names, abbreviations, passwords and most of English live.
+// This file has an opinion about every pair of letters in the language and never
+// answers "impossible", so it is what the trie falls back to. See lm_backoff.h
+// for the interface and the reasoning; the seam the CLASSIFIER sees is unchanged
+// and is still predict.h.
+//
+// It is compiled in: 26 unigram frequencies, 26 word-initial frequencies and ~170
 // letter pairs, which is under a kilobyte, needs no data file in the image and
-// has no licence attached. A prefix tree over a shipped word list is the upgrade,
-// and it replaces THIS FILE ONLY — z_lm_name() is what tells you which one
-// answered.
+// has no licence attached.
 //
 // The frequencies are the standard English corpus figures (percent of all
 // letters / of all bigrams). They are approximate on purpose: the classifier
 // consumes them as ODDS against a uniform alphabet and clamps the result to
 // Z_KBD_ODDS, so the third significant figure cannot change a decision. What
 // matters is the ORDER — that "ll" and "lo" are common and "lk" and "lp" are not.
+#include "lm_backoff.h"
+
 #include "predict.h"
 
 #include <ctype.h>
@@ -94,10 +101,10 @@ static const struct {
 // The table, expanded once. 676 floats is cheaper than scanning 170 strings for
 // every one of the ~31 caps on every press.
 static float ROW[26][26];
-static bool built;
+static bool bigram_built;
 
-static void build(void) {
-    if (built) {
+static void bigram_build(void) {
+    if (bigram_built) {
         return;
     }
     for (int i = 0; i < N_BI; i++) {
@@ -107,7 +114,7 @@ static void build(void) {
             ROW[a][b] = BI[i].pct;
         }
     }
-    built = true;
+    bigram_built = true;
 }
 
 // The last LETTER before the cursor, lowercased, or 0 at a word boundary. A
@@ -125,15 +132,11 @@ static char last_letter(const char *prefix) {
     return (char)tolower(c);
 }
 
-const char *z_lm_name(void) {
-    return "bigram";
-}
-
-float z_lm_p(const char *prefix, char next) {
+float z_lm_bigram_p(const char *prefix, char next) {
     if (next < 'a' || next > 'z') {
         return 0.0f;
     }
-    build();
+    bigram_build();
     int b = next - 'a';
     char last = last_letter(prefix);
     if (!last) {

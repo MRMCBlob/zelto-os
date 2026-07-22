@@ -41,26 +41,106 @@
 #include <stddef.h>
 
 // --- the language model seam ------------------------------------------------
-// BIGRAM NOW, DICTIONARY LATER. Everything above the seam is geometry and does
-// not care which is answering; everything below is a table. The difference is
-// visible in what the keyboard can do, so the model SAYS which one it is: a
-// letter-pair table cannot know the word "hello", only that 'l' often follows
-// 'e'. A prefix tree over a shipped word list would drop in here without the hit
-// path changing a line — and would additionally be able to grow the space bar
-// once the prefix is a complete word, which a bigram table cannot know.
+// IT IS THE DICTIONARY NOW (P48). P47 wrote this seam as "bigram now, dictionary
+// later, and put it behind an interface so the second does not touch the hit
+// path". That happened: `lm_trie.c` is a prefix tree over the shipped word list
+// (`words_en.h`) backed off to the letter-pair table (`lm_bigram.c`), and NOT ONE
+// LINE above this comment changed to make it so. The model still says which one
+// it is — z_lm_name() is "trie+bigram" — because the difference is visible in
+// what the keyboard can do and a reader of a failing log should not have to
+// guess which model produced it.
+//
+// WHAT THE SECOND MODEL CHANGES, and each one is a test:
+//   - IT GETS SHARPER WITH A LONGER PREFIX. A bigram reads the last letter and
+//     nothing else, so "e" and "hel" are the same question to it. The trie knows
+//     that "hel" continues into "hello"/"help" and not into "helq".
+//   - IT KNOWS WHERE A WORD ENDS, so the SPACE BAR is part of the same argmax
+//     (see the boundary symbol below). A letter-pair table cannot answer that at
+//     all, which P47 recorded as its known limitation.
+//   - IT CAN PROPOSE A WHOLE WORD (z_lm_candidates), which is what autocorrect
+//     and the suggestion strip are built from. That is a DIFFERENT MECHANISM from
+//     the classifier below — see the note over z_lm_candidates.
 const char *z_lm_name(void);
 
-// P(next | prefix), over the 26 letters (`next` is lowercase a-z). `prefix` is
+// The word boundary, as a symbol the model has an opinion about. `next` may be
+// any lowercase letter OR this, and the two cases are the same question: "given
+// what has been typed, how likely is this next?" The space bar therefore competes
+// in the same argmax as the letters instead of being a modifier with no vote,
+// which is the whole of the adaptive space bar.
+#define Z_LM_BOUNDARY ' '
+
+// How many symbols the model distributes over: 26 letters plus the boundary.
+// This is the uniform baseline a caller compares against ("the model has no
+// opinion" = 1/Z_LM_SYMBOLS), and it is 27 rather than 26 because the boundary
+// takes real mass — after a complete word most of it.
+#define Z_LM_SYMBOLS 27
+
+// P(next | prefix). `next` is a lowercase letter or Z_LM_BOUNDARY; `prefix` is
 // the text before the cursor and may be empty. Probabilities sum to ~1 over the
-// alphabet, so a caller can compare against a uniform 1/26 without knowing how
-// the model is built.
+// 27 symbols, so a caller can compare against a uniform 1/Z_LM_SYMBOLS without
+// knowing how the model is built.
 float z_lm_p(const char *prefix, char next);
+
+// Is the word being typed a COMPLETE WORD? Not the same question as "is it a
+// word prefix", and the same trie answers both: "hel" is a prefix of "hello" and
+// is not a word, "hell" is both, "hello" is a word whose only continuations are
+// rare. The suggestion strip needs the first and the space bar needs the second.
+bool z_lm_is_word(const char *prefix);
+
+// Is the word being typed a LIVE PREFIX of some dictionary word — is the user
+// part-way through spelling something the model knows? "hel" is (hello, help),
+// "teh" is not. Autocorrect uses this to hold its fire: a string that is the
+// start of a real word is not a typo to be replaced, even when it is not yet a
+// word itself, or "hel" would "correct" to the commoner "he".
+bool z_lm_is_prefix(const char *prefix);
+
+// --- whole-word correction (a DIFFERENT mechanism) ---------------------------
+// CONFLATING THESE TWO IS THE TRAP, so they are separated here by an interface
+// and not only by a comment. The classifier below corrects a press BEFORE it
+// commits, from the prefix alone; it is invisible, it cannot be wrong in a way
+// the user can point at, and it needs no undo. What follows corrects text that is
+// ALREADY IN THE FIELD, after a word boundary, from the whole word; it is
+// visible, it IS sometimes wrong, and it is the single most complained-about
+// behaviour on every phone. It does not ship without the suggestion strip and the
+// backspace revert (see kbd_autocorrect in main.c).
+typedef struct ZLmWord {
+    const char *word;   // points into the model's own storage; valid until exit
+    float score;        // higher is better; the ordering is the only contract
+} ZLmWord;
+
+// The cost of having meant `want` and pressed `got`, as a multiplier on a plain
+// substitution. Supplied by the CALLER because it is a fact about the LAYOUT and
+// not about English: 'k' for 'l' is a near-miss on a QWERTY grid and a wild one
+// on a Dvorak grid, and the model must not contain a copy of the keyboard. Return
+// 1.0 for "no idea" — that is what makes the callback optional.
+typedef float (*ZLmSubstCost)(void *ud, char want, char got);
+
+// Up to `max` dictionary words that `typed` might have been, best first. Returns
+// how many were written. `typed` is lowercase a-z; anything else returns 0.
+//
+// An exact dictionary hit is returned as the first candidate with a score far
+// above any correction, so a caller can tell "this is already a word" from "this
+// is one edit from three words" by looking at the same list.
+int z_lm_candidates(const char *typed, ZLmSubstCost subst, void *ud,
+                    ZLmWord *out, int max);
+
+// What the model cost to build, for the log: entries, trie nodes, bytes of
+// source list, bytes of built trie, and microseconds spent building it. Reported
+// rather than estimated — the word list ships in the image, so its size is a
+// product fact and not a detail. Builds the model if it is not built yet.
+void z_lm_report(char *buf, size_t n);
 
 // --- the classifier ---------------------------------------------------------
 // One candidate key: where the LAYOUT put it, and what it yields. `ch` is the
-// lowercase character a character cap commits, or 0 for a modifier — the
-// language model has no opinion about shift, and a modifier therefore scores on
-// geometry alone.
+// lowercase character a character cap commits, Z_LM_BOUNDARY for the SPACE BAR,
+// or 0 for a modifier — the language model has no opinion about shift, and a
+// modifier therefore scores on geometry alone.
+//
+// SPACE IS NOT A MODIFIER (P48). It was one, with lm_factor 1.0, for as long as
+// there was no model that could know a word had ended. Now that there is, the
+// space bar's target grows when what you have typed is a complete word and
+// shrinks when it is a fragment — which is the one adaptive-target behaviour a
+// user actually notices, and the one a bigram provably could not do.
 typedef struct ZKbdKey {
     float x, y, w, h;
     char ch;
@@ -82,6 +162,15 @@ typedef struct ZKbdKey {
 // ODDS bounds how far the language model may move a decision, as a ratio against
 // a uniform alphabet. Without it, a letter the model has literally never seen
 // after this prefix scores zero and becomes untypeable off-centre.
+//
+// THE DICTIONARY DID NOT CHANGE ANY OF THESE THREE, and that is worth saying
+// plainly because the obvious expectation was that it would. A sharper model
+// pushes harder at the same clamp; it does not raise the clamp. The centre-zone
+// guarantee is an inequality over SIGMA, ODDS and the key pitch alone — no term
+// in it comes from the model — so a dictionary cannot break it, and
+// test_kbd_predict still lints it unchanged. If somebody later widens SIGMA or
+// raises ODDS *because* the dictionary is confident, that lint is what will say
+// the centre rule has stopped being belt-and-braces.
 #define Z_KBD_SIGMA 0.35f
 #define Z_KBD_CENTRE 0.5f
 #define Z_KBD_ODDS 8.0f

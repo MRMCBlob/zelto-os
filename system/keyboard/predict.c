@@ -33,12 +33,21 @@ static bool in_centre(const ZKbdKey *k, float px, float py) {
 // as ODDS AGAINST A UNIFORM ALPHABET rather than as a raw probability so the two
 // factors are commensurable: 1.0 means "the model has no opinion", and the clamp
 // then bounds how far an opinion can move a press in either direction.
+//
+// THE SPACE BAR IS IN HERE NOW (P48). `ch` may be Z_LM_BOUNDARY, and it goes
+// through exactly the same arithmetic as a letter — which is the whole
+// implementation of the adaptive space bar. It was excluded for one reason and
+// one only: until there was a dictionary there was no model that could answer
+// "has a word ended", so the honest factor was 1.0. The uniform baseline is
+// Z_LM_SYMBOLS rather than 26 because the boundary now takes real mass out of the
+// alphabet's share — after a complete word, most of it.
 static float lm_factor(char ch, const char *prefix, bool language) {
-    if (!language || ch < 'a' || ch > 'z') {
+    bool scored = (ch >= 'a' && ch <= 'z') || ch == Z_LM_BOUNDARY;
+    if (!language || !scored) {
         return 1.0f;   // a modifier, or the model is off: geometry decides
     }
     float p = z_lm_p(prefix, ch);
-    float f = p * 26.0f;
+    float f = p * (float)Z_LM_SYMBOLS;
     if (f > Z_KBD_ODDS) {
         f = Z_KBD_ODDS;
     }
