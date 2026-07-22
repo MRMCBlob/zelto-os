@@ -40,7 +40,10 @@ log. Never write "verified on target" for a sim-only run.
 unpainted region. Measured with `FRAMES=8` on a settled, unchanging screen: teal
 appeared in **five of eight** dumps, in different bands each time. That is QMP
 reading the scanout mid-composite, and waiting longer does not fix it. Take
-several frames and use one `meta/teal.py` reports clean. (Separately, under TCG
+several frames and use one `meta/teal.py` reports clean — `run-qemu.sh` runs it
+over what it captured now, and teal.py exits non-zero when none is. (Verified
+again in P47: two of eight torn, different bands, on a settled screen.)
+(Separately, under TCG
 the shell needs **~35s** to finish painting — a short `SHOT_DELAY` photographs a
 boot in progress, which is what made the teal look like it "moved between boots".)
 qemu-virt ran at **1280x800** from P6 to P45 — QEMU's default virtio-gpu EDID —
@@ -60,8 +63,16 @@ looks broken. Three shipped for 13+ phases.
   build). `z_probe_tap()` resolves a control by its HANDLER, hit-tests its own
   centre and dispatches what the walk found. That is how a surface gets driven
   without coordinates to rot.
-- Check press/veil shots with `meta/pngdiff.py --expect-box` against a control at
-  the same state.
+- **The probe answers in SURFACE coordinates; a PNG is the SCREEN.** No client is
+  told where the compositor put its surface, and it is not only layer surfaces —
+  the launcher is 720x1359 on a 720x1440 screen (the status bar's exclusive
+  zone). So a probe frame can never become a box on a screenshot.
+- A shot's pixel check is declared beside its marker: `PIXEL='<control> <region>
+  [min]'` (`all` = big change, `spot` = small and concentrated — peak >= N x the
+  frame mean, which is what a press veil IS without saying where) and
+  `PIXELMEAN='<max mean RGB>'`. Both run on the boot that takes the picture.
+- **A box inside the status bar is not a check**: a glyph moves the 720x81 strip
+  by 0.13–0.33 and the CLOCK in the same box moves it more between boots.
 - The shot catalogue has a **noise floor** (the status-bar clock), so no frame
   ever has a zero delta and `shots.sh` printing `ok` means only "a PNG exists".
   Worse, **a shot of the wrong screen has a perfectly healthy delta** — so every
@@ -109,9 +120,21 @@ has no log line, add one.
 - `WrapText` needs its column width at **build** time.
 - Hardware keys **cannot type into a `ZTextField`** — text arrives only via
   text-input-v3 `commit_string` (the on-screen keyboard).
+- **A keyboard press is CLASSIFIED, not hit-tested** (`system/keyboard/predict.h`):
+  `P(touch|key) x P(key|prefix)`, argmax. So the targets are not the caps, the
+  dead gutter is gone, and a press inside 'k' can correctly be an 'l'. A
+  dead-centre press is always its own key; password fields turn it all off.
+- The keyboard's context (prediction prefix, auto-capitalise, double-space
+  period) is **text-input-v3's surrounding text**, not an echo of its own
+  keystrokes. Read it with `z_im_surrounding` / `z_im_purpose`.
+- A `bool` that starts life equal to its meaningful value has no zero state: the
+  empty context an empty field reports **compares equal to a zeroed `last_ctx`**,
+  so the change detector said "nothing changed" at the moment that mattered most.
 - **The Bash tool mangles backslashes into python heredocs**: `'\0'` becomes a
   NUL byte, `\n` a real newline. Use Edit, or write the python to a file.
 - MSYS python rewrites files **CRLF** — fatal for shell scripts.
-- `grep -c` exits 1 on zero matches and kills a `set -e` harness.
+- `grep -c` exits 1 on zero matches and kills a `set -e` harness. So does
+  `out="$(cmd)"` when cmd is **expected** to fail — that took the catalogue down
+  at shot 48 of 77, silently, **with status 0**. Put the assignment in an `if`.
 - Clock skew: measure the **symptom**, never back-date `meson.build` (under that
   workaround build-system edits are silently ignored).
