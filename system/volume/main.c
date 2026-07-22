@@ -20,6 +20,7 @@
 // it steals no taps outside itself — the whole surface is input-transparent (the
 // slider is display-only; volume is driven by keys, not by dragging this HUD).
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -147,6 +148,15 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
     } else {
         return;
     }
+    // ON THE RECORD (P45), for the same reason the dim scrim's alpha is: "a
+    // volume change pops the HUD" is an actuation in a DIFFERENT PROCESS from
+    // the one that made the change, and the only evidence of it was a transient
+    // overlay in a screenshot — which is why the harness that tested it drove
+    // the app drawer and rotted. A line naming the value the HUD came up for is
+    // something a two-boot log can actually assert on.
+    fprintf(stderr, "[volume] HUD shown: volume=%lld mute=%d\n",
+            (long long)s->volume, s->mute ? 1 : 0);
+    fflush(stderr);
     s->visible = true;
     s->exiting = false;
     if (s->enter) {

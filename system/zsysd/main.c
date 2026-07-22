@@ -1213,6 +1213,13 @@ static void battery_tick(void) {
     snprintf(buf, sizeof(buf), "%d", pct);
     settings_apply("sys.battery_pct", buf);
     settings_apply("sys.battery_charging", charging ? "1" : "0");
+    // Logged (P45) because a power SOURCE is otherwise invisible: settings_apply
+    // fans out internally and does not go through the RPC path that prints
+    // settings_set, so the only evidence the battery service was running at all
+    // was a glyph in the status bar. That is exactly what the VOLUME harness
+    // tried to photograph, at coordinates, before it rotted.
+    fprintf(stderr, "[zsysd] battery %d%% charging=%d\n", pct, charging ? 1 : 0);
+    fflush(stderr);
     check_low_battery(pct, charging);
 }
 

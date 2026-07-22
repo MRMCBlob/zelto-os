@@ -149,6 +149,27 @@ harness_rotted() {
     exit 2
 }
 
+# P45 RESOLVED THE REST OF THEM, and two of the three did not come back here.
+#
+# ACTUATE=1 and KBD=1 were rewritten in place (above/below): both needed the
+# real target, ACTUATE because a brokered setting has to actuate a real
+# compositor surface and KBD because it is a two-boot ext4 persistence test.
+#
+# SETTINGS=1, VOLUME=1 and LOCK=1 moved to the SIMULATOR instead, because
+# nothing in what they assert needs an ARM guest: they are zsysd, its observer
+# clients, and a settings.conf. A QEMU two-boot costs ~6 minutes under TCG and
+# cannot run from test/run-tests.sh; two sim boots cost seconds and land in the
+# suite with everything else, where they will actually be run. The "reboot" is a
+# second sim boot pointed at the same ZELTO_DATA_DIR.
+harness_superseded() {
+    echo "!! $1=1 is GONE, and its claim is not: it now lives in $2."
+    echo "   Rewritten in P45 as a SIMULATOR test — same assertions, no ARM guest,"
+    echo "   no tap coordinates, and it runs as part of test/run-tests.sh instead"
+    echo "   of needing a six-minute TCG boot nobody starts."
+    echo "   Run it with:  test/run-tests.sh -k '$3'"
+    exit 2
+}
+
 if [ "${HEADLESS:-0}" = "1" ]; then
     echo "==> launching QEMU headless; frame -> $OUT/frame.ppm after ${SHOT_DELAY}s"
     rm -f "$OUT/frame.ppm" "$OUT/frame-after.ppm"
@@ -660,7 +681,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # under TCG: keep SHOT_DELAY high; the grab strip is a thin top region so the
     # pull-down swipe MUST start just below the 40px bar (y ~ 72).
     if [ "${SETTINGS:-0}" = "1" ]; then
-        harness_rotted SETTINGS \n            "It swipes up to open the deleted app drawer and taps a Settings tile at the drawer grid's coordinates."
+        harness_superseded SETTINGS test/test_settings_broker_sim.sh '*settings_broker*'
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
         # Settings drawer tile: apps are alphabetical by name in a 4-col grid; on
@@ -931,7 +952,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     #     (the setting survived). Coordinates overridable; TCG boot is slow so keep
     #     SHOT_DELAY high.
     if [ "${VOLUME:-0}" = "1" ]; then
-        harness_rotted VOLUME \n            "It opens the deleted app drawer to launch Settings."
+        harness_superseded VOLUME test/test_power_services_sim.sh '*power_services*'
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         # Fake battery: start just above the 20% low threshold and drain fast so
         # the low-battery warning fires within the first SHOT_DELAY window.
@@ -1045,7 +1066,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # SKIP_BUILD=1 + overrides to retune from a captured frame). Boot is slow under
     # TCG: keep SHOT_DELAY high. Use launchtap (zero-hold) for drawer launches.
     if [ "${LOCK:-0}" = "1" ]; then
-        harness_rotted LOCK \n            "It opens the deleted app drawer to launch Settings."
+        harness_superseded LOCK test/test_settings_broker_sim.sh '*settings_broker*'
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"
         # Settings drawer tile: alphabetical 4-col grid, row 2 col 3 on a fresh

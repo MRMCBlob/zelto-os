@@ -29,6 +29,7 @@ typedef struct SettingsState {
     bool lock_enabled;
     int64_t dim_s, lock_s, off_s;
     bool passcode_set;
+    bool test_set_done;   // ZELTO_SETTINGS_SET applied once
     int64_t lock_now;
     bool nav_seeded;      // ZELTO_SETTINGS_SCREEN applied (once, on first build)
 
@@ -696,6 +697,35 @@ static ZView screen_root(ZApp *app, void *props) {
 static ZView settings_body(ZApp *app, SettingsState *state) {
     ensure_init(app, state);
     g_state = state;
+
+    // Test hook (P45): ZELTO_SETTINGS_SET="key:value,key:value" writes those
+    // settings through the broker on the first build.
+    //
+    // WHY A HOOK AND NOT A TAP. The SETTINGS harness this replaces navigated the
+    // app drawer P40 deleted and tapped toggle chips at coordinates read off a
+    // screenshot; it ended in an unconditional exit 0 and was disabled in P44.
+    // What it was actually testing is that a brokered write reaches OTHER
+    // PROCESSES — the shade, the bar, the dim scrim and the lock all observe the
+    // same keys — and none of that needs a finger. This drives the write; zsysd's
+    // own "settings_set K=V -> N subscriber(s)" reports the fan-out.
+    if (!state->test_set_done) {
+        state->test_set_done = true;
+        const char *spec = getenv("ZELTO_SETTINGS_SET");
+        if (spec && spec[0]) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "%s", spec);
+            char *save = NULL;
+            for (char *tok = strtok_r(buf, ",", &save); tok;
+                 tok = strtok_r(NULL, ",", &save)) {
+                char *colon = strchr(tok, ':');
+                if (!colon) {
+                    continue;
+                }
+                *colon = '\0';
+                z_setting_set_int(tok, (int64_t)atoll(colon + 1));
+            }
+        }
+    }
 
     // Pull the slider back in line with the setting, EXCEPT while it is being
     // dragged. The broker echoes every write back through on_changed, and it also
