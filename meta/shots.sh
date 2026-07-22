@@ -709,11 +709,17 @@ run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)
 # the caps stood 30pt tall, under the 44pt touch-target minimum. The home row's
 # band is surface-local 102..179, so its centre is 140. Verified by measurement,
 # not by assuming the old number still landed on a key.
+#
+# P48: 140 -> 246. The SUGGESTION STRIP (ZELTO_SUGGEST_H, 105) sits above the keys
+# now, so the whole grid slid down by that much: the home row ('g', centre of the
+# grid) is at surface-local 207..284, centre 246. Measured off ZELTO_PROBE_TAPS on
+# the same boot the strip is up (empty field, so the strip is present but blank).
+# The X stays: 'g' is still at 331..389, centre 360.
 EXPECT='zelto-keyboard\|space' \
 PIXEL='13-keyboard spot 20' \
 run_shot 48-key-press "Keyboard: a key pressed (touch-down highlight veil)" 8 \
     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad \
-    ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=364 ZELTO_PRESS_Y=140
+    ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=360 ZELTO_PRESS_Y=246
 
 # App-open continuity (P32 item 3b): the tapped tile drifts toward centre while the
 # rest of home fades — the launch hand-off, frozen mid-flight.
