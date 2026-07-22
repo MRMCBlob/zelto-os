@@ -80,4 +80,23 @@
     (ZELTO_KBD_ROWS * ZELTO_KEY_H + (ZELTO_KBD_ROWS - 1) * ZELTO_KEY_GAP \
      + 2 * ZELTO_KEY_PAD)           // 369
 
+// The SUGGESTION STRIP above the caps (P48): three slots — the word you typed and
+// the two the dictionary thinks you meant — and the undo for autocorrect. It is
+// one row of Callout-sized buttons with the strip's own inset above and below, so
+// its height is an EXPRESSION over the same key metrics and not a spec-sheet
+// number: a slot cap is ZELTO_KEY_H tall (matching a key) and the strip pads it by
+// ZELTO_KEY_PAD top and bottom, exactly as the keyboard grid pads its rows.
+//
+// It is part of the keyboard's EXCLUSIVE ZONE when shown — the app shrinks by the
+// keys AND the strip so the focused field stays above both — which is why it is
+// here with the other safe areas and not a private constant in the keyboard. It
+// is OFF for password fields, and there the exclusive zone is ZELTO_KBD_H alone;
+// see the two heights the keyboard toggles between (ZELTO_KBD_H / _TOTAL_H).
+#define ZELTO_SUGGEST_H (ZELTO_KEY_H + 2 * ZELTO_KEY_PAD)   // 105
+
+// The whole surface with the strip up: what the keyboard reserves and how tall it
+// draws itself when prediction is on. Derived, so the strip cannot silently
+// overflow the surface the way a literal KBD_H once hid 36 units of slack.
+#define ZELTO_KBD_TOTAL_H (ZELTO_KBD_H + ZELTO_SUGGEST_H)   // 474
+
 #endif  // ZELTO_SYSTEM_COMMON_SAFE_AREAS_H

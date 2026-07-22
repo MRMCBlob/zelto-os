@@ -117,6 +117,11 @@ assert_expr() {   # <file> <name> <body> <part>...
 
 # The keyboard: P44's fix, re-pinned here so all three live in one place.
 assert_derived "$SAFE" ZELTO_KBD_H ZELTO_KEY_H ZELTO_KEY_GAP ZELTO_KEY_PAD
+# The suggestion strip (P48) and the whole keyboard surface with it up: both new
+# reserves, both derived from the key metrics so the strip cannot overflow the
+# surface and the surface cannot shrink away from the strip.
+assert_derived "$SAFE" ZELTO_SUGGEST_H ZELTO_KEY_H ZELTO_KEY_PAD
+assert_derived "$SAFE" ZELTO_KBD_TOTAL_H ZELTO_KBD_H ZELTO_SUGGEST_H
 # The home screen's bottom bar: dots + dock plate + the home-indicator gap.
 assert_derived "$LAUNCHER" BOTTOM_RESERVE BAR_PAD BAR_GAP DOTS_H DOCK_PLATE_H \
     ZELTO_HOMEBAR_H

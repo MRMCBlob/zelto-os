@@ -22,6 +22,7 @@
 // the shade are OVERLAY, so they always composite ABOVE the keyboard: a locked
 // screen shows its own passcode keypad, never the app's keyboard (and text-input
 // focus is dropped under the lock anyway). See docs/platform/soft-keyboard.md.
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,6 +123,24 @@ typedef struct KbdState {
     // The harness's in-flight hold: where it went down, and what it slides onto.
     float hold_px, hold_py;
     char slide_to[16];
+
+    // --- the suggestion strip and autocorrect (P48) --------------------------
+    // The three slots, refreshed from the current word every build. slot[1] is
+    // always the literal text the user typed; slot[0] and slot[2] are the two
+    // words the dictionary thinks they meant, or empty. `slot_auto` marks which
+    // slot autocorrect would apply on the next boundary, so the strip can show it
+    // the way iOS bolds the pending correction.
+    char slot[3][Z_TEXTFIELD_CAP];
+    int slot_auto;                    // index of the pending autocorrection, or -1
+    float slot_x[3], slot_w[3];       // laid-out frames, for the coordinate-free tap
+    // REVERT. After autocorrect fires, backspace restores what was typed. The
+    // corrected text is in the field (surrounding text can confirm it is still
+    // there); the ORIGINAL is not, so the keyboard holds it here — for exactly one
+    // key. Any key other than that first backspace clears it, the same one-edit
+    // lifetime the double-space period has.
+    bool revert_armed;
+    char revert_from[Z_TEXTFIELD_CAP];   // what autocorrect put in the field
+    char revert_to[Z_TEXTFIELD_CAP];     // what the user actually typed
 } KbdState;
 
 // Commit the next character of ZELTO_KBD_TYPE, then re-arm until the string is
@@ -131,6 +150,21 @@ static void type_tick(ZApp *app, void *ud);
 static void tap_tick(ZApp *app, void *ud);
 // The end of a held press (a "NAME~ms" token). See the note over hold_release().
 static void hold_release(ZApp *app, void *ud);
+// Tapping a suggestion-strip slot. See the note over on_suggest().
+static void on_suggest(ZApp *app, void *state, void *data);
+// Recompute the three strip slots and the pending autocorrection from the word
+// being typed. See kbd_suggest().
+static void kbd_suggest(ZApp *app, KbdState *s);
+// The run of letters immediately before the cursor — the word being typed, in the
+// case it was typed in. Returns its length. See the implementation.
+static int kbd_cur_word(ZApp *app, char *out, size_t n);
+// Would autocorrect change `word` on a boundary, and to what? Writes the
+// case-matched replacement to `out` and returns true when it fires. The single
+// source both the strip and the space bar consult, so they cannot disagree.
+static bool kbd_autocorrect(ZApp *app, const char *word, char *out, size_t n);
+// Forget the pending revert. Called by every key that is not the backspace that
+// consumes it, because a revert is offered for exactly one keystroke.
+static void kbd_clear_revert(KbdState *s);
 
 // --- input-method show/hide (driven by the compositor) ---------------------
 static void on_show(ZApp *app, void *ud) {
@@ -287,6 +321,7 @@ static bool kbd_upper(const KbdState *s) {
 // A character key: commit the (shift-cased) byte, then spend the one-shot shift.
 static void on_char(ZApp *app, void *state, void *data) {
     KbdState *s = state;
+    kbd_clear_revert(s);   // any letter ends the one-key window a revert lives in
     int cp = (int)(intptr_t)data;
     char buf[2] = {(char)cp, '\0'};
     if (kbd_upper(s) && cp >= 'a' && cp <= 'z') {
@@ -302,6 +337,7 @@ static void on_char(ZApp *app, void *state, void *data) {
 }
 static void on_shift(ZApp *app, void *state) {
     KbdState *s = state;
+    kbd_clear_revert(s);
     double now = z_now_seconds();
     bool dbl = (now - s->last_shift_s) < KBD_DOUBLE_TAP_S;
     s->last_shift_s = now;
@@ -330,6 +366,7 @@ static void on_shift(ZApp *app, void *state) {
 }
 static void on_symbols(ZApp *app, void *state) {
     KbdState *s = state;
+    kbd_clear_revert(s);
     s->symbols = !s->symbols;
     s->shift = SHIFT_OFF;
     z_invalidate(app);
@@ -349,7 +386,6 @@ static void on_symbols(ZApp *app, void *state) {
 // from the app's side.
 static void on_space(ZApp *app, void *state) {
     KbdState *s = state;
-    (void)s;
     const char *p = kbd_prefix(app);
     int n = (int)strlen(p);
     bool period = predict_on(app) && n >= 2 && p[n - 1] == ' ' &&
@@ -357,17 +393,77 @@ static void on_space(ZApp *app, void *state) {
                    (p[n - 2] >= 'A' && p[n - 2] <= 'Z') ||
                    (p[n - 2] >= '0' && p[n - 2] <= '9'));
     if (period) {
+        // A double space ends a word that has ALREADY been spaced, so there is no
+        // word under the cursor to correct and the revert window is over.
+        kbd_clear_revert(s);
         z_im_backspace(app);
         z_im_commit_text(app, ". ");
         fprintf(stderr, "[keyboard] double-space period after '%s'\n", p);
-    } else {
-        z_im_commit_text(app, " ");
-        fprintf(stderr, "[keyboard] commit ' '\n");
+        fflush(stderr);
+        return;
     }
+    // AUTOCORRECT FIRES ON THE BOUNDARY, not before it. The classifier corrected
+    // this word's PRESSES as they were typed, from the prefix; this corrects the
+    // finished WORD, from the whole of it, and it is a different mechanism with a
+    // different failure mode — it is visible and it is sometimes wrong, so it does
+    // not happen without the strip that shows it and the backspace that undoes it.
+    char word[Z_TEXTFIELD_CAP], corrected[Z_TEXTFIELD_CAP];
+    kbd_clear_revert(s);
+    if (kbd_cur_word(app, word, sizeof(word)) > 0 &&
+        kbd_autocorrect(app, word, corrected, sizeof(corrected))) {
+        // Replace the typed letters with the correction as ONE delete + commit,
+        // so the field sees a single edit — then the space. The undo is armed on
+        // the corrected word, which is what surrounding text will confirm is
+        // still there when the next backspace asks to take it back.
+        z_im_delete(app, (int)strlen(word));
+        z_im_commit_text(app, corrected);
+        z_im_commit_text(app, " ");
+        s->revert_armed = true;
+        snprintf(s->revert_from, sizeof(s->revert_from), "%s", corrected);
+        snprintf(s->revert_to, sizeof(s->revert_to), "%s", word);
+        fprintf(stderr, "[keyboard] autocorrect '%s' -> '%s' (backspace reverts)\n",
+                word, corrected);
+        fflush(stderr);
+        return;
+    }
+    z_im_commit_text(app, " ");
+    fprintf(stderr, "[keyboard] commit ' '\n");
     fflush(stderr);
 }
+// BACKSPACE, and the AUTOCORRECT REVERT.
+//
+// A backspace immediately after an autocorrection puts back what you typed. That
+// is a claim about state the keyboard does not obviously have — the word you
+// typed is GONE from the field, autocorrect replaced it — so the answer, worked
+// out the same way the double-space period's was: the field holds the CORRECTED
+// word (and surrounding text can confirm it is still there, untouched by a paste
+// or a caret move), and the keyboard holds the ORIGINAL, for exactly one
+// keystroke. If anything has disturbed the tail the correction left, this is an
+// ordinary backspace instead — never a surprise edit somewhere the cursor no
+// longer is.
 static void on_backspace(ZApp *app, void *state) {
-    (void)state;
+    KbdState *s = state;
+    if (s->revert_armed) {
+        s->revert_armed = false;
+        const char *p = kbd_prefix(app);
+        int n = (int)strlen(p);
+        int fl = (int)strlen(s->revert_from);
+        // The correction committed "<from> " — the word and its trailing space.
+        // Only revert if that is exactly what is still before the cursor.
+        if (n >= fl + 1 && p[n - 1] == ' ' &&
+            strncmp(p + n - fl - 1, s->revert_from, (size_t)fl) == 0) {
+            z_im_delete(app, fl + 1);
+            z_im_commit_text(app, s->revert_to);
+            fprintf(stderr, "[keyboard] autocorrect reverted '%s' -> '%s'\n",
+                    s->revert_from, s->revert_to);
+            fflush(stderr);
+            return;
+        }
+        fprintf(stderr,
+                "[keyboard] revert declined: '%s ' is no longer under the cursor "
+                "(prefix '%s')\n",
+                s->revert_from, p);
+    }
     z_im_backspace(app);
     fprintf(stderr, "[keyboard] backspace\n");
     fflush(stderr);
@@ -407,17 +503,49 @@ static const struct AccentRow *accents_for(char base) {
     return NULL;
 }
 
-// Committing an accent closes the popup, and spends a one-shot shift the way any
-// other letter would.
+// The upper case of a Latin-1 accent (P48). The alternates are stored lower case
+// and this is the ONE place the case is applied — at commit and in the popup —
+// because the accent's IDENTITY the popup and the slide resolve by is its stored
+// pointer, which must not change when shift is held. Almost all of them are U+00Ex
+// -> U+00Cx, i.e. the low byte of the two-byte UTF-8 form drops by 0x20; ÿ and ß
+// are the two that do not follow the rule and are handled by name. Writes `out`
+// (>= 4 bytes) and returns it.
 //
-// The marks are LOWER CASE only. Upper-case accents are a second table and the
-// shift key is not the reason to add it: the letters that need them most are the
-// ones a name starts with, which is the case a dictionary — not a table — should
-// be answering. Written down rather than left as an omission because "hold shift,
-// hold e" silently giving a lower-case è is the kind of thing that reads as a bug.
+// WHY THIS EXISTS NOW. P47 shipped lower-case only and wrote down why holding
+// shift then 'e' giving a lower-case è "reads as a bug" — and it does. The letters
+// that most need the capital are the ones a name STARTS with (À, Ö), and a name is
+// exactly what a dictionary cannot help with, so the fix belongs in the table and
+// not in autocorrect. It is a rule, not a second table: 26 entries would be 26
+// more things to keep in sync with the lower-case row.
+static const char *accent_upper(const char *acc, char *out) {
+    unsigned char c0 = (unsigned char)acc[0], c1 = (unsigned char)acc[1];
+    if (c0 == 0xC3 && c1 == 0xBF) {   // ÿ -> Ÿ (U+0178), not in the C3 block
+        out[0] = (char)0xC5; out[1] = (char)0xB8; out[2] = '\0';
+        return out;
+    }
+    if (c0 == 0xC3 && c1 == 0x9F) {   // ß has no single upper case: leave it
+        out[0] = (char)0xC3; out[1] = (char)0x9F; out[2] = '\0';
+        return out;
+    }
+    if (c0 == 0xC3 && c1 >= 0xA0 && c1 <= 0xBE) {
+        out[0] = (char)0xC3; out[1] = (char)(c1 - 0x20); out[2] = '\0';
+        return out;
+    }
+    snprintf(out, 4, "%s", acc);   // not an accent we case: pass through
+    return out;
+}
+
+// Committing an accent closes the popup, and spends a one-shot shift the way any
+// other letter would. Upper-cased when the keyboard is shifted, so "hold shift,
+// hold e" gives É — the case a name needs and a dictionary cannot supply.
 static void on_accent(ZApp *app, void *state, void *data) {
     KbdState *s = state;
+    kbd_clear_revert(s);
     const char *acc = data;
+    char up[4];
+    if (kbd_upper(s)) {
+        acc = accent_upper(acc, up);
+    }
     z_im_commit_text(app, acc);
     fprintf(stderr, "[keyboard] commit '%s' (accent of '%c')\n", acc,
             s->accent_base);
@@ -429,7 +557,7 @@ static void on_accent(ZApp *app, void *state, void *data) {
     z_invalidate(app);
 }
 static void on_enter(ZApp *app, void *state) {
-    (void)state;
+    kbd_clear_revert(state);
     z_im_commit_text(app, "\n");
 }
 
@@ -479,6 +607,14 @@ static bool key_handler(const char *name, ZTapAction *on_data, void **data,
             return true;
         }
     }
+    // A suggestion-strip slot, named SUG0/SUG1/SUG2, so a coordinate-free tap can
+    // reach it (the strip is new UI and its slots carry a word, not a key name).
+    if (name[0] == 'S' && name[1] == 'U' && name[2] == 'G' && name[3] >= '0' &&
+        name[3] <= '2' && !name[4]) {
+        *on_data = on_suggest;
+        *data = (void *)(intptr_t)(name[3] - '0');
+        return true;
+    }
     if (name[0] && !name[1]) {
         *on_data = on_char;
         *data = (void *)(intptr_t)name[0];
@@ -498,6 +634,10 @@ static void key_name(ZTapAction on_data, void *data, ZAction on_plain, char *buf
     }
     if (on_data == on_char) {
         snprintf(buf, n, "%c", (char)(intptr_t)data);
+        return;
+    }
+    if (on_data == on_suggest) {
+        snprintf(buf, n, "SUG%d", (int)(intptr_t)data);
         return;
     }
     snprintf(buf, n, "?");
@@ -538,11 +678,20 @@ static void collect_cap(void *ud, ZTapAction on_data, void *data,
     a->key[i].y = y;
     a->key[i].w = w;
     a->key[i].h = h;
-    // The LETTER a cap yields, or 0. Only a-z: the language model is a table of
-    // English letter pairs, so a digit or a bracket on the symbols layer must get
-    // no vote rather than a made-up one.
+    // The SYMBOL a cap yields, or 0 for a modifier. Only a-z and the word
+    // boundary: a digit or a bracket on the symbols layer must get no vote rather
+    // than a made-up one, because the model is English and knows nothing about
+    // either.
+    //
+    // THE SPACE BAR IS A SYMBOL, NOT A MODIFIER (P48), and this one line is where
+    // its target starts moving: everything downstream — the Gaussian, the odds
+    // clamp, the argmax — already treats whatever has a `ch` as something the
+    // model may have an opinion about. See predict.h.
     char c = (on_data == on_char) ? (char)(intptr_t)data : 0;
-    a->key[i].ch = (c >= 'a' && c <= 'z') ? c : 0;
+    if (on_plain == on_space) {
+        c = Z_LM_BOUNDARY;
+    }
+    a->key[i].ch = (c >= 'a' && c <= 'z') || c == Z_LM_BOUNDARY ? c : 0;
     a->on_data[i] = on_data;
     a->data[i] = data;
     a->on_plain[i] = on_plain;
@@ -663,6 +812,191 @@ static bool kbd_resolve(ZApp *app, void *state, float x, float y) {
     return true;
 }
 
+// --- the suggestion strip and autocorrect (P48) -----------------------------
+// TWO MECHANISMS, ONE SOURCE OF TRUTH. The strip and the space bar must never
+// disagree about what the correction is — a strip that offered "the" while the
+// space bar committed "then" would be worse than no strip at all — so both go
+// through kbd_autocorrect below, and the strip's pending-correction highlight IS
+// the space bar's decision, drawn.
+static void kbd_clear_revert(KbdState *s) {
+    s->revert_armed = false;
+}
+
+// The word being typed: the letters right before the cursor, in their own case
+// (so a capital survives the round trip through a correction). Stops at the first
+// non-letter, because that is where the current word begins.
+static int kbd_cur_word(ZApp *app, char *out, size_t n) {
+    const char *p = kbd_prefix(app);
+    int len = (int)strlen(p);
+    int i = len;
+    while (i > 0 && ((p[i - 1] >= 'a' && p[i - 1] <= 'z') ||
+                     (p[i - 1] >= 'A' && p[i - 1] <= 'Z'))) {
+        i--;
+    }
+    int wl = len - i;
+    if (wl > (int)n - 1) {
+        wl = (int)n - 1;
+    }
+    memcpy(out, p + i, (size_t)wl);
+    out[wl] = '\0';
+    return wl;
+}
+
+// The substitution cost the dictionary's edit distance uses, as a fact about THIS
+// keyboard and not about English (predict.h explains why the model must not carry
+// a copy of the layout). A near-neighbour on the grid is the commonest typo and
+// the one the classifier could not catch — a deliberate press deep inside the
+// wrong cap's centre zone — so it costs half of a substitution to a key across
+// the board. `ud` is the laid-out CapSet.
+static float kbd_subst_cost(void *ud, char want, char got) {
+    const CapSet *a = ud;
+    float wx = 0, wy = 0, gx = 0, gy = 0, cw = 0;
+    bool wf = false, gf = false;
+    for (int i = 0; i < a->n; i++) {
+        if (a->key[i].ch == want) {
+            wx = a->key[i].x + a->key[i].w * 0.5f;
+            wy = a->key[i].y + a->key[i].h * 0.5f;
+            cw = a->key[i].w;
+            wf = true;
+        }
+        if (a->key[i].ch == got) {
+            gx = a->key[i].x + a->key[i].w * 0.5f;
+            gy = a->key[i].y + a->key[i].h * 0.5f;
+            gf = true;
+        }
+    }
+    if (!wf || !gf || cw <= 0.0f) {
+        return 1.0f;   // one of them is not on this layer: no opinion
+    }
+    float dx = wx - gx, dy = wy - gy;
+    float dist = sqrtf(dx * dx + dy * dy);
+    return dist < 1.6f * cw ? 0.5f : 1.0f;
+}
+
+// Does autocorrect fire on `word`, and to what? The single decision the strip and
+// the space bar share. Fires only when the word is NOT itself in the dictionary
+// and there is a candidate clearly better than it — an exact hit is returned by
+// z_lm_candidates with a score far above any correction, so "already a word" and
+// "one edit from a word" are told apart by the same list.
+static bool kbd_autocorrect(ZApp *app, const char *word, char *out, size_t n) {
+    if (!predict_on(app)) {
+        return false;
+    }
+    int wl = (int)strlen(word);
+    if (wl < 2) {
+        return false;   // a one-letter word is not a typo worth touching
+    }
+    char lower[Z_TEXTFIELD_CAP];
+    for (int i = 0; i < wl && i < (int)sizeof(lower) - 1; i++) {
+        char c = word[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+        if (lower[i] < 'a' || lower[i] > 'z') {
+            return false;   // not a plain word (a digit crept in): leave it
+        }
+    }
+    lower[wl < (int)sizeof(lower) ? wl : (int)sizeof(lower) - 1] = '\0';
+    if (z_lm_is_word(lower)) {
+        return false;   // spelled a real word: never "correct" it
+    }
+    if (z_lm_is_prefix(lower)) {
+        return false;   // part-way through a real word ("hel" -> hello): not a typo
+    }
+    CapSet a;
+    collect_caps(app, &a);
+    ZLmWord cand[3];
+    int nc = z_lm_candidates(lower, kbd_subst_cost, &a, cand, 3);
+    if (nc == 0) {
+        return false;   // nothing close enough: leave it exactly as typed
+    }
+    // Case-match the correction to what was typed: a leading capital carries over
+    // (a sentence start, a name), the rest is the dictionary's lower case.
+    int cl = (int)strlen(cand[0].word);
+    if (cl > (int)n - 1) {
+        cl = (int)n - 1;
+    }
+    memcpy(out, cand[0].word, (size_t)cl);
+    out[cl] = '\0';
+    if (word[0] >= 'A' && word[0] <= 'Z' && out[0] >= 'a' && out[0] <= 'z') {
+        out[0] = (char)(out[0] - 32);
+    }
+    return strcmp(out, word) != 0;   // no-op if it "corrected" to the same string
+}
+
+// Tapping a strip slot commits that slot's word in place of what is being typed,
+// plus a space — the explicit version of the correction the boundary would apply,
+// and the way to REJECT a pending autocorrect (tap the middle slot, which is
+// always the literal text). No revert is armed: the user chose this one, so a
+// backspace after it means backspace.
+static void on_suggest(ZApp *app, void *state, void *data) {
+    KbdState *s = state;
+    int idx = (int)(intptr_t)data;
+    if (idx < 0 || idx > 2 || !s->slot[idx][0]) {
+        return;
+    }
+    kbd_clear_revert(s);
+    char word[Z_TEXTFIELD_CAP];
+    int wl = kbd_cur_word(app, word, sizeof(word));
+    if (wl > 0) {
+        z_im_delete(app, wl);
+    }
+    z_im_commit_text(app, s->slot[idx]);
+    z_im_commit_text(app, " ");
+    fprintf(stderr, "[keyboard] suggest slot %d '%s' (was '%s')\n", idx,
+            s->slot[idx], word);
+    fflush(stderr);
+}
+
+// Recompute the strip, every build. slot[1] is the literal word; slot[0] and
+// slot[2] are the dictionary's two best guesses that differ from it. slot_auto is
+// the one autocorrect would apply on a boundary — the same call the space bar
+// makes — so the highlight and the behaviour are one decision.
+static void kbd_suggest(ZApp *app, KbdState *s) {
+    for (int i = 0; i < 3; i++) {
+        s->slot[i][0] = '\0';
+    }
+    s->slot_auto = -1;
+    if (!predict_on(app)) {
+        return;   // no strip in a password field
+    }
+    char word[Z_TEXTFIELD_CAP];
+    if (kbd_cur_word(app, word, sizeof(word)) == 0) {
+        return;   // between words: a blank strip, not stale suggestions
+    }
+    snprintf(s->slot[1], sizeof(s->slot[1]), "%s", word);
+
+    char lower[Z_TEXTFIELD_CAP];
+    int wl = (int)strlen(word);
+    for (int i = 0; i < wl; i++) {
+        char c = word[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    lower[wl] = '\0';
+    CapSet a;
+    collect_caps(app, &a);
+    ZLmWord cand[3];
+    int nc = z_lm_candidates(lower, kbd_subst_cost, &a, cand, 3);
+    bool cap = word[0] >= 'A' && word[0] <= 'Z';
+    int slots[2] = {0, 2};
+    int put = 0;
+    for (int i = 0; i < nc && put < 2; i++) {
+        if (strcmp(cand[i].word, lower) == 0) {
+            continue;   // the literal already IS slot 1
+        }
+        char *dst = s->slot[slots[put++]];
+        snprintf(dst, sizeof(s->slot[0]), "%s", cand[i].word);
+        if (cap && dst[0] >= 'a' && dst[0] <= 'z') {
+            dst[0] = (char)(dst[0] - 32);
+        }
+    }
+    // The pending autocorrection: the same yes/no the boundary asks. When it
+    // fires, the best guess sits in slot 0, so that is the slot to highlight.
+    char corr[Z_TEXTFIELD_CAP];
+    if (kbd_autocorrect(app, word, corr, sizeof(corr)) &&
+        strcmp(s->slot[0], corr) == 0) {
+        s->slot_auto = 0;
+    }
+}
+
 // --- the live press ---------------------------------------------------------
 // What the callout shows, refreshed on every move: run the classifier at the
 // current point and remember its answer plus the frame of the cap that won.
@@ -687,7 +1021,7 @@ static void refresh_preview(ZApp *app, KbdState *s) {
     // finger in the way a 32pt letter is, and iOS shows one for exactly the same
     // set — the callout is there so you can read what you hit, not to celebrate
     // every press.
-    if (a.key[i].ch) {
+    if (a.key[i].ch && a.key[i].ch != Z_LM_BOUNDARY) {
         char c = a.key[i].ch;
         if (kbd_upper(s) && c >= 'a' && c <= 'z') {
             c = (char)(c - 32);
@@ -900,12 +1234,41 @@ static void audit_caps(ZApp *app) {
         }
         float span = hi - lo;
         int dead = 0, sampled = 0;
+        // WHAT A PRESS COSTS, MEASURED (P48 item 3). The classifier had never
+        // been timed: it runs on every DOWN, and again on every MOVE while a
+        // finger is held, which kbd_hold_tick drives at 40Hz. P45 measured plain
+        // hit-testing at 124 nodes / 6.1us and both that brief and P44 were wrong
+        // about when it ran, so this is a number and not a shrug.
+        //
+        // The sweep below IS the measurement: it is the same kbd_pick the finger
+        // calls, over the whole row at one-unit steps, so per-call cost falls out
+        // of the wall clock divided by the sample count. Note what is and is not
+        // in it — collect_caps() walked the tree ONCE, outside this loop, so this
+        // times the scoring and not the layout walk. The two are reported
+        // separately below for that reason.
+        double t0 = z_now_seconds();
         for (float x = lo; x <= hi; x += 1.0f) {
             sampled++;
             if (kbd_pick(app, &a, x, y + a.key[i].h * 0.5f, NULL, 0) < 0) {
                 dead++;
             }
         }
+        double pick_us = sampled > 0
+                             ? (z_now_seconds() - t0) * 1e6 / (double)sampled
+                             : 0.0;
+        // ...and what the tree walk costs, which a real press pays too: the
+        // resolver calls collect_caps() before it calls kbd_pick(), so a press is
+        // one of these plus one of those.
+        double t1 = z_now_seconds();
+        CapSet scratch;
+        for (int r = 0; r < 32; r++) {
+            collect_caps(app, &scratch);
+        }
+        double collect_us = (z_now_seconds() - t1) * 1e6 / 32.0;
+        fprintf(stderr,
+                "[keyboard] cost row y=%.0f: classify %.2fus/press over %d caps, "
+                "collect %.2fus/press, press total %.2fus\n",
+                y, pick_us, a.n, collect_us, pick_us + collect_us);
         fprintf(stderr,
                 "[keyboard] row y=%.0f: %d caps, span %.0f, covered %.0f, "
                 "gutter %.0f (%.1f%%), dead %d of %d (%.1f%%), "
@@ -1333,11 +1696,22 @@ static ZView keyboard_grid(KbdState *s) {
 
     // A heavy material: the app behind shows only as a hint. See kbd_body for why
     // this one is a tint rather than a compositor blur.
-    return Fill(
-        Background(Z_COLOR_MATERIAL_THICK,
-            VStack(row1, row2, row3, row4,
-                   .spacing = (float)ZELTO_KEY_GAP,
-                   .padding = (float)ZELTO_KEY_PAD, .grow = 1.0f)));
+    //
+    // NOT Fill'd here (P48). The caller decides: the bare keyboard Fills the whole
+    // surface, but with the strip up the keys go in a fixed-height Frame — and a
+    // Fill node in a stack takes the WHOLE axis (layout.c arrange), overriding the
+    // Frame's height and pushing the space row off the bottom. So the fill is the
+    // caller's to add, once, where it means "the surface" and not "a sub-box".
+    // NO .grow on the rows (P48). Grow spreads the four rows to fill whatever box
+    // the VStack is given, so a box even a few units taller than KBD_H inflates the
+    // row pitch and walks the space row off the bottom edge. Without it the rows
+    // sit at their natural pitch (KEY_H + KEY_GAP) and their sum IS KBD_H, so the
+    // keyboard is the same whether it is Filled into the whole surface or pinned to
+    // a KBD_H frame under the strip.
+    return Background(Z_COLOR_MATERIAL_THICK,
+        VStack(row1, row2, row3, row4,
+               .spacing = (float)ZELTO_KEY_GAP,
+               .padding = (float)ZELTO_KEY_PAD));
 }
 
 // --- the floating layers: the accent popup and the preview callout -----------
@@ -1354,10 +1728,15 @@ static ZView place(ZView v, float x, float y, float w, float h, float sw,
 // A row of accents. SHARE, not Grow — the P46 lesson applied one layer out: with
 // Grow every cell would be as wide as the mark printed on it, so "ß" and "à"
 // would be different sizes in the same popup and would move as the row changed.
-static ZView accent_row(const struct AccentRow *r) {
+static ZView accent_row(const struct AccentRow *r, bool upper) {
     ZStackOpts row = {.spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
                       .grow = 1.0f};
     for (int i = 0; i < r->n && i < Z_MAX_CHILDREN; i++) {
+        // The DISPLAY is upper-cased when shift is held; the TAP DATA stays the
+        // stored lower-case pointer, because that is the identity the release and
+        // the harness slide resolve by (on_accent applies the case at commit).
+        char up[4];
+        const char *shown = upper ? accent_upper(r->alt[i], up) : r->alt[i];
         row.children[i] = OnTapData(on_accent, (void *)(intptr_t)r->alt[i],
             Share(1.0f,
                 Background(Z_COLOR_SURFACE_4,
@@ -1367,7 +1746,7 @@ static ZView accent_row(const struct AccentRow *r) {
                                    Weight(Z_WEIGHT_MEDIUM,
                                        Foreground(Z_COLOR_TEXT,
                                            Font(Z_FONT_TITLE2,
-                                                Text("%s", r->alt[i])))),
+                                                Text("%s", shown)))),
                                    Spacer(), .align = Z_ALIGN_CENTER))))));
     }
     return Shadow(Z_ELEV_3,
@@ -1400,6 +1779,40 @@ static ZView callout(const char *ch) {
                        Spacer(), .align = Z_ALIGN_CENTER))));
 }
 
+// --- the suggestion strip, drawn (P48) ---------------------------------------
+// Three Share-divided slots, so each is a third of the row whatever word sits in
+// it — the P46 lesson again, a slot must not be as wide as its own text. The
+// middle is the literal; the pending autocorrection (slot_auto) is filled and
+// tinted, the way iOS bolds the word it is about to apply. An empty slot carries
+// no handler, so it is not a tappable the classifier or the probe will ever find.
+static ZView suggest_slot(KbdState *s, int idx) {
+    const char *txt = s->slot[idx];
+    bool pending = (idx == s->slot_auto);
+    ZView label =
+        txt[0]
+            ? Weight(pending ? Z_WEIGHT_SEMIBOLD : Z_WEIGHT_MEDIUM,
+                     Foreground(pending ? Z_COLOR_PRIMARY : Z_COLOR_TEXT,
+                                Font(Z_FONT_CALLOUT, Text("%s", txt))))
+            : Spacer();
+    ZView face =
+        Frame(0.0f, (float)ZELTO_KEY_H,
+              HStack(Spacer(), label, Spacer(), .align = Z_ALIGN_CENTER));
+    if (pending) {
+        face = Background(Z_COLOR_SURFACE_4, CornerRadius(Z_RADIUS_CHIP, face));
+    }
+    if (!txt[0]) {
+        return Share(1.0f, face);   // an empty slot is not a control
+    }
+    return Share(1.0f, OnTapData(on_suggest, (void *)(intptr_t)idx, face));
+}
+static ZView suggest_strip(KbdState *s) {
+    return Background(Z_COLOR_MATERIAL_THICK,
+        Padding((float)ZELTO_KEY_PAD,
+            HStack(suggest_slot(s, 0), suggest_slot(s, 1), suggest_slot(s, 2),
+                   .spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
+                   .grow = 1.0f)));
+}
+
 // --- body -------------------------------------------------------------------
 static ZView kbd_body(ZApp *app, KbdState *s) {
     if (!s->inited) {
@@ -1413,6 +1826,18 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         // ...and it tracks the whole gesture, not just its end: the callout, the
         // hold that opens the accents, and the repeating delete.
         z_press_hook(app, kbd_press);
+        // THE DICTIONARY IS BUILT HERE, EAGERLY, AND IT SAYS WHAT IT COST (P48).
+        // The model builds itself lazily on its first question, which on a real
+        // boot would be the first press — so the one press in the user's life
+        // that pays for the whole word list is the first one they make, which is
+        // exactly the press you do not want to be slow. Building it while the
+        // surface is being created moves that cost to a moment nothing is waiting
+        // on, and the number below is what makes "moved it somewhere cheap" a
+        // measurement rather than an assertion.
+        char lm[256];
+        z_lm_report(lm, sizeof(lm));
+        fprintf(stderr, "[keyboard] lm %s\n", lm);
+        fflush(stderr);
         // Headless test hook: ZELTO_KBD_SHOW=1 raises the keyboard on the first
         // build (without a real text-input focus handshake) so the QWERTY layout is
         // screenshot-verifiable. Keys go nowhere with no focused field — this is a
@@ -1453,9 +1878,25 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         s->auto_shift = false;
     }
 
+    // THE STRIP CHANGES THE HEIGHT, so the height is decided here, once, and every
+    // number below reads from it. The strip is up whenever the keyboard is and the
+    // field is not a password (predict_on) — a password field gets the bare keys,
+    // both because there is nothing to suggest and because the strip is one more
+    // surface that could leak the word. The surface RESIZES between the two heights
+    // rather than always reserving the taller one, so a password field's app is not
+    // shrunk by a strip it never sees.
+    bool strip = s->visible && predict_on(app);
+    int surf_h = strip ? ZELTO_KBD_TOTAL_H : ZELTO_KBD_H;
+    z_layer_resize(app, 0, surf_h);   // width 0 = keep the anchored full width
+
+    // Recompute the strip's slots from the word being typed (a no-op that clears
+    // them in a password field). Done before the exclusive zone is set so a build
+    // that turns the strip off also stops reserving its height in the same frame.
+    kbd_suggest(app, s);
+
     // Reserve our height only while shown (app shrinks to keep the field above
     // the keyboard); catch input only while shown (else taps fall through).
-    z_layer_set_exclusive_zone(app, s->visible ? ZELTO_KBD_H : 0);
+    z_layer_set_exclusive_zone(app, s->visible ? surf_h : 0);
     if (s->visible) {
         z_layer_set_input_region(app, 0, 0, 0, 0);   // whole surface (input on)
     } else {
@@ -1473,12 +1914,30 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         kbd_hold_tick(app, s);
     }
 
-    // Slide: v animates 0->1; parked slides the whole grid off the bottom edge.
+    // Slide: v animates 0->1; parked slides the whole surface off the bottom edge.
     float v = z_animated_get(s->anim);
-    float slide = (1.0f - v) * (float)ZELTO_KBD_H;
+    float slide = (1.0f - v) * (float)surf_h;
     z_full_repaint(app);   // a big translated subtree wants a full repaint
 
-    ZView grid = Fill(keyboard_grid(s));
+    // The surface is the strip over the keys, or just the keys. Both children
+    // carry a FIXED height — the strip its SUGGEST_H, the keys their KBD_H — and
+    // they sum to surf_h exactly, so the VStack neither grows nor shrinks either
+    // one. (A growing VStack over a Fill'd grid stretched the keys past the
+    // surface and pushed the space row off the bottom edge — measured, not
+    // guessed.) The floating popups place() against sh = surf_h below, and the
+    // caps' frames the classifier reads already carry the strip's offset, so
+    // nothing downstream needs to know the strip is there.
+    // The strip over the keys, stacked at their NATURAL heights — no Frame, no
+    // grow. Each already measures to exactly its safe-area height on its own
+    // (suggest_strip is a row of KEY_H caps in KEY_PAD, = SUGGEST_H; keyboard_grid
+    // is four rows in KEY_PAD, = KBD_H) and they sum to surf_h, so the VStack has
+    // nothing to divide. A Frame around either would DOUBLE-COUNT its padding —
+    // measure() treats a Frame's fixed height as the INNER height and adds the
+    // node's own 2*KEY_PAD on top (the CLAUDE.md trap), which is exactly how the
+    // space row first walked off the bottom edge.
+    ZView grid = strip ? Fill(VStack(suggest_strip(s), keyboard_grid(s),
+                                     .spacing = 0.0f))
+                       : Fill(keyboard_grid(s));
 
     // The floating layers, if any. Both sit ABOVE the key they belong to, and
     // both fall BELOW it when there is no room — which is not an edge case, it is
@@ -1488,7 +1947,7 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
     // only other place, so it is where they go, and the fact that they move is
     // why the position is computed from the cap's frame rather than written down.
     float sw = (float)z_screen_width(app);
-    float sh = (float)ZELTO_KBD_H;
+    float sh = (float)surf_h;
     if (s->accents) {
         const struct AccentRow *r = accents_for(s->accent_base);
         if (r) {
@@ -1504,7 +1963,7 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
                 y = s->base_y + s->base_h + (float)ZELTO_KEY_GAP;
             }
             grid = ZStack(grid,
-                          place(accent_row(r), x, y, pw, ph, sw, sh),
+                          place(accent_row(r, kbd_upper(s)), x, y, pw, ph, sw, sh),
                           .align = Z_ALIGN_CENTER);
         }
     } else if (s->preview && s->down) {
@@ -1523,12 +1982,14 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
     return Offset(NULL, slide, grid);
 }
 
-// TOP layer, bottom-anchored, full width, fixed KBD_H height. Exclusive zone is
-// toggled at runtime (0 hidden / KBD_H shown). keyboard=false: the on-screen
-// keyboard takes NO wl_keyboard focus — it drives text via input-method-v2.
+// TOP layer, bottom-anchored, full width. Created at KBD_TOTAL_H (keys + strip)
+// and resized down to KBD_H when the strip is off (a password field); exclusive
+// zone is toggled at runtime (0 hidden / surf_h shown). keyboard=false: the
+// on-screen keyboard takes NO wl_keyboard focus — it drives text via
+// input-method-v2.
 Z_LAYER_APP(KbdState, kbd_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .height = ZELTO_KBD_H,
+            .height = ZELTO_KBD_TOTAL_H,
             .keyboard = false)

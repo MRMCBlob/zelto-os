@@ -118,9 +118,19 @@ grep -q 'exclusive_zone = ZELTO_BAR_H' "$REPO_ROOT/system/bar/main.c" ||
 grep -q 'exclusive_zone = ZELTO_HOMEBAR_H' "$REPO_ROOT/system/homebar/main.c" ||
     zt_fail "the home indicator no longer publishes ZELTO_HOMEBAR_H" \
             "exclusive_zone = ZELTO_HOMEBAR_H" "missing"
-grep -q 'z_layer_set_exclusive_zone(app, s->visible ? ZELTO_KBD_H : 0)' \
+# The keyboard reserves its height while shown. P48 made that height a variable —
+# surf_h is ZELTO_KBD_TOTAL_H with the suggestion strip up, ZELTO_KBD_H (bare keys)
+# for a password field — so the check is that the exclusive zone is that computed
+# height (never a literal), and that the height itself is derived from the safe
+# areas. Both halves matter: the zone must track the strip, and surf_h must be one
+# of the two derived reserves, not a number.
+grep -q 'z_layer_set_exclusive_zone(app, s->visible ? surf_h : 0)' \
     "$REPO_ROOT/system/keyboard/main.c" ||
-    zt_fail "the keyboard no longer reserves ZELTO_KBD_H while shown" \
-            "z_layer_set_exclusive_zone(..., ZELTO_KBD_H : 0)" "missing"
+    zt_fail "the keyboard no longer reserves its computed height while shown" \
+            "z_layer_set_exclusive_zone(app, s->visible ? surf_h : 0)" "missing"
+grep -q 'surf_h = strip ? ZELTO_KBD_TOTAL_H : ZELTO_KBD_H' \
+    "$REPO_ROOT/system/keyboard/main.c" ||
+    zt_fail "the keyboard's reserved height is no longer the strip-aware safe-area expression" \
+            "surf_h = strip ? ZELTO_KBD_TOTAL_H : ZELTO_KBD_H" "missing"
 
 zt_done
