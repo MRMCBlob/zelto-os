@@ -9,6 +9,7 @@
 // toplevel to fill what remains. See compositor-internals.md ("Surfaces & layers").
 #include "zcomp/layer.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -102,6 +103,31 @@ void zcomp_arrange(ZcompServer *server) {
         for (size_t a = 0; a < n; a++) {
             wlr_scene_layer_surface_v1_configure(in_layer[a]->scene, &full,
                                                  &usable);
+            // THE SURFACE'S SCREEN BOX, from the one process that knows it (P48).
+            // A Wayland client is never told where the compositor put its layer
+            // surface — the launcher is 720x1359 on a 720x1440 screen because of
+            // the bar's exclusive zone, and the keyboard slides — so a probe frame
+            // is in SURFACE coordinates and a screenshot is the SCREEN, and P47 had
+            // to delete an @Label region that tried to bridge them from the client
+            // side. zcomp is the bridge: here is every layer surface's namespace
+            // and its position + size in OUTPUT pixels, which is exactly the box a
+            // press-veil or glyph shot should be checked against. A log line, not a
+            // protocol: it costs one fprintf, needs no client code, and a catalogue
+            // that greps "[zcomp] surface" gets the screen box for free. Gated so a
+            // normal boot's serial log is not flooded.
+            if (getenv("ZELTO_SURFACE_LOG")) {
+                struct wlr_scene_layer_surface_v1 *scene = in_layer[a]->scene;
+                int lx = 0, ly = 0;
+                wlr_scene_node_coords(&scene->tree->node, &lx, &ly);
+                struct wlr_layer_surface_v1 *l = in_layer[a]->layer_surface;
+                fprintf(stderr,
+                        "[zcomp] surface ns='%s' layer=%d screen=%d,%d %dx%d "
+                        "exclusive=%d\n",
+                        l->namespace ? l->namespace : "?",
+                        (int)l->current.layer, lx, ly,
+                        l->surface->current.width, l->surface->current.height,
+                        l->current.exclusive_zone);
+            }
         }
     }
 
