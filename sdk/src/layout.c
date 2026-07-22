@@ -2,6 +2,7 @@
 // report a desired size (measure), then each parent distributes free main-axis
 // space to flexible children and aligns the cross axis (arrange).
 // See docs/guides/layout.md and docs/contributing/sdk-internals.md.
+#include <errno.h>   // program_invocation_short_name (glibc), for the hit-test stats
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -552,11 +553,20 @@ static void hit_stats_report(double us) {
         worst_us = us;
     }
     // Report on a cadence: a per-call line would itself dominate the cost.
+    //
+    // NAMED, because the whole System UI boots at once and every surface writes
+    // to the same serial log — an anonymous "worst 124 nodes" cannot say WHICH
+    // tree that was, which is the only interesting part of the number. P45 meant
+    // to add this and the edit silently did not apply, so its measurement had to
+    // be attributed by running one surface at a time. program_invocation_short_name
+    // is the binary's name (_GNU_SOURCE is on for the whole build), which is
+    // exactly the granularity wanted here: one process, one surface.
     if (calls % 32 == 0) {
         fprintf(stderr,
-                "zelto: hit-test stats: %lu calls, worst %lu nodes, "
+                "zelto: hit-test stats [%s]: %lu calls, worst %lu nodes, "
                 "worst %.1fus, this %lu nodes/%.1fus\n",
-                calls, worst_nodes, worst_us, z_hit_nodes, us);
+                program_invocation_short_name, calls, worst_nodes, worst_us,
+                z_hit_nodes, us);
     }
 }
 

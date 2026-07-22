@@ -290,6 +290,33 @@ ZS_MODIFIER(js_opacity,      Opacity(arg_f(ctx, argv[1], 1.0f), v);)
 ZS_MODIFIER(js_shadow,       Shadow(arg_f(ctx, argv[1], Z_ELEV_2), v);)
 ZS_MODIFIER(js_fill,         Fill(v);)
 ZS_MODIFIER(js_cover,        Cover(v);)
+// wrapText(string, width [, size]) — prose broken to a pixel column.
+//
+// A script app could not wrap text AT ALL before P46, which is why the JS Demo's
+// two paragraphs painted through the right edge of their cards: a plain Text
+// measures to one line however long, and the toolkit's WrapText needs the ZApp to
+// measure with at build time, which nothing exposed to JS. The catalogue audit
+// found it (ZELTO_PROBE_TAPS: 'Zelto Script: gestures, motion, text input, and
+// the system APIs.' wanted 728 units in a 680 box). This is the same
+// z_text_wrap() a C app calls; the width is required for the same reason.
+static JSValue js_wrap_text(JSContext *ctx, JSValueConst this_val, int argc,
+                            JSValueConst *argv) {
+    (void)this_val;
+    if (!require_render(ctx)) { return JS_EXCEPTION; }
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "wrapText(string, width [, size])");
+    }
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (!s) { return JS_EXCEPTION; }
+    float w = arg_f(ctx, argv[1], 0.0f);
+    ZFont size = (ZFont)arg_i(ctx, argv[2], Z_FONT_BODY);
+    JSValue v = zs_view_new(ctx, z_text_wrap(zs_current()->app, s,
+                                             &(ZWrapOpts){.width = w,
+                                                          .size = size}));
+    JS_FreeCString(ctx, s);
+    return v;
+}
+
 ZS_MODIFIER(js_text_shadow,  TextShadow(v);)
 ZS_MODIFIER(js_frame,        Frame(arg_f(ctx, argv[1], 0.0f),
                                    arg_f(ctx, argv[2], 0.0f), v);)
@@ -835,6 +862,7 @@ static const JSCFunctionListEntry zs_native_funcs[] = {
     JS_CFUNC_DEF("stack", 3, js_stack),
     JS_CFUNC_DEF("spacer", 0, js_spacer),
     JS_CFUNC_DEF("text", 1, js_text),
+    JS_CFUNC_DEF("wrapText", 2, js_wrap_text),
     JS_CFUNC_DEF("rect", 1, js_rect),
     JS_CFUNC_DEF("image", 1, js_image),
     JS_CFUNC_DEF("imageLoads", 1, js_image_loads),

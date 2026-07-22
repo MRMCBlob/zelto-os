@@ -86,6 +86,16 @@ export function Text(value) {
   return new View(N.text(String(value)));
 }
 
+// Prose broken to a pixel column. Text measures to ONE line however long the
+// string is — the toolkit does not wrap it, clip it, or warn — so a paragraph in
+// a fixed-width card paints straight through the edge. A script app had no way
+// to wrap at all before P46, which is why the JS Demo's two paragraphs did
+// exactly that. `width` is required for the same reason it is in C: the split
+// happens at build time, against the real font, before any layout pass exists.
+export function WrapText(value, width, size) {
+  return new View(N.wrapText(String(value), width, size));
+}
+
 export function Rect(opts = {}) {
   return new View(N.rect(opts));
 }

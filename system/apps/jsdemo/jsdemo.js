@@ -11,10 +11,11 @@
 // ask the user a question.
 import {
   useState, useEffect, useRef, useAnimatedValue, useTextField, navigation,
+  appSize,
 } from "zelto";
 import {
-  VStack, HStack, Text, Button, Rect, Spacer, Scroll, TextField, Navigator,
-  Color, Font, Weight, Align, Elevation, Spring, Pan,
+  VStack, HStack, Text, WrapText, Button, Rect, Spacer, Scroll, TextField,
+  Navigator, Color, Font, Weight, Align, Elevation, Spring, Pan,
 } from "zelto/ui";
 import * as storage from "zelto/storage";
 import * as net from "zelto/net";
@@ -33,8 +34,19 @@ const NOTE = "jsdemo.note";
 const ENDPOINT = () =>
   storage.get("jsdemo.endpoint", "http://10.0.2.2:8080/hello");
 
+// The prose columns, DERIVED rather than guessed: the screen less the page's own
+// padding, and less a card's padding again for prose inside one. P46's catalogue
+// audit caught both paragraphs below painting through their right edge — a Text
+// measures to one line however long it is — and a script app had no way to wrap
+// until wrapText() was bound. Reading the width from appSize() is what keeps this
+// from becoming another literal that is right at 720 and wrong everywhere else.
+const PAGE_PAD = 20;
+const CARD_PAD = 14;
+const pageTextW = () => appSize().width - 2 * PAGE_PAD;
+const cardTextW = () => appSize().width - 2 * PAGE_PAD - 2 * CARD_PAD;
+
 function Card(title, body, tint) {
-  return VStack({ spacing: 8, padding: 14 }, [
+  return VStack({ spacing: 8, padding: CARD_PAD }, [
     Text(title).font(Font.footnote).color(Color.textMuted),
     body,
   ])
@@ -133,10 +145,10 @@ function HomeScreen() {
   };
 
   return Scroll(
-    VStack({ spacing: 14, padding: 20 }, [
+    VStack({ spacing: 14, padding: PAGE_PAD }, [
       Text("JS Demo").font(Font.title).weight(Weight.bold).color(Color.text),
-      Text("Zelto Script: gestures, motion, text input, and the system APIs.")
-        .font(Font.subhead)
+      WrapText("Zelto Script: gestures, motion, text input, and the system APIs.",
+               pageTextW(), Font.subhead)
         .color(Color.textMuted),
 
       Card(
@@ -185,8 +197,8 @@ function HomeScreen() {
               }
             })
             .onLongPress(() => setPinned((p) => !p)),
-          Text("A tap, a drag and a hold on one view — the recognizer sorts them out.")
-            .font(Font.caption)
+          WrapText("A tap, a drag and a hold on one view — the recognizer sorts "
+                   + "them out.", cardTextW(), Font.caption)
             .color(Color.textFaint),
         ]),
         Color.surface,

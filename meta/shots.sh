@@ -69,6 +69,39 @@ SEED=""
 # photograph an app that exists ONLY because it was installed.
 ZAP=""
 
+# WHAT THE PICTURE MUST CONTAIN — set EXPECT (an extended regex) or NOMARKER (a
+# reason) before each run_shot. One of the two is REQUIRED; the lint at the foot
+# of this file fails the run if a shot declares neither.
+#
+# WHY. P45 found `11a-notification-center` photographing an EMPTY Notification
+# Center: the recipe opened the panel and never posted a notification, so the
+# frame was a panel saying "No notifications" under a name promising cards. Its
+# delta was a healthy 6.94%, entirely from the blurred wallpaper behind it. That
+# is the whole problem with judging a catalogue by deltas — A SHOT OF THE WRONG
+# SCREEN HAS A PERFECTLY HEALTHY DELTA — and it was caught by eye, once, out of
+# 74 frames.
+#
+# So each shot now states what it claims to show, and the same boot that takes
+# the picture checks it. Every libzelto surface dumps its laid-out text under
+# ZELTO_PROBE_TAPS (sdk/src/app.c), so EXPECT is matched against the strings
+# THE SURFACE ACTUALLY BUILT, not against pixels: a screen that renders the
+# wrong content fails even if it renders it beautifully.
+#
+# NOMARKER is for the shots whose claim genuinely is not textual — a press veil,
+# a frame frozen mid-slide, a status-bar glyph. Those need the pixel checks
+# instead (meta/pngdiff.py --expect-box against a control at the same state);
+# writing the reason down is what stops "no marker" from becoming the default.
+# MUSTNOT is the other half of the same question. Several frames are named for a
+# state whose evidence is what is NOT on screen: home page 2 is "the page without
+# the widgets on it", and a filtered App Library is "the list with Store missing".
+# A positive marker cannot express either, and both are exactly the kind of shot
+# that quietly reverts to photographing page 1.
+EXPECT=""
+MUSTNOT=""
+NOMARKER=""
+MARKERLESS=()
+MARKER_FAIL=0
+
 # run_shot NAME CAPTION DELAY [ENV=VAL ...]
 #   NAME     out/shots/NAME.png + gallery id
 #   CAPTION  human description (how the state is reached)
@@ -76,6 +109,18 @@ ZAP=""
 #   ENV=VAL  extra environment for run-sim.sh (test-hooks, SIM_APP, SIM_EXTRA, ...)
 # Pre-seed the brokered settings store by setting $SEED before the call; install a
 # script package first by setting $ZAP.
+# "<process>|<string>" for every string a shot's surfaces laid out ON SCREEN.
+#
+# Off-screen strings are dropped, and that is what makes a marker mean something:
+# the home carousel builds EVERY page and slides the strip, so "App Library" is in
+# the tree of every home shot whether or not that page is the one being
+# photographed. With the offscreen lines filtered out, a marker asserts the thing
+# is in the PICTURE rather than merely in the tree.
+probe_says() {
+    grep "zelto: probe text " "$1" | grep -v ' offscreen$' |
+        sed -n "s/.*zelto: probe text \[\([^]]*\)\] '\(.*\)' x=.*/\1|\2/p"
+}
+
 run_shot() {
     local name="$1" caption="$2" delay="$3"; shift 3
     # Register the shot in the gallery BEFORE the ONLY filter. The contact sheet is
@@ -84,6 +129,15 @@ run_shot() {
     # emit the WHOLE sheet. Registering after the filter meant `ONLY=x meta/shots.sh`
     # rewrote index.html with a single card and threw the catalogue away.
     GALLERY+=("$name|$caption")
+    # Declared before the ONLY filter, so a filtered run cannot hide a shot that
+    # never said what it contains.
+    local expect="$EXPECT" mustnot="$MUSTNOT" nomarker="$NOMARKER"
+    EXPECT=""; MUSTNOT=""; NOMARKER=""
+    if [ -z "$expect" ] && [ -z "$mustnot" ] && [ -z "$nomarker" ]; then
+        echo "    !! $name declares neither EXPECT nor NOMARKER"
+        MARKERLESS+=("$name")
+        MARKER_FAIL=1
+    fi
     if [ -n "$ONLY" ] && [[ "$name" != *"$ONLY"* ]]; then SEED=""; ZAP=""; return 0; fi
 
     local dir="$TMP/$name"
@@ -138,6 +192,7 @@ run_shot() {
         env "$@" \
             SKIP_BUILD=1 HEADLESS=1 SHOT="$png" SHOT_DELAY="$delay" \
             ZELTO_DATA_DIR="$data" SIM_RUNTIME_DIR="$xdg" \
+            ZELTO_PROBE_TAPS=1 ZELTO_PROBE_AT="$(( delay * 1000 - 250 ))" \
             "$REPO_ROOT/meta/run-sim.sh" >"$dir/log.$attempt" 2>&1 || true
         if [ -s "$png" ]; then break; fi
         [ "$attempt" = 1 ] && echo "    .. no frame; re-booting this shot once"
@@ -148,6 +203,41 @@ run_shot() {
     else
         echo "    !! MISSING after $attempt boots (see $dir/log)"
     fi
+
+    # Is the thing the NAME promises actually in the picture? Matched against the
+    # strings the surfaces built on this very boot, so "ok" stops meaning "a PNG
+    # exists".
+    #
+    # The probe samples 250ms before grim, not a second before. That gap matters
+    # more than it sounds: at a second out, the Settings drill-downs were still
+    # MID-PUSH (the Navigator draws BOTH screens during a transition, so the root
+    # list was legitimately on screen) and the script demo's notification had not
+    # reached the shade yet. Three shots were reported as showing the wrong thing
+    # while their PNGs were correct. A description of a frame has to be taken when
+    # the frame is.
+    if [ -n "$expect" ] && [ -s "$png" ]; then
+        # Matched against "<process>|<string>" lines, so a marker can name WHICH
+        # surface has to say it. The launcher's widget and the lock screen both
+        # draw a clock; "a clock is on screen" is not the claim "the lock screen
+        # is up".
+        if probe_says "$dir/log" | grep -Eq "$expect"; then
+            echo "    contains: $expect"
+        else
+            echo "    !! $name does NOT contain what it claims: /$expect/"
+            echo "       (see $dir/log — grep \"probe text\" for what it DOES say)"
+            MARKERLESS+=("$name: missing /$expect/")
+            MARKER_FAIL=1
+        fi
+    fi
+    if [ -n "$mustnot" ] && [ -s "$png" ]; then
+        if probe_says "$dir/log" | grep -Eq "$mustnot"; then
+            echo "    !! $name shows what it must NOT: /$mustnot/"
+            MARKERLESS+=("$name: shows /$mustnot/")
+            MARKER_FAIL=1
+        else
+            echo "    absent (as claimed): $mustnot"
+        fi
+    fi
     SEED=""
     ZAP=""
 }
@@ -155,42 +245,53 @@ run_shot() {
 # ===========================================================================
 # HOME SCREEN (the launcher's bento grid — env hooks in system/launcher/main.c)
 # ===========================================================================
+EXPECT='zelto-launcher\|All clear' \
 run_shot 01-home-page1 "Home, page 1 (default seed: 3 widgets + 6 app icons)" 6
 
 # Page 2 / carousel: force tiny 2-row pages so the default set overflows past one
 # page, then settle on page 2 / freeze a flip mid-slide / show the overflow.
+EXPECT='zelto-launcher\|Notepad' MUSTNOT='zelto-launcher\|All clear' \
 run_shot 02-home-page2 "Home, page 2 (ROWS_PER_PAGE=2 forces overflow; HOME_PAGE=1)" 6 \
     ZELTO_HOME_ROWS_PER_PAGE=2 ZELTO_HOME_PAGE=1
+NOMARKER='a flip is a POSITION, not content: both pages are built either way and the shot is of the strip part-way between them. Verified by pixel diff against 02, not by a string.' \
 run_shot 03-home-flip-mid "Carousel flip mid-slide (page 0->1 frozen 7 frames in)" 6 \
     ZELTO_HOME_ROWS_PER_PAGE=2 ZELTO_HOME_PAGE_FROM=0 ZELTO_HOME_PAGE=1 \
     ZELTO_HOME_ANIM_FRAMES=7
+EXPECT='zelto-launcher\|All clear' MUSTNOT='zelto-launcher\|Store' \
 run_shot 04-home-overflow "Overflowing layout + page dots (ROWS_PER_PAGE=2)" 6 \
     ZELTO_HOME_ROWS_PER_PAGE=2
 
 # Rearrange mode + direct manipulation.
+EXPECT='zelto-launcher\|Done' \
 run_shot 05-home-rearrange "Rearrange mode: raster, remove badges, Done bar" 6 \
     ZELTO_HOME_REARRANGE=1 ZELTO_HOME_HELD=3
+EXPECT='zelto-launcher\|Done' \
 run_shot 06-home-ghost-lift "Rearrange: an icon lifted as a ghost under the finger" 6 \
     ZELTO_HOME_REARRANGE=1 ZELTO_HOME_HELD=3 \
     ZELTO_HOME_GHOST_X=360 ZELTO_HOME_GHOST_Y=760
+EXPECT='zelto-launcher\|Done' \
 run_shot 07-home-reflow-mid "Rearrange: neighbours reflowing mid-drag (frozen 6 frames)" 6 \
     ZELTO_HOME_REARRANGE=1 ZELTO_HOME_HELD=3 \
     ZELTO_HOME_GHOST_X=360 ZELTO_HOME_GHOST_Y=300 ZELTO_HOME_ANIM_FRAMES=6
+EXPECT='zelto-launcher\|Done' \
 run_shot 08-home-landing-mid "Rearrange: released ghost mid snap-back (frozen 6 frames)" 6 \
     ZELTO_HOME_REARRANGE=1 ZELTO_HOME_HELD=3 \
     ZELTO_HOME_GHOST_X=360 ZELTO_HOME_GHOST_Y=300 ZELTO_HOME_ANIM_FRAMES=6 \
     ZELTO_HOME_LANDING=1
+EXPECT='zelto-launcher\|Done' MUSTNOT='zelto-launcher\|All clear' \
 run_shot 09-home-crosspage "Rearrange: ghost held in the right edge gutter on page 1" 6 \
     ZELTO_HOME_ROWS_PER_PAGE=2 ZELTO_HOME_REARRANGE=1 ZELTO_HOME_PAGE=1 \
     ZELTO_HOME_HELD=4 ZELTO_HOME_GHOST_X=690 ZELTO_HOME_GHOST_Y=300
 
 # App Library: the LAST page of the home carousel (the swipe-up drawer is gone).
 # Reached by paging, so the shot just settles the carousel on that page.
+EXPECT='zelto-launcher\|Store' \
 run_shot 10-app-library "App Library: last carousel page (every installed app)" 6 \
     ZELTO_HOME_PAGE=1
 # Searching: the field is focused, so the system keyboard is up, the page has
 # inset itself by KBD_H (the compositor does not shrink the home window) and the
 # dots + dock have stood down.
+EXPECT='zelto-launcher\|App Library' MUSTNOT='zelto-launcher\|Store' \
 run_shot 10a-app-library-search "App Library search: filtered, keyboard raised" 7 \
     ZELTO_HOME_PAGE=1 ZELTO_HOME_SEARCH=not
 
@@ -203,6 +304,7 @@ run_shot 10a-app-library-search "App Library search: filtered, keyboard raised" 
 # areas moved the status bar from 40 units to 81. Every icon on the home screen
 # dropped by exactly that 41. Measured on the re-shot frame: the Notepad tile now
 # spans y 449..549, so 501 is its centre.
+NOMARKER='a touch-down VEIL is a wash of alpha over a tile, not a string. Checked with meta/pngdiff.py --expect-box against 01 at the same state.' \
 run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
     ZELTO_PRESS_X=447 ZELTO_PRESS_Y=501
 # The Airplane Mode SWITCH — row 1 of the first card after P41's regrouping.
@@ -242,6 +344,7 @@ run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
 # nearly right is exactly how this shot has rotted every phase since P41. The rule
 # is unchanged and is the only thing that catches it: MEASURE, never look.
 #   meta/pngdiff.py 34-app-settings.png 41-settings-press.png --expect-box 40 224 640 81
+EXPECT='zelto-settings\|Network' \
 run_shot 41-settings-press "Settings: a detail row pressed (touch-down veil)" 8 \
     SIM_APP=zelto-settings ZELTO_PRESS_X=360 ZELTO_PRESS_Y=183
 
@@ -251,6 +354,7 @@ run_shot 41-settings-press "Settings: a detail row pressed (touch-down veil)" 8 
 # The top edge now hosts TWO pull-downs, split left/right (P40 stage 2), so it
 # takes two shots: the right half brings down the Control Center, the left half
 # the Notification Center.
+EXPECT='zelto-shade\|Airplane' \
 run_shot 11-control-center "Control Center: round toggle grid (pulled from top right)" 6 \
     ZELTO_SHADE_OPEN=cc
 # ZELTO_BANNER_DEMO=3 seeds the cards. Without it this shot opened the panel and
@@ -259,49 +363,62 @@ run_shot 11-control-center "Control Center: round toggle grid (pulled from top r
 # an empty panel. No delta threshold can catch that; only asking what the picture
 # is supposed to contain can. (test_prose_overflow_sim asserts the same three
 # cards are present, so this shot cannot quietly empty again.)
+EXPECT='zelto-shade\|Grocery list' \
 run_shot 11a-notification-center "Notification Center: clock + cards (pulled from top left)" 6 \
     ZELTO_SHADE_OPEN=nc ZELTO_BANNER_DEMO=3
+NOMARKER='the HUD is a glyph and a level bar; it draws no text at all. Its value is asserted instead by test_power_services_sim, off the line zelto-volume logs.' \
 SEED='sys.volume\t7\n' run_shot 12-volume-hud "Volume rocker HUD (shown at level 7)" 6 \
     ZELTO_VOLUME_SHOW=1
 
+EXPECT='zelto-keyboard\|space' \
 run_shot 13-keyboard "On-screen keyboard (QWERTY) over Notepad" 8 \
     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad
+EXPECT='zelto-keyboard\|ABC' MUSTNOT='zelto-keyboard\|q' \
 run_shot 14-keyboard-symbols "On-screen keyboard, symbols layer" 6 \
     ZELTO_KBD_SHOW=1 ZELTO_KBD_SYMBOLS=1
 
 # Lock lifecycle: seed the broker so zelto-lock arms short idle timeouts; headless
 # has no seat input, so it idles from boot into each phase deterministically.
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t2\nsys.idle_lock_s\t999\nsys.idle_off_s\t9999\n' \
+NOMARKER='a dim scrim is alpha over the screen behind it; nothing is added to the tree. The dim level is asserted by test_power_services_sim off zelto-dims own log line.' \
     run_shot 15-lock-dimmed "Pre-lock dim scrim (idle past idle_dim_s)" 7
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\n' \
+EXPECT='zelto-lock\|' \
     run_shot 16-lock-screen "Lock screen: display clock high, notification cards" 9 \
     ZELTO_LOCK_NOTIFS=3
 # With a passcode set the swipe reveals the keypad instead of unlocking, so the
 # lock screen carries the one line of warning it otherwise does without.
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\nsys.passcode\t1234\n' \
+EXPECT='zelto-lock\|' \
     run_shot 16a-lock-passcode-hint "Lock screen with a passcode set (swipe reveals the keypad)" 9 \
     ZELTO_LOCK_NOTIFS=2
 # The unlock gesture itself: the whole plate lifted 1:1 with the finger and fading
 # as it rises. Frozen by ZELTO_LOCK_DRAG (px, negative = up) — the drag IS the
 # transition, so a shot after the release would show an unlocked screen instead.
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\n' \
+EXPECT='zelto-lock\|' \
     run_shot 16b-lock-unlock-drag "Lock screen lifted toward the unlock swipe (frozen -160px)" 9 \
     ZELTO_LOCK_NOTIFS=3 ZELTO_LOCK_DRAG=-160
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t6\n' \
-    run_shot 17-lock-off "Screen-off scrim (idle past idle_off_s while locked)" 11
+NOMARKER='the screen-off scrim is opaque black over everything; a marker would assert the presence of something this frame exists to hide.' \
+    run_shot 17-lock-off "Screen-off scrim (idle past idle_off_s while locked)" 11     ALLOW_FLAT=1
 
 # App Switcher: three apps left running, then the overlay on top. Plus its two
 # gestures, frozen: the deck paged between cards, and the centred card lifted
 # toward the flick-up close.
+EXPECT='zelto-recents\|' \
 run_shot 18-switcher "App Switcher: card deck (3 running apps)" 9 \
     SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1
+EXPECT='zelto-recents\|' \
 run_shot 18a-switcher-paging "App Switcher paged between two cards (frozen 1.5)" 9 \
     SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1 \
     ZELTO_SWITCHER_SCROLL=1.5
+EXPECT='zelto-recents\|' \
 run_shot 18b-switcher-close "App Switcher: centred card flicked up to close (frozen)" 9 \
     SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1 \
     ZELTO_SWITCHER_LIFT=-140
 # Permission consent modal (spawned standalone with app_id + perm).
+EXPECT='zelto-consent\|Allow' \
 run_shot 19-consent "Permission consent dialog (Allow / Deny modal)" 7 \
     SIM_CONSENT="os.zelto.pinger notifications"
 # The SHARE SHEET. It had no shot at all before P41 — a whole system surface with
@@ -309,21 +426,25 @@ run_shot 19-consent "Permission consent dialog (Allow / Deny modal)" 7 \
 # through five design phases. Spawned standalone over a sharing app with the
 # candidate app_ids zsysd would have resolved, plus the ZELTO_SHARE_* pair zsysd
 # passes it in the environment so the preview row has something to preview.
+EXPECT='zelto-chooser\|Zelto OS design tokens' \
 run_shot 19a-share-sheet "Share sheet: preview, target row, actions (bottom sheet)" 8 \
     SIM_APP=zelto-notes \
     SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
     ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens"
+EXPECT='zelto-chooser\|Zelto OS design tokens' \
 run_shot 19b-share-sheet-enter "Share sheet mid rise + backdrop fade (frozen 0.5)" 8 \
     SIM_APP=zelto-notes \
     SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
     ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens" \
     ZELTO_CHOOSER_ENTER=0.5
+EXPECT='zelto-chooser\|Zelto OS design tokens' \
 run_shot 19c-share-sheet-dismiss "Share sheet dragged down toward dismissal (frozen)" 8 \
     SIM_APP=zelto-notes \
     SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
     ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens" \
     ZELTO_CHOOSER_DRAG=120
 # Notification banner: pinger auto-posts, consent auto-allows -> shade heads-up.
+EXPECT='zelto-shade\|' \
 run_shot 20-banner "Heads-up notification banner (auto-posted + auto-granted)" 10 \
     SIM_APP=zelto-pinger ZELTO_PINGER_POST=1 ZELTO_CONSENT_AUTO=allow
 
@@ -332,20 +453,25 @@ run_shot 20-banner "Heads-up notification banner (auto-posted + auto-granted)" 1
 # flight via a ZELTO_*_ENTER=<0..1> hook, so the slide+fade is shot-verifiable.
 # ---------------------------------------------------------------------------
 SEED='sys.volume\t7\n' \
+NOMARKER='as 12: the volume HUD carries no text, and this frame is about how far up it has slid.' \
     run_shot 42-volume-enter "Volume HUD mid slide+fade entrance (frozen 0.5)" 6 \
     ZELTO_VOLUME_ENTER=0.5
+EXPECT='zelto-consent\|Allow' \
 run_shot 43-consent-enter "Consent modal mid slide-up+fade entrance (frozen 0.5)" 7 \
     SIM_CONSENT="os.zelto.pinger notifications" ZELTO_CONSENT_ENTER=0.5
 # Deterministic: ZELTO_BANNER_DEMO fabricates the banner in the shade sink, so the
 # entrance is verifiable without the flaky post->consent->grant->deliver dance.
+EXPECT='zelto-shade\|Ping' \
 run_shot 44-banner-enter "Heads-up banner mid slide+fade entrance (frozen 0.5)" 6 \
     ZELTO_BANNER_DEMO=1 ZELTO_BANNER_ENTER=0.5
+EXPECT='zelto-launcher\|' \
 run_shot 45-toast-enter "Launcher toast mid slide-up+fade entrance (frozen 0.5)" 6 \
     ZELTO_TOAST_ENTER=0.5
 
 # State-change cross-fades (P32 item 2): a toggle's on/off fill animates instead
 # of hard-swapping — pinned mid cross-fade via ZELTO_QS_ANIM. Plus the P31 press
 # flash verified over a bottom-nav button (ZELTO_PRESS_APP scopes it to the nav).
+EXPECT='zelto-shade\|Airplane' \
 run_shot 46-qs-crossfade "Control Center toggles mid on/off cross-fade (frozen 0.5)" 6 \
     ZELTO_SHADE_OPEN=cc ZELTO_QS_ANIM=0.5
 # NB the ZELTO_SETTINGS_SCREEN=network. P42 turned Settings into a drill-down, so
@@ -353,6 +479,7 @@ run_shot 46-qs-crossfade "Control Center toggles mid on/off cross-fade (frozen 0
 # all — this shot kept its hook, kept resolving, and quietly went back to
 # photographing a screen with nothing on it that could cross-fade. A toggle shot
 # has to name the screen the toggles moved to.
+EXPECT='zelto-settings\|' \
 run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)" 8 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=network ZELTO_QS_ANIM=0.5
 # Press feedback on a SYSTEM OVERLAY rather than on an app. This used to aim at
@@ -370,17 +497,20 @@ run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)
 # the caps stood 30pt tall, under the 44pt touch-target minimum. The home row's
 # band is surface-local 102..179, so its centre is 140. Verified by measurement,
 # not by assuming the old number still landed on a key.
+EXPECT='zelto-keyboard\|space' \
 run_shot 48-key-press "Keyboard: a key pressed (touch-down highlight veil)" 8 \
     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad \
     ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=364 ZELTO_PRESS_Y=140
 
 # App-open continuity (P32 item 3b): the tapped tile drifts toward centre while the
 # rest of home fades — the launch hand-off, frozen mid-flight.
+EXPECT='zelto-launcher\|All clear' \
 run_shot 49-home-launch "App-open cue: tapped tile drifts + home fades (frozen 0.6)" 6 \
     ZELTO_HOME_LAUNCH=1
 
 # In-app Navigator push, unified on the STANDARD token with a coordinated slide +
 # cross-fade (P32 item 3a), frozen mid-push.
+EXPECT='zelto-hello\|' \
 run_shot 50-nav-push "Navigator push: detail slides + cross-fades in (frozen 0.45)" 8 \
     SIM_APP=zelto-hello ZELTO_NAV_PUSH=0.45
 
@@ -388,6 +518,7 @@ run_shot 50-nav-push "Navigator push: detail slides + cross-fades in (frozen 0.4
 # collapsed, so the SAME ENTER=0.5 request that half-fades the HUD in shot 42 now
 # shows it fully seated — a still A/B proof that springs are suppressed.
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
+NOMARKER='as 12/42: no text on the HUD. The whole claim is that the entrance spring is COLLAPSED, which is a position, and it is read against 42 as an A/B pair.' \
     run_shot 51-reduce-motion "Reduce Motion: volume entrance collapsed (vs 42)" 6 \
     ZELTO_VOLUME_ENTER=0.5
 
@@ -399,29 +530,37 @@ SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
 # ---------------------------------------------------------------------------
 # Rubber-band at a scroll edge: the Settings list over-pulled off the top, the
 # gap resisting with the diminishing-returns curve (ZELTO_SCROLL_OVERPULL px).
+EXPECT='zelto-settings\|' \
 run_shot 52-scroll-overpull "Scroll edge rubber-band: list over-pulled off the top" 8 \
     SIM_APP=zelto-settings ZELTO_SCROLL_OVERPULL=160
 # Swipe-to-dismiss transient surfaces, each dragged partway toward dismissal.
 SEED='sys.volume\t7\n' \
+NOMARKER='as 12: no text on the HUD; the claim is the drag offset.' \
     run_shot 53-volume-dismiss "Volume HUD dragged up toward swipe-dismiss (frozen)" 6 \
     ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
+EXPECT='zelto-shade\|Ping' \
 run_shot 54-banner-dismiss "Heads-up banner dragged up toward swipe-dismiss (frozen)" 6 \
     ZELTO_BANNER_DEMO=1 ZELTO_BANNER_DRAG=-64
+EXPECT='zelto-launcher\|' \
 run_shot 55-toast-dismiss "Launcher toast dragged down toward swipe-dismiss (frozen)" 6 \
     ZELTO_TOAST_ENTER=1 ZELTO_TOAST_DRAG=60
 # Consent: dragged down partway (a downward flick past threshold maps to Deny).
+EXPECT='zelto-consent\|Allow' \
 run_shot 56-consent-drag "Consent modal dragged down toward flick-to-Deny (frozen)" 7 \
     SIM_CONSENT="os.zelto.pinger notifications" ZELTO_CONSENT_DRAG=90
 # Interruptible Navigator back-swipe: the top screen dragged partway back, the
 # incoming screen sliding under it (ZELTO_NAV_BACK=<0..1> = how far the finger is).
+EXPECT='zelto-hello\|' \
 run_shot 57-nav-back-swipe "Navigator back-swipe tracking the finger (frozen 0.5)" 8 \
     SIM_APP=zelto-hello ZELTO_NAV_BACK=0.5
 # Control Center over-pulled past fully-open, resisting with the rubber-band.
+EXPECT='zelto-shade\|Airplane' \
 run_shot 58-shade-overpull "Control Center pulled past open, rubber-banding at the limit (frozen)" 6 \
     ZELTO_SHADE_PULL=1.25
 # Reduce Motion A/B: the release animation collapses, but the 1:1 drag itself is
 # intact — the SAME volume drag as 53, still shown at the frozen finger position.
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
+NOMARKER='as 53: the HUD has no text and the claim is where the finger left it.' \
     run_shot 60-reduce-drag "Reduce Motion: drag tracks finger, release would snap (vs 53)" 6 \
     ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
 # Hit-test on a MOVING subtree: the Control Center is frozen OVER-PULLED (slid
@@ -431,6 +570,7 @@ SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
 # tappable where it visually is, not at its un-shifted layout home. It aims at an
 # OFF toggle (Lock, row 2 centre): the veil is a white wash, so on an ON toggle —
 # a near-white PRIMARY disc — there would be nothing to see.
+EXPECT='zelto-shade\|Lock' \
 run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset Lock toggle" 6 \
     ZELTO_SHADE_PULL=1.18 ZELTO_PRESS_APP=shade_body \
     ZELTO_PRESS_X=360 ZELTO_PRESS_Y=232
@@ -439,27 +579,37 @@ run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset Lo
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
 # ===========================================================================
 SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t4\nsys.brightness\t5\n' \
+NOMARKER='the status bars radios and battery are GLYPHS (system/common/glyphs.h); its only text is the clock, which every frame has. The states are seeded settings and read as marks.' \
     run_shot 21-bar-wifi-bright "Status bar: full cellular + Wi-Fi, brightness high" 6
 # Weak cellular: the unlit bars stay drawn (TEXT_FAINT), so the mark keeps its
 # silhouette at every level instead of shrinking.
 SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t1\nsys.brightness\t5\n' \
+NOMARKER='as 21: a cellular level is four drawn bars, not a string.' \
     run_shot 21a-bar-signal-low "Status bar: one cellular bar lit of four" 6
 # Airplane mode REPLACES the bars with the plane (the radios are off, so a signal
 # reading beside it would state the opposite of the truth).
 SEED='sys.wifi\t0\nsys.airplane\t1\nsys.brightness\t2\n' \
+NOMARKER='as 21: airplane mode replaces the bars with a drawn plane.' \
     run_shot 22-bar-airplane "Status bar: airplane mode, brightness low" 6
 SEED='sys.battery_pct\t8\nsys.battery_charging\t0\n' \
+NOMARKER='as 21: the battery is a drawn cell; the percentage is not printed in the bar.' \
     run_shot 23-bar-lowbatt "Status bar: low battery (8%)" 6 ZELTO_FAKE_BATTERY=0
 SEED='sys.battery_pct\t64\nsys.battery_charging\t1\n' \
+NOMARKER='as 21: charging is a bolt drawn inside the battery cell.' \
     run_shot 24-bar-charging "Status bar: charging (64%)" 6 ZELTO_FAKE_BATTERY=0
 
 # ===========================================================================
 # SHIPPED APPS (auto-launched via SIM_APP)
 # ===========================================================================
+EXPECT='zelto-cards\|' \
 run_shot 30-app-cards    "App: Cards"    8 SIM_APP=zelto-cards
+EXPECT='zelto-notes\|' \
 run_shot 31-app-notes    "App: Notes"    8 SIM_APP=zelto-notes
+EXPECT='zelto-notepad\|Add note' \
 run_shot 32-app-notepad  "App: Notepad"  8 SIM_APP=zelto-notepad
+EXPECT='zelto-fetch\|' \
 run_shot 33-app-fetch    "App: Fetch"    8 SIM_APP=zelto-fetch
+EXPECT='zelto-settings\|Network' \
 run_shot 34-app-settings "App: Settings, root list (drill-down rows)" 8 \
     SIM_APP=zelto-settings
 # The DETAIL screens behind the root's chevrons (P42). Settings used to be one
@@ -467,17 +617,24 @@ run_shot 34-app-settings "App: Settings, root list (drill-down rows)" 8 \
 # scrolled to its end" (ZELTO_SCROLL_TO=1500) — a shot that reviewed the same
 # screen twice. Now each subject is its own pushed screen, reached by an env hook
 # rather than a tap so the catalogue stays reproducible.
+EXPECT='zelto-settings\|Brightness Boost' \
 run_shot 34a-settings-display "Settings: Display & Sound (brightness SLIDER)" 8 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=display
+EXPECT='zelto-settings\|Dim After' \
 run_shot 34b-settings-lock "Settings: Lock Screen detail (toggles + steppers)" 8 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=lock
+EXPECT='zelto-settings\|Shown on the Home and Lock screens\.' \
 run_shot 34c-settings-wallpaper "Settings: Wallpaper picker detail screen" 8 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=wallpaper
+EXPECT='zelto-store\|' \
 run_shot 35-app-store    "App: Store"    8 SIM_APP=zelto-store
+EXPECT='zelto-hello\|' \
 run_shot 36-app-hello    "App: Rows (SDK sample)" 8 SIM_APP=zelto-hello
+EXPECT='zelto-pinger\|' \
 run_shot 37-app-pinger   "App: Pinger"   8 SIM_APP=zelto-pinger
 # A Zelto Script app: one shared runtime binary, so it is launched by .js path
 # (SIM_SCRIPT) rather than by binary name (SIM_APP).
+EXPECT='zelto-script\|' \
 run_shot 38-app-jsdemo   "App: JS Demo (Zelto Script)" 9 \
     SIM_SCRIPT="$REPO_ROOT/system/apps/jsdemo/jsdemo.js"
 
@@ -496,39 +653,49 @@ JSDEMO="$REPO_ROOT/system/apps/jsdemo/jsdemo.js"
 # onPan: the card dragged sideways, caught MID-drag (it springs home on release,
 # so a shot after the release would show nothing). Proves the JS closure is
 # driving the spring 1:1 from the finger.
+EXPECT='zelto-script\|' \
 run_shot 70-script-pan "Script: card dragged by onPan (mid-drag, finger-tracked)" 7 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_DRAG="180 418 520 418 6000"
 
 # onLongPress: a hold in place past the threshold toggles "Pinned" (and suppresses
 # the tap the release would otherwise have produced).
+EXPECT='zelto-script\|' \
 run_shot 71-script-longpress "Script: onLongPress pinned the card (tap suppressed)" 11 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 418 900"
 
 # Navigator: a pushed screen, with its own hook state and the props it was pushed
 # with. Back (edge-swipe / Escape) pops it without the script's help.
+EXPECT='zelto-script\|' \
 run_shot 72-script-nav "Script: Navigator pushed a second screen" 11 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 916 100"
 
 # TextField: tapping the field focuses it and raises the system on-screen keyboard
 # (P21) — the app handles no keys at all.
+EXPECT='zelto-keyboard\|space' \
 run_shot 73-script-textfield "Script: TextField focused, on-screen keyboard up" 12 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="360 557 100"
 
 # Networking: the script awaits the `network` grant (the system consent modal runs
 # on the live loop), then fetches over the async state machine. SIM_NET=1 serves
 # the endpoint locally; the card shows the real 200 + body.
+EXPECT='zelto-script\|' \
 run_shot 74-script-net "Script: fetch() after awaiting the network grant" 14 \
     SIM_SCRIPT="$JSDEMO" SIM_NET=1 ZELTO_CONSENT_AUTO=allow \
     ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="190 697 100"
 
 # Notifications: posted by the script through the same broker a C app uses, with an
 # action button that routes back to it. Captured as the heads-up banner.
+# The press is LATE on purpose: a heads-up banner dwells for a few seconds and
+# then stands down into the Notification Center, so tapping Notify early enough
+# to be comfortable means photographing the screen after the banner has gone.
+EXPECT='zelto-shade\|' \
 run_shot 75-script-notify "Script: notification posted (heads-up banner + action)" 13 \
     SIM_SCRIPT="$JSDEMO" ZELTO_CONSENT_AUTO=allow \
-    ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="524 697 100"
+    ZELTO_TAP_APP=os.zelto.jsdemo ZELTO_TAP_LABEL=Notify ZELTO_TAP_AT=11000
 
 # Settings: the script writes sys.mute and the broker echoes the change back to its
 # observer, which recolours the row — the same live fan-out the shade gets.
+EXPECT='zelto-script\|' \
 run_shot 76-script-settings "Script: wrote sys.mute, observer echoed it back live" 11 \
     SIM_SCRIPT="$JSDEMO" ZCOMP_INPUT_DELAY=6500 ZCOMP_HOLD="527 758 100"
 
@@ -537,9 +704,16 @@ run_shot 76-script-settings "Script: wrote sys.mute, observer echoed it back liv
 # the app only from what the installer left there — a script app running from
 # /var/zelto, whose code was signature- and hash-verified before it ever ran. The
 # tap lands on its tile, which exists only because the install worked.
+#
+# BY LABEL, NOT BY COORDINATE (P46). This held ZCOMP_HOLD="447 460", and the
+# catalogue audit found the Greeter's tile is at x=239 y=560 — so the hold landed
+# on nothing, the app never launched, and the shot photographed a home screen
+# with a tile on it under a name promising the app RUNNING. ZELTO_TAP_LABEL asks
+# the layout where "Greeter" is, so it moves when the tile does.
 ZAP="$REPO_ROOT/system/apps/greeter/zelto-greeter.app:$REPO_ROOT/system/apps/greeter/greeter.js" \
+EXPECT='zelto-script\|' \
 run_shot 77-script-installed "Script: installed from a signed .zap, running from /var/zelto" 12 \
-    ZCOMP_INPUT_DELAY=5000 ZCOMP_HOLD="447 460 100"
+    ZELTO_TAP_APP=os.zelto.launcher ZELTO_TAP_LABEL=Greeter ZELTO_TAP_AT=6000
 
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)
@@ -571,3 +745,15 @@ INDEX="$OUT/index.html"
 
 echo
 echo "==> wrote $(ls "$OUT"/*.png 2>/dev/null | wc -l) shots + $INDEX"
+
+# The catalogue's own credibility check. A missing PNG is already reported per
+# shot; this is the other failure, the one that used to be invisible: a frame
+# that exists, diffs healthily, and is not a picture of what it is called.
+if [ "$MARKER_FAIL" != 0 ]; then
+    echo
+    echo "!! ${#MARKERLESS[@]} shot(s) did not show what they claim:"
+    for m in "${MARKERLESS[@]}"; do echo "     $m"; done
+    echo "   A shot of the wrong screen has a perfectly healthy delta. Fix the"
+    echo "   recipe (seed the state it needs), or fix the claim."
+    exit 1
+fi

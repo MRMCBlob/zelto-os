@@ -71,6 +71,27 @@ case "$KERNEL" in
         ;;
 esac
 
+# THE DISPLAY IS THE DESIGN'S, NOT QEMU'S DEFAULT.
+#
+# virtio-gpu-pci with no size hint offers a mode list whose PREFERRED entry is
+# 1280x800, and wlroots takes the preferred mode. So from P6 to P45 every frame
+# ever captured on the real target was a 1280x800 LANDSCAPE desktop showing a UI
+# designed for a 720x1440 portrait handset. That is not a small discrepancy for
+# this project in particular: Z_PT's 1.85 is 720/390, the type ramp, the safe
+# areas, the reserves and the two lints added in P45 are all expressed against a
+# 720-unit width, and NONE of them had ever been seen at that width on the
+# target. P45 got glyphs onto the screen there for the first time since P30 and
+# correctly refused to call that validation of the metrics.
+#
+# xres/yres set the EDID the guest reads, so 720x1440 becomes the preferred mode
+# and the compositor comes up in portrait. This is a virtio-gpu MODE, not a
+# physical panel: nothing here is constrained to a real device's resolution, so
+# the honest choice is to run the geometry the UI is designed for rather than to
+# keep reinterpreting a landscape frame. OUTW/OUTH are one definition — the
+# harnesses below map their absolute-pointer coordinates through the same pair.
+OUTW="${OUTW:-720}"
+OUTH="${OUTH:-1440}"
+
 # Common QEMU arguments.
 common=(
     -M virt
@@ -81,7 +102,7 @@ common=(
     -kernel "$KERNEL"
     -initrd "$INITRD"
     # virtio-gpu (DRM/KMS in guest) + virtio input.
-    -device virtio-gpu-pci
+    -device "virtio-gpu-pci,xres=$OUTW,yres=$OUTH"
     -device virtio-keyboard-pci
     -device virtio-tablet-pci
     # Persistent data disk -> /dev/vda in the guest (P11). file.locking=off so the
@@ -117,37 +138,23 @@ done
 unset _h
 
 # ---------------------------------------------------------------------------
-# ROTTED HARNESSES. P44 audited every block below and found five that still
-# drive the APP DRAWER — a slide-up panel P40 stage 2 deleted, whose job is now
-# the last page of the home carousel — by swiping up from the home screen and
-# then tapping a tile at coordinates from the drawer's grid. ACTUATE also taps
-# the three-button nav bar P40 stage 1 replaced with the home-indicator pill.
+# ROTTED HARNESSES, AND WHY THIS FILE NO LONGER HAS ONE. P44 audited every block
+# below and found five that drove the APP DRAWER — a slide-up panel P40 stage 2
+# deleted, whose job is now the last page of the home carousel — by swiping up
+# from the home screen and tapping a tile at coordinates read off the drawer's
+# grid. ACTUATE also tapped the three-button nav bar P40 stage 1 replaced with
+# the home-indicator pill. Every one ended in an unconditional `exit 0`, so it
+# injected a swipe that now means Home, tapped wherever those stale numbers
+# landed, screenshotted whatever was on screen, and reported success: a green
+# light with nothing behind it.
 #
-# Every one of them ends in an unconditional `exit 0`. They inject a swipe that
-# now means something else (an up-swipe from the bottom strip is the Home /
-# app-switcher gesture), tap wherever those stale coordinates land, screenshot
-# whatever is on screen, and report success. That is worse than a missing test:
-# it is a green light with nothing behind it, which is exactly how NAV=1 and
-# SHADE2=1 survived to P43 and how three consecutive phases shipped a rotted
-# 41-settings-press.
-#
-# They are DISABLED rather than deleted or rewritten. Deleting them would throw
-# away the claims they encode (brightness actually dims the screen; the lock
-# screen's timeouts persist; a typed note survives a reboot), and none of those
-# is covered elsewhere. Rewriting all five coordinate-free — the HOME_TEST /
-# QSPERSIST treatment, assertions off the serial log and no x/y at all — is more
-# than one phase's work. So the honest state is: refuse, and say why.
-harness_rotted() {
-    echo "!! $1=1 is DISABLED: it drives UI that no longer exists."
-    echo "   $2"
-    echo "   It ends in an unconditional 'exit 0', so it cannot fail — running it"
-    echo "   would produce plausible screenshots and a green result that means"
-    echo "   nothing. See the P44 note above this function in meta/run-qemu.sh."
-    echo "   To revive it: drive the surface through the env test-hooks the shot"
-    echo "   catalogue uses and assert on the SERIAL LOG, as HOME_TEST=1 and"
-    echo "   QSPERSIST=1 now do. Do not re-derive the tap coordinates."
-    exit 2
-}
+# P44 refused to run them, through a `harness_rotted` helper that printed why.
+# P45 resolved all five — ACTUATE and KBD rewritten here, SETTINGS, VOLUME and
+# LOCK moved to the simulator — which left that helper with ZERO callers, and
+# P46 deleted it. The note stays because the reason outlived the code and is the
+# part worth keeping: a harness that cannot fail is worse than a missing one, and
+# reviving one means driving the surface through env test-hooks and asserting on
+# the serial log, never re-deriving the coordinates that rotted it.
 
 # P45 RESOLVED THE REST OF THEM, and two of the three did not come back here.
 #
@@ -187,7 +194,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # overridable to retune to the rendered layout from a captured frame (rerun
     # with SKIP_BUILD=1 + overrides). Boot is slow under TCG: keep SHOT_DELAY high.
     if [ "${STORAGE:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         TILE_X="${TILE_X:-300}"                 # x over a launcher tile
         NOTEPAD_TILE_Y="${NOTEPAD_TILE_Y:-265}" # "Notepad" tile centre (retune!)
         ADD_X="${ADD_X:-640}"                   # "Add note" button
@@ -302,7 +309,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # with SKIP_BUILD=1 + overrides — first guesses miss). Boot is slow under TCG:
     # keep SHOT_DELAY high and give the install generous time.
     if [ "${INSTALL:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         # Tiles are alphabetical (launcher sorts by name). Boot #1 has 8 tiles
         # (Store is last/bottom); boot #2 has 9 (Widget appended after Store).
         TILE_X="${TILE_X:-300}"                 # x over a launcher tile
@@ -682,7 +689,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # pull-down swipe MUST start just below the 40px bar (y ~ 72).
     if [ "${SETTINGS:-0}" = "1" ]; then
         harness_superseded SETTINGS test/test_settings_broker_sim.sh '*settings_broker*'
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
         # Settings drawer tile: apps are alphabetical by name in a 4-col grid; on
         # a fresh image Settings falls in row 2, col 3. Retune from the drawer frame.
@@ -953,7 +960,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     #     SHOT_DELAY high.
     if [ "${VOLUME:-0}" = "1" ]; then
         harness_superseded VOLUME test/test_power_services_sim.sh '*power_services*'
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         # Fake battery: start just above the 20% low threshold and drain fast so
         # the low-battery warning fires within the first SHOT_DELAY window.
         # Widen the HUD dwell (zelto.volumems -> ZELTO_VOLUME_MS) so the screendump
@@ -1067,7 +1074,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # TCG: keep SHOT_DELAY high. Use launchtap (zero-hold) for drawer launches.
     if [ "${LOCK:-0}" = "1" ]; then
         harness_superseded LOCK test/test_settings_broker_sim.sh '*settings_broker*'
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         SWIPE_X="${SWIPE_X:-640}"
         # Settings drawer tile: alphabetical 4-col grid, row 2 col 3 on a fresh
         # image. Retune from frame-lock-drawer.
@@ -1360,7 +1367,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # TCG is slow + drops rapid taps: high SHOT_DELAY, spaced taps, launch as a
     # batched down+up, and the screendump lags a frame (trust downstream state).
     if [ "${CLIP:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         # No launcher-tile taps: the two demo apps are auto-launched at boot (init,
         # gated by zelto.clipdemo=1 which we append to the cmdline below), so the
         # test only ever taps TEXT FIELDS (safe — a mis-fired long-press on an empty
@@ -1536,6 +1543,36 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     sleep 1
     to_png "$OUT/frame.ppm" "$OUT/frame.png"
 
+    # FRAMES=N takes N-1 MORE screendumps, a second apart, of the same settled
+    # screen. It exists to settle one question and it is worth stating, because a
+    # wrong answer to it makes every future on-target check untrustworthy:
+    #
+    #   Teal (#0a858c) in a QEMU frame is ZCOMP_BG showing through a client
+    #   surface with alpha 0 — an unpainted region. P45 proved it MOVES between
+    #   boots (a widget card one run, the status bar the next) and that the sim
+    #   shows none of it at either geometry, and concluded "first-paint or
+    #   screendump race". That is two different faults with two different fixes,
+    #   and only one of them is harmless.
+    #
+    # These frames discriminate. If it is a FIRST-PAINT problem, the teal belongs
+    # to a client that had not drawn yet, so it is gone from every frame taken
+    # after it draws: frame 1 may have it, frames 2..N never do. If it is a QMP
+    # capture race — the screendump reading the scanout while the compositor is
+    # part-way through writing it — then nothing about the guest has changed
+    # between the dumps, and teal appears in a RANDOM SUBSET of them forever.
+    frames="${FRAMES:-1}"
+    if [ "$frames" -gt 1 ]; then
+        echo "==> FRAMES=$frames: $((frames - 1)) more dumps of the same settled screen"
+        i=2
+        while [ "$i" -le "$frames" ]; do
+            sleep 1
+            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/frame-$i.ppm\"}}"
+            sleep 1
+            to_png "$OUT/frame-$i.ppm" "$OUT/frame-$i.png"
+            i=$((i + 1))
+        done
+    fi
+
     # Optional: drive the System UI over QMP input-send-event and capture a
     # *sequence* of frames proving the P7 app model works:
     #   - the launcher builds its tiles from on-disk manifests;
@@ -1550,7 +1587,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # overridable (RUN_X / RUN1_Y / RUN2_Y / CLOSE_X) so they can be retuned to
     # the rendered layout without a rebuild (SKIP_BUILD=1).
     if [ "${INJECT:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         TILE_X="${TILE_X:-300}"           # x over a launcher tile (tiles are wide)
         TILE1_Y="${TILE1_Y:-170}"         # "Rows" tile centre (below the bar)
         TILE2_Y="${TILE2_Y:-275}"         # "Cards" tile centre
@@ -1626,7 +1663,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # retuned to the rendered layout from a captured frame without a rebuild
     # (run again with SKIP_BUILD=1 and the overrides).
     if [ "${PERM:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         TILE_X="${TILE_X:-300}"           # x over a launcher tile
         CARDS_Y="${CARDS_Y:-275}"         # "Cards" tile centre (below the bar)
         CAM_X="${CAM_X:-640}"             # x over the "Use camera" button
@@ -1685,7 +1722,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # to the rendered layout from a captured frame without a rebuild (rerun with
     # SKIP_BUILD=1 and the overrides). Boot is slow under TCG: SHOT_DELAY high.
     if [ "${SHARE:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         TILE_X="${TILE_X:-300}"           # x over a launcher tile
         SHARE_TILE_Y="${SHARE_TILE_Y:-158}"   # "Share" tile centre (1st tile)
         LINK_X="${LINK_X:-640}"           # "Open note link" button
@@ -1775,7 +1812,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # rebuild (rerun with SKIP_BUILD=1 + overrides). Boot is slow under TCG:
     # keep SHOT_DELAY high.
     if [ "${NOTIFY:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         TILE_X="${TILE_X:-300}"               # x over a launcher tile
         PINGER_TILE_Y="${PINGER_TILE_Y:-265}" # "Pinger" tile centre (2nd tile)
         POST_X="${POST_X:-640}"               # "Post" button in Pinger
@@ -1849,7 +1886,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # (rerun with SKIP_BUILD=1 + overrides). Boot is slow under TCG: SHOT_DELAY
     # high; give the fetch generous time too.
     if [ "${NET:-0}" = "1" ]; then
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
+        # OUTW/OUTH come from the one definition at the top of this file.
         TILE_X="${TILE_X:-300}"               # x over a launcher tile
         FETCH_TILE_Y="${FETCH_TILE_Y:-688}"   # "Fetch" tile centre (retune!)
         FETCH_BTN_X="${FETCH_BTN_X:-640}"     # "Fetch" button in the app

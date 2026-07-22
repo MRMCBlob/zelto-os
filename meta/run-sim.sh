@@ -150,6 +150,17 @@ export ZELTO_SIM_MAG="${ZELTO_SIM_MAG:-0,-30,-40}"
 export ZELTO_SIM_LIGHT="${ZELTO_SIM_LIGHT:-320}"
 rm -f "$XDG_RUNTIME_DIR/zsysd.sock"     # drop a stale broker socket from a prior run
 
+# ZELTO_PROBE_AT is per-process, which is wrong for a surface that starts LATE
+# (an app launched by a scripted tap ten seconds in). Convert it once, here, into
+# one absolute moment every client shares — a process that starts after it dumps
+# as soon as it has a tree. See the note in sdk/src/app.c.
+if [ -n "${ZELTO_TAP_AT:-}" ] && [ -z "${ZELTO_TAP_EPOCH:-}" ]; then
+    export ZELTO_TAP_EPOCH="$(awk -v ms="$ZELTO_TAP_AT"         'BEGIN { printf "%.3f", systime() + ms / 1000.0 }')"
+fi
+if [ -n "${ZELTO_PROBE_AT:-}" ] && [ -z "${ZELTO_PROBE_EPOCH:-}" ]; then
+    export ZELTO_PROBE_EPOCH="$(awk -v ms="$ZELTO_PROBE_AT"         'BEGIN { srand(); printf "%.3f", systime() + ms / 1000.0 }')"
+fi
+
 PIDS=()
 cleanup() { kill "${ZPID:-}" "${PIDS[@]}" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
@@ -443,7 +454,16 @@ if [ -n "${SHOT:-}" ]; then
         # A real Zelto frame has a wallpaper, a status bar and text in it, so it
         # compresses poorly; a flat fill compresses to almost nothing. Judge on
         # that, and say so loudly rather than exiting 0 on a blank screen.
-        if [ -s "$SHOT" ]; then
+        if [ ! -s "$SHOT" ]; then
+            echo "!! grim never produced a frame after 6 attempts"
+            exit 1
+        fi
+        # ALLOW_FLAT=1 for the one frame whose SUBJECT is a flat fill: the
+        # screen-off scrim. P46's catalogue audit found 17-lock-off had been
+        # rejected by this guard and reported MISSING every run — the guard is
+        # right about every other shot and wrong about the one that is meant to
+        # be black, so the exception is declared rather than the guard weakened.
+        if [ "${ALLOW_FLAT:-0}" != "1" ]; then
             bytes=$(stat -c%s "$SHOT" 2>/dev/null || echo 0)
             if [ "$bytes" -lt 20000 ]; then
                 echo "!! $SHOT is only ${bytes}B — that is a BLANK/flat frame, not a"
@@ -451,9 +471,6 @@ if [ -n "${SHOT:-}" ]; then
                 rm -f "$SHOT"
                 exit 1
             fi
-        else
-            echo "!! grim never produced a frame after 6 attempts"
-            exit 1
         fi
     else
         echo "!! grim not installed (apt install grim); cannot screenshot"

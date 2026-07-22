@@ -66,10 +66,10 @@ check() {   # <name> <log> <min_texts>
     local name="$1" log="$2" min="$3"
     local scanned over
     scanned="$(sed -n 's/.*text \([0-9]*\) scanned .*/\1/p' "$log" | head -1)"
-    over="$(sed -n 's/.*text [0-9]* scanned \([0-9]*\) off-surface.*/\1/p' "$log" | head -1)"
+    over="$(sed -n 's/.*text [0-9]* scanned \([0-9]*\) overflowing.*/\1/p' "$log" | head -1)"
     if [ -z "$scanned" ]; then
         zt_fail "$name never reported a probe summary — the surface did not come up, so nothing below is evidence" \
-            "'probe taps: ... text N scanned M off-surface'" "absent (see $log)"
+            "'probe taps: ... text N scanned M overflowing'" "absent (see $log)"
         return
     fi
     if [ "$scanned" -lt "$min" ]; then
@@ -90,7 +90,7 @@ check "the Notification Center" "$LOG_NC" 12
 # The cards are really there — this is the 11a claim, and it is the one a delta
 # can never make: an empty panel diffs against the wallpaper behind it just fine.
 for want in Ping "Grocery list" "Update available"; do
-    if ! grep -q "probe text '$want'" "$LOG_NC"; then
+    if ! grep -q "probe text \[zelto-shade\] '$want'" "$LOG_NC"; then
         zt_fail "the Notification Center is missing the '$want' card it was seeded with" \
             "a notification card titled '$want'" "absent (see $LOG_NC)"
     fi

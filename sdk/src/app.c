@@ -299,6 +299,14 @@ struct ZApp {
     // self-dismissing transient UI (the volume HUD). after_armed=false = none.
     bool after_armed;
     double after_deadline;       // monotonic s at which after_cb fires
+    // ZELTO_PROBE_AT (P46): its own deadline rather than z_after's, because
+    // z_after is ONE shared slot and arming it here would silently cancel the
+    // app's own timer — the keyboard's typing tick, the volume HUD's dismiss.
+    bool probe_armed;
+    double probe_deadline;
+    // ZELTO_TAP_LABEL (P46): press a control by the WORDS ON IT, at a deadline.
+    bool tap_armed;
+    double tap_deadline;
     ZTimerCb after_cb;
     void *after_ud;
 
@@ -376,7 +384,8 @@ ZTextField *z_app_active_field(ZApp *app) {
 static void perm_handle_reply(ZApp *app);
 static void press_release(ZApp *app);   // press-feedback spring (P31), defined below
 static void stamp_press(ZApp *app, ZView root);
-static void probe_dump_once(ZApp *app);   // ZELTO_PROBE_TAPS (P46), defined below
+static void probe_dump_once(ZApp *app, bool from_timer);   // ZELTO_PROBE_TAPS (P46)
+static void tap_by_label(ZApp *app, const char *label);   // ZELTO_TAP_LABEL (P46)
 static void clip_handle_read(ZApp *app);
 static void ctrl_handle_read(ZApp *app);
 static void ctrl_connect_register(ZApp *app);
@@ -693,7 +702,7 @@ static void render(ZApp *app) {
     // on `anim_active` fired with the whole sheet still parked a sheet-height
     // below the screen, and faithfully reported every row of it as off-screen. A
     // measurement taken mid-animation is a measurement of the animation.
-    probe_dump_once(app);
+    probe_dump_once(app, false);
 }
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
@@ -837,7 +846,7 @@ static bool probe_off_surface(ZView root, ZView n) {
 }
 
 typedef struct ProbeCount {
-    int taps, texts, over;
+    int taps, texts, over, off;
 } ProbeCount;
 
 static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
@@ -857,25 +866,42 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
         // what lets a test — or a screenshot catalogue — ask "is the thing this
         // frame is NAMED for actually in it?", which is a question no pixel delta
         // can answer: a shot of the wrong screen has a perfectly healthy delta.
-        fprintf(stderr, "zelto: probe text '%s' x=%.0f y=%.0f w=%.0f h=%.0f\n",
-                n->text, n->x, n->y, n->w, n->h);
+        // Named by PROCESS. The whole System UI boots at once and every surface
+        // writes to one log, so an unattributed string cannot answer "does the
+        // LOCK SCREEN show a clock?" — the launcher's widget shows one too.
+        // Tagged when the string is not on the surface at all, so a reader can
+        // ask "is this ON SCREEN?" and not merely "was this built?". The home
+        // carousel builds every page and slides the strip, so without the tag
+        // the App Library's title sits in the log of every home shot.
+        fprintf(stderr,
+                "zelto: probe text [%s] '%s' x=%.0f y=%.0f w=%.0f h=%.0f%s\n",
+                program_invocation_short_name, n->text, n->x, n->y, n->w, n->h,
+                probe_off_surface(root, n) ? " offscreen" : "");
         // Two ways for a string to be somewhere it cannot be read. WIDER than the
         // box it was given is the one that matters and the one the frames alone
         // cannot show: arrange() clamps a Text's frame to its parent's inner box,
         // so an unbounded string ends up with a perfectly reasonable `w` and
         // paints straight through it (the renderer draws from the origin and does
         // not clip). text_w is what measure() said it needs.
+        //
+        // The two are counted SEPARATELY because only one of them is a defect.
+        // Off-surface is routine: the home carousel lays every page out side by
+        // side and offsets the strip, so the page you have not swiped to is
+        // legitimately off the right edge — fourteen labels' worth on every shot
+        // in the catalogue. Folding those into one number would make the count
+        // permanently non-zero and therefore permanently ignored, which is the
+        // noise-floor mistake P45 found in the shot deltas, repeated.
         bool wide = n->text_w > n->w + 0.5f;
         bool out = probe_off_surface(root, n);
-        if (wide || out) {
+        if (wide) {
             fprintf(stderr,
                     "zelto: probe OVERFLOW text '%s' x=%.0f y=%.0f w=%.0f "
-                    "h=%.0f needs %.0f (%s)\n",
-                    n->text, n->x, n->y, n->w, n->h, n->text_w,
-                    wide ? (out ? "wider than its box, and off-surface"
-                                : "wider than its box")
-                         : "off-surface");
+                    "h=%.0f needs %.0f\n",
+                    n->text, n->x, n->y, n->w, n->h, n->text_w);
             c->over++;
+        }
+        if (out) {
+            c->off++;
         }
     }
     for (int i = 0; i < n->n_children; i++) {
@@ -883,11 +909,109 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
     }
 }
 
+// ZELTO_TAP_LABEL: press the control whose WORDS match, wherever it is.
+//
+// The generalisation of the keyboard's key-name hook, and it exists because the
+// P46 catalogue audit found two shots driven by tap COORDINATES that no longer
+// land on anything. `75-script-notify` held ZCOMP_HOLD="524 697" for the JS
+// Demo's Notify button and posted no notification; `77-script-installed` held
+// "447 460" for the installed Greeter's home tile, which the probe puts at
+// x=239 y=560. Both boots produced a perfectly good screenshot of a screen where
+// nothing had been pressed, under a name promising the result of pressing it.
+// Neither could be reached any other way: a Zelto Script app's handlers are JS
+// closures, so there is nothing for z_probe_tap's handler-pointer match to
+// resolve, and the script runtime exposes no environment to the app.
+//
+// A LABEL is the one identifier both a C app and a script app share, and it is
+// the same thing a person uses to find the control. It resolves against the tree
+// the last build laid out, so it moves when the layout moves.
+static bool label_under(ZView n, const char *label) {
+    if (!n) {
+        return false;
+    }
+    if (n->kind == Z_K_TEXT && n->text && strcmp(n->text, label) == 0) {
+        return true;
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        if (label_under(n->children[i], label)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ANY text under the control, and the INNERMOST control that has it.
+//
+// Not "the first string in the subtree", which is what a one-line summary wants
+// but not what a press wants: a home tile whose icon failed to load draws a
+// PLACEHOLDER with the app's initial in it, so the newly-installed Greeter's tile
+// answered to 'G' and not to 'Greeter'. Matching any descendant fixes that;
+// searching children before self keeps the answer the button rather than the page
+// that contains it.
+static ZView label_find(ZView n, const char *label) {
+    if (!n) {
+        return NULL;
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        ZView f = label_find(n->children[i], label);
+        if (f) {
+            return f;
+        }
+    }
+    if ((n->on_tap || n->on_tap_data) && label_under(n, label)) {
+        return n;
+    }
+    return NULL;
+}
+
+static void label_list(ZView n) {
+    if (!n) {
+        return;
+    }
+    if (n->on_tap || n->on_tap_data) {
+        const char *l = probe_label(n);
+        fprintf(stderr, " '%s'", l ? l : "-");
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        label_list(n->children[i]);
+    }
+}
+
+static void tap_by_label(ZApp *app, const char *label) {
+    if (!app || !app->root || !label || !label[0]) {
+        return;
+    }
+    ZView n = label_find(app->root, label);
+    if (!n) {
+        // With the labels that ARE there. "not found" on its own sends the next
+        // person to guess between a wrong string, a wrong surface and a wrong
+        // moment; the list settles it in one line.
+        fprintf(stderr, "zelto: tap '%s': NO SUCH CONTROL. This surface offers:",
+                label);
+        label_list(app->root);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+        return;
+    }
+    double cx = (double)n->x + (double)n->w / 2.0;
+    double cy = (double)n->y + (double)n->h / 2.0;
+    ZView hit = hit_test(app->root, cx, cy);
+    fprintf(stderr,
+            "zelto: tap '%s' at %.0f,%.0f (frame %.0f,%.0f %.0fx%.0f) hit=%s\n",
+            label, cx, cy, n->x, n->y, n->w, n->h,
+            hit == n ? "same" : (hit ? "DIFFERENT" : "none"));
+    fflush(stderr);
+    // Dispatch what the HIT found, for the same reason z_probe_tap does: if the
+    // control is covered, the wrong thing must really happen.
+    dispatch_tap(app, hit);
+    z_invalidate(app);
+}
+
 // ZELTO_PROBE_TAPS=1: dump this surface's touch targets once, after the first
 // build that has been through arrange(). Once, because the interesting question
 // ("is this grid even?") is answered by one frame and a per-frame dump would bury
 // the boot log. ZELTO_PROBE_APP scopes it to a single app_id/title.
-static void probe_dump_once(ZApp *app) {
+static void probe_dump_once(ZApp *app, bool from_timer) {
     static bool done;
     const char *on = getenv("ZELTO_PROBE_TAPS");
     if (done || !on || !on[0] || on[0] == '0' || !app->root) {
@@ -899,10 +1023,24 @@ static void probe_dump_once(ZApp *app) {
           (app->title && strcmp(only, app->title) == 0))) {
         return;
     }
+    // Under ZELTO_PROBE_AT the loop owns the timing; a per-build dump would
+    // report an earlier, different frame and win the race to `done`.
+    if (!from_timer && (getenv("ZELTO_PROBE_AT") || getenv("ZELTO_PROBE_EPOCH"))) {
+        return;
+    }
     // Settled? Asked AFTER the build, so a spring this build just armed counts.
     // dt=0 advances nothing (advance_spring integrates one step of size zero), so
     // this reads as a query; it runs only under the env var above.
-    if (z_anim_tick(app, 0.0f)) {
+    //
+    // With a floor, because a good many surfaces in the shot catalogue are pinned
+    // MID-ANIMATION on purpose (a carousel flip frozen seven frames in, a sheet
+    // caught halfway up) and some never settle at all. "Wait for quiet" would
+    // report nothing at all for exactly those, and a probe that goes silent on
+    // the hard cases is worse than one that reports a moving frame: silence reads
+    // as "nothing to say". So after PROBE_MAX_WAIT builds it reports anyway.
+    static int builds;
+    enum { PROBE_MAX_WAIT = 60 };   // ~1s at 60Hz
+    if (!from_timer && z_anim_tick(app, 0.0f) && ++builds < PROBE_MAX_WAIT) {
         return;
     }
     done = true;
@@ -913,9 +1051,9 @@ static void probe_dump_once(ZApp *app) {
     // reader (or a test) needs both to tell those apart.
     fprintf(stderr,
             "zelto: probe taps: %d in %s (%dx%d), text %d scanned %d "
-            "off-surface\n",
+            "overflowing %d off-surface\n",
             c.taps, app->app_id ? app->app_id : (app->title ? app->title : "?"),
-            app->width, app->height, c.texts, c.over);
+            app->width, app->height, c.texts, c.over, c.off);
     fflush(stderr);
 }
 
@@ -2578,6 +2716,59 @@ static int app_run(ZApp *app) {
         app->ui.press.animating = false;
     }
 
+    // ZELTO_PROBE_AT=<ms>: hold the probe until this many milliseconds after
+    // start-up instead of reporting the first settled build (see the dispatch in
+    // the loop below).
+    // ZELTO_PROBE_EPOCH is a UNIX time (float seconds): ONE moment shared by every
+    // surface in the boot, which is what the shot catalogue wants — the picture is
+    // taken at one instant, so the descriptions of it must be too.
+    //
+    // ZELTO_PROBE_AT (ms after THIS process starts) is not good enough on its own,
+    // and the catalogue audit is how that surfaced: 77-script-installed launches
+    // its app by pressing a tile, so the app's process starts ten seconds into the
+    // boot and its own +11s deadline falls long after the sim has exited. It was
+    // reported as "does not contain what it claims" while being perfectly correct.
+    // A deadline already in the past means "dump as soon as there is a tree",
+    // which is exactly right for a surface that arrived late.
+    const char *pep = getenv("ZELTO_PROBE_EPOCH");
+    const char *pat = getenv("ZELTO_PROBE_AT");
+    if (pep && pep[0]) {
+        struct timespec rt;
+        clock_gettime(CLOCK_REALTIME, &rt);
+        double now_real = (double)rt.tv_sec + (double)rt.tv_nsec / 1e9;
+        app->probe_armed = true;
+        app->probe_deadline = z_now_seconds() + (atof(pep) - now_real);
+    } else if (pat && pat[0]) {
+        app->probe_armed = true;
+        app->probe_deadline = z_now_seconds() + atof(pat) / 1000.0;
+    }
+
+    // ZELTO_TAP_LABEL=<words on the control>, scoped by ZELTO_TAP_APP and timed
+    // by ZELTO_TAP_AT (ms, default 6000). See tap_by_label().
+    const char *tl = getenv("ZELTO_TAP_LABEL");
+    const char *ta = getenv("ZELTO_TAP_APP");
+    bool tap_match =
+        !(ta && ta[0]) || (app->app_id && strcmp(ta, app->app_id) == 0) ||
+        (app->title && strcmp(ta, app->title) == 0);
+    if (tl && tl[0] && tap_match) {
+        // Absolute, like the probe, and for the same reason: an app launched by
+        // the shell starts at a moment nobody controls, so "6s after I start" is
+        // 6s after something that drifts. ZELTO_TAP_EPOCH is one instant every
+        // process in the boot agrees on.
+        const char *tep = getenv("ZELTO_TAP_EPOCH");
+        const char *at = getenv("ZELTO_TAP_AT");
+        app->tap_armed = true;
+        if (tep && tep[0]) {
+            struct timespec rt;
+            clock_gettime(CLOCK_REALTIME, &rt);
+            double now_real = (double)rt.tv_sec + (double)rt.tv_nsec / 1e9;
+            app->tap_deadline = z_now_seconds() + (atof(tep) - now_real);
+        } else {
+            app->tap_deadline =
+                z_now_seconds() + (at && at[0] ? atof(at) : 6000.0) / 1000.0;
+        }
+    }
+
     // Multi-fd loop: poll the wayland fd plus (when present) the zsysd perm
     // socket of an in-flight request and the persistent intents control socket,
     // so a broker reply or a pushed intent wakes us without blocking on wayland.
@@ -2647,6 +2838,23 @@ static int app_run(ZApp *app) {
             int at = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
             if (timeout < 0 || at < timeout) {
                 timeout = at;
+            }
+        }
+        // The label-tap deadline bounds the wait the same way.
+        if (app->tap_armed) {
+            double remain = app->tap_deadline - z_now_seconds();
+            int tl = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
+            if (timeout < 0 || tl < timeout) {
+                timeout = tl;
+            }
+        }
+        // The probe's own deadline bounds the wait too, so a surface that has
+        // gone completely static still wakes up to report itself.
+        if (app->probe_armed) {
+            double remain = app->probe_deadline - z_now_seconds();
+            int pt = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
+            if (timeout < 0 || pt < timeout) {
+                timeout = pt;
             }
         }
         // The repeating widget tick bounds the wait the same way (a clock beat).
@@ -2721,6 +2929,36 @@ static int app_run(ZApp *app) {
             app->after_ud = NULL;
             if (cb) {
                 cb(app, ud);
+            }
+        }
+
+        // ZELTO_PROBE_AT: report the tree AS IT STANDS AT THIS MOMENT, straight
+        // out of the loop rather than off a build. That is the point of it: a
+        // surface whose content depends on STATE reached later — the lock screen
+        // is unlocked and empty for the first twenty seconds of every boot — is
+        // described by its first settled build only if nothing ever happens to
+        // it. The shot catalogue sets this to just before its capture, so the
+        // probe describes the frame that gets photographed.
+        if (app->tap_armed && z_now_seconds() >= app->tap_deadline) {
+            // As with the probe: wait for a tree rather than press into nothing.
+            if (app->root) {
+                app->tap_armed = false;
+                tap_by_label(app, getenv("ZELTO_TAP_LABEL"));
+            } else {
+                app->tap_deadline = z_now_seconds() + 0.1;
+            }
+        }
+        if (app->probe_armed && z_now_seconds() >= app->probe_deadline) {
+            // Only stand down once there is something to describe. A surface
+            // that starts LATE can pass a shared deadline before its first
+            // render — a Zelto Script app spends most of a second in QuickJS
+            // start-up — and disarming there would report nothing at all while
+            // looking exactly like a surface that had nothing to say.
+            if (app->root) {
+                app->probe_armed = false;
+                probe_dump_once(app, true);
+            } else {
+                app->probe_deadline = z_now_seconds() + 0.1;
             }
         }
 

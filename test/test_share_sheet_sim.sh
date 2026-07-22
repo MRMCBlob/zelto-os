@@ -87,11 +87,11 @@ sheet_h="$(sed -n 's/.*\[chooser\] sheet_h=\([0-9]*\)\..*/\1/p' "$LOG1" | head -
 screen_h="$(sed -n 's/.*probe taps: .*([0-9]*x\([0-9]*\)).*/\1/p' "$LOG1" | head -1)"
 
 # --- A. no text needs more room than it was given ---------------------------
-# The scanned count is the positive control: 0 off-surface out of 0 text nodes
+# The scanned count is the positive control: 0 overflowing out of 0 text nodes
 # would mean the sheet drew no text at all, which is a different failure wearing
 # the same number.
 scanned="$(sed -n 's/.*text \([0-9]*\) scanned .*/\1/p' "$LOG1" | head -1)"
-over="$(sed -n 's/.*text [0-9]* scanned \([0-9]*\) off-surface.*/\1/p' "$LOG1" | head -1)"
+over="$(sed -n 's/.*text [0-9]* scanned \([0-9]*\) overflowing.*/\1/p' "$LOG1" | head -1)"
 if [ -z "$scanned" ] || [ "$scanned" -lt 1 ]; then
     zt_fail "the probe scanned no text at all, so 'nothing overflowed' means nothing" \
         ">= 1 text node" "${scanned:-none} (see $LOG1)"
