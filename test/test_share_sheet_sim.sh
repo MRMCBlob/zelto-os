@@ -105,7 +105,7 @@ fi
 # height is where the sheet starts. Reserve plus backdrop must be the screen: if
 # they are not, then sheet_h is not the sheet's height and the blur rectangle and
 # the entrance rise computed from it are both wrong.
-back_h="$(sed -n "s/.*probe tap '-' x=0 y=0 w=[0-9]* h=\([0-9]*\).*/\1/p" "$LOG1" | head -1)"
+back_h="$(sed -n "s/.*probe tap \[[^]]*\] '-' x=0 y=0 w=[0-9]* h=\([0-9]*\).*/\1/p" "$LOG1" | head -1)"
 if [ -z "$back_h" ] || [ -z "$sheet_h" ] || [ -z "$screen_h" ]; then
     zt_fail "could not read the sheet's geometry back out of the boot log" \
         "backdrop height, sheet_h and the screen height" \
@@ -116,8 +116,8 @@ zt_expect_eq "$screen_h" "$((back_h + sheet_h))" \
     "the sheet does not stand at the height it declares: it starts at y=$back_h on a ${screen_h}-tall screen, so it is $((screen_h - back_h)) tall while sheet_h says $sheet_h — the backdrop blur and the entrance rise are both computed from sheet_h (see $LOG1)"
 
 # --- C. the last row is inside the sheet ------------------------------------
-cancel_y="$(sed -n "s/.*probe tap 'Cancel' x=[0-9]* y=\([0-9]*\) .*/\1/p" "$LOG1" | head -1)"
-cancel_h="$(sed -n "s/.*probe tap 'Cancel' x=[0-9]* y=[0-9]* w=[0-9]* h=\([0-9]*\).*/\1/p" "$LOG1" | head -1)"
+cancel_y="$(sed -n "s/.*probe tap \[[^]]*\] 'Cancel' x=[0-9]* y=\([0-9]*\) .*/\1/p" "$LOG1" | head -1)"
+cancel_h="$(sed -n "s/.*probe tap \[[^]]*\] 'Cancel' x=[0-9]* y=[0-9]* w=[0-9]* h=\([0-9]*\).*/\1/p" "$LOG1" | head -1)"
 if [ -z "$cancel_y" ]; then
     zt_fail "the Cancel row is not on the sheet at all" "a laid-out frame" \
         "absent (see $LOG1)"
@@ -139,7 +139,7 @@ fi
 # This is what makes run 1's numbers evidence rather than one lucky string.
 LOG2="$(run_boot short "$SHORT")"
 sheet_h2="$(sed -n 's/.*\[chooser\] sheet_h=\([0-9]*\)\..*/\1/p' "$LOG2" | head -1)"
-cancel_y2="$(sed -n "s/.*probe tap 'Cancel' x=[0-9]* y=\([0-9]*\) .*/\1/p" "$LOG2" | head -1)"
+cancel_y2="$(sed -n "s/.*probe tap \[[^]]*\] 'Cancel' x=[0-9]* y=\([0-9]*\) .*/\1/p" "$LOG2" | head -1)"
 zt_expect_eq "$sheet_h" "$sheet_h2" \
     "the sheet is a different height for a 5-character payload than for a 105-character one — its size depends on content it does not control (see $LOG2)"
 zt_expect_eq "$cancel_y" "$cancel_y2" \

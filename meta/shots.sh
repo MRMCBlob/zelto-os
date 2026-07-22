@@ -96,9 +96,69 @@ ZAP=""
 # the widgets on it", and a filtered App Library is "the list with Store missing".
 # A positive marker cannot express either, and both are exactly the kind of shot
 # that quietly reverts to photographing page 1.
+#
+# AND THE PIXEL HALF (P47). NOMARKER is honest and it is also where the audit
+# STOPPED: twenty shots ended up with a written excuse and no check at all. The
+# tool to check them has existed since P41 (meta/pngdiff.py --expect-box, which
+# answers "did the thing at (x,y) actually change, and is that the strongest
+# change on screen") and was never wired in — it was something a person ran by
+# hand, which is the same category of unverified as the reason it replaced.
+#
+#   PIXEL='<control-shot> <region> [min-delta]'
+#     Compare this frame against an EARLIER shot in the catalogue and require a
+#     real, localised change. <region> is one of:
+#       all       the whole frame; the change must be big, but not localised
+#                 (a dim scrim and a screen-off scrim change everything)
+#       spot      the change must be SMALL overall and CONCENTRATED: the
+#                 strongest tile at least <min-delta> times the whole-frame mean.
+#                 That is what a press veil IS, stated without saying where — for
+#                 the surfaces where "where" cannot be known (see below)
+#
+#     THERE IS NO `@Label` REGION EITHER, and the attempt to build one is why
+#     `spot` exists. The idea was right — take the box from the frame the PROBE
+#     reports for a named control, so a press-veil check aims wherever the layout
+#     put the thing instead of at a pasted coordinate. It cannot work. The probe
+#     reports SURFACE coordinates and a PNG is the SCREEN, and a Wayland client is
+#     never told where the compositor put its surface. It is not only the layer
+#     surfaces: the LAUNCHER is 720x1359 on a 720x1440 screen, because the status
+#     bar's exclusive zone pushes it down 81 units. The check was written, and it
+#     PASSED on the launcher for one run — the box was 81 units too high and
+#     pngdiff's localisation test has 40px tiles and slack at the edges, so a
+#     wrong box agreed with the right answer. A guard that refused non-full-screen
+#     surfaces is what turned that into a failure, and then there was nothing left
+#     for it to run on.
+#
+#     THERE IS NO `bar` REGION, and there was: a check on the status-bar strip was
+#     written, run, and deleted on the evidence. Two measurements killed it. The
+#     mean delta inside the whole 720x81 strip when a Wi-Fi glyph changes is
+#     0.128, and when a cellular level changes 0.334 — the glyphs are a few dozen
+#     pixels in a strip of 58,320 — so any threshold that passes is also passed by
+#     nothing happening. Worse, the CLOCK is in that same strip and moves between
+#     boots of a 20-minute catalogue run, so the box has a permanent, larger
+#     signal in it that has nothing to do with what the shot is about. That is the
+#     noise-floor mistake P45 found in the whole-frame deltas, one box down.
+#     The status-bar shots keep their NOMARKER reason; the settings behind their
+#     glyphs are asserted by test_settings_broker_sim and test_power_services_sim.
+#
+#     @Label ONLY WORKS ON A FULL-SCREEN SURFACE, and the first attempt to use it
+#     on the keyboard is how that was found. The probe reports frames in SURFACE
+#     coordinates; the PNG is the SCREEN. For the launcher those are the same
+#     thing. For a bottom-anchored layer surface 369 units tall they are not, and
+#     the box came out 1000 units above the pixels it was describing — a check
+#     that would have failed forever while looking like a real one. A client has
+#     no way to learn where the compositor put its layer surface, so this is
+#     refused rather than guessed, and `spot` exists for those cases.
+#   PIXELMEAN='<max mean RGB>'
+#     This frame's mean RGB must be BELOW this. For the frames whose whole claim
+#     is that the screen went dark, where "it changed" is true of a crash too.
+#
+# Both are independent of EXPECT/NOMARKER: a shot may have a marker AND a pixel
+# check. The lint at the foot of the file counts a failure of either.
 EXPECT=""
 MUSTNOT=""
 NOMARKER=""
+PIXEL=""
+PIXELMEAN=""
 MARKERLESS=()
 MARKER_FAIL=0
 
@@ -132,7 +192,8 @@ run_shot() {
     # Declared before the ONLY filter, so a filtered run cannot hide a shot that
     # never said what it contains.
     local expect="$EXPECT" mustnot="$MUSTNOT" nomarker="$NOMARKER"
-    EXPECT=""; MUSTNOT=""; NOMARKER=""
+    local pixel="$PIXEL" pixelmean="$PIXELMEAN"
+    EXPECT=""; MUSTNOT=""; NOMARKER=""; PIXEL=""; PIXELMEAN=""
     if [ -z "$expect" ] && [ -z "$mustnot" ] && [ -z "$nomarker" ]; then
         echo "    !! $name declares neither EXPECT nor NOMARKER"
         MARKERLESS+=("$name")
@@ -238,6 +299,98 @@ run_shot() {
             echo "    absent (as claimed): $mustnot"
         fi
     fi
+
+    # THE PIXEL HALF. See the note over PIXEL above.
+    if [ -n "$pixelmean" ] && [ -s "$png" ]; then
+        local mean
+        mean="$(python3 "$REPO_ROOT/meta/pngdiff.py" "$png" |
+                sed -n 's/.*mean RGB = \([0-9.]*\) \([0-9.]*\) \([0-9.]*\).*/\1 \2 \3/p' |
+                awk '{ print ($1 + $2 + $3) / 3.0 }')"
+        if [ -z "$mean" ]; then
+            echo "    !! $name: could not read a mean RGB"
+            MARKERLESS+=("$name: no mean RGB"); MARKER_FAIL=1
+        elif awk -v m="$mean" -v x="$pixelmean" 'BEGIN { exit !(m < x) }'; then
+            echo "    dark: mean RGB $mean < $pixelmean"
+        else
+            echo "    !! $name is not dark: mean RGB $mean, must be < $pixelmean"
+            MARKERLESS+=("$name: mean RGB $mean >= $pixelmean"); MARKER_FAIL=1
+        fi
+    fi
+    if [ -n "$pixel" ] && [ -s "$png" ]; then
+        local ctrl_name region mind ctrl
+        # shellcheck disable=SC2086
+        set -- $pixel
+        ctrl_name="$1"; region="$2"; mind="${3:-2.0}"
+        ctrl="$OUT/$ctrl_name.png"
+        if [ ! -s "$ctrl" ]; then
+            # Not a failure: ONLY= runs one shot and its control is not on disk.
+            # Silence here would be worse than either — it would make a filtered
+            # run look like a passing one.
+            echo "    .. pixel check skipped: control $ctrl_name.png not present"
+        else
+            local args=""
+            case "$region" in
+                all|spot) args="" ;;
+                *)
+                    echo "    !! $name: unknown PIXEL region '$region'"
+                    MARKERLESS+=("$name: bad PIXEL region"); MARKER_FAIL=1
+                    SEED=""; ZAP=""; return 0 ;;
+            esac
+            # THE ASSIGNMENT GOES IN THE `if`, and that is not style. This file
+            # runs under `set -e`, where `out="$(cmd)"` with a failing cmd kills
+            # the whole run — and pngdiff FAILING is the normal, expected outcome
+            # this code exists to report. Written the obvious way it took the
+            # catalogue down at shot 48 of 77, silently and with status 0, which
+            # is the worst of both: no report and no failure either.
+            local out rc
+            if out="$(python3 "$REPO_ROOT/meta/pngdiff.py" "$ctrl" "$png" $args 2>&1)"; then
+                rc=0
+            else
+                rc=$?
+            fi
+            local whole
+            whole="$(echo "$out" | sed -n 's/.*mean |delta| = \([0-9.]*\).*/\1/p' | head -1)"
+            if [ "$region" = spot ]; then
+                # A press veil is a SMALL, CONCENTRATED change: a wash of alpha
+                # over one control on an otherwise identical screen. Both halves
+                # matter — "something changed" is also true of a different screen,
+                # and "the strongest tile is strong" is also true of a scrolled
+                # list. The ratio between them is what only a veil produces, and
+                # it needs no coordinate to state.
+                local top
+                top="$(echo "$out" | sed -n 's/^    ([ 0-9]*,[ 0-9]*)  \([0-9.]*\)$/\1/p' | head -1)"
+                if [ -z "$whole" ] || [ -z "$top" ]; then
+                    echo "    !! $name: could not read a delta from pngdiff"
+                    MARKERLESS+=("$name: no delta"); MARKER_FAIL=1
+                elif awk -v t="$top" -v w="$whole" -v m="$mind" \
+                        'BEGIN { exit !(w > 0 && t / w >= m) }'; then
+                    echo "    a localised change vs $ctrl_name (peak $top, frame $whole)"
+                else
+                    echo "    !! $name: the change vs $ctrl_name is not a localised one (peak ${top:-?}, frame ${whole:-?}; needs peak >= $mind x frame)"
+                    MARKERLESS+=("$name: change not concentrated vs $ctrl_name")
+                    MARKER_FAIL=1
+                fi
+            elif [ "$region" = all ]; then
+                # No localisation to test — a scrim changes the whole screen —
+                # so the claim is only that the change is BIG. Judged here rather
+                # than by pngdiff, which has no --expect-whole.
+                if [ -n "$whole" ] && awk -v d="$whole" -v m="$mind" 'BEGIN { exit !(d >= m) }'; then
+                    echo "    differs from $ctrl_name by $whole (>= $mind)"
+                else
+                    echo "    !! $name is not different enough from $ctrl_name: |delta| ${whole:-?} < $mind"
+                    MARKERLESS+=("$name: |delta| ${whole:-?} vs $ctrl_name < $mind")
+                    MARKER_FAIL=1
+                fi
+            elif [ "$rc" = 0 ]; then
+                echo "    changed where it should, vs $ctrl_name ($region)"
+            else
+                echo "    !! $name: the change vs $ctrl_name is not in $region"
+                echo "$out" | sed 's/^/       /' | tail -6
+                MARKERLESS+=("$name: change not localised to $region")
+                MARKER_FAIL=1
+            fi
+        fi
+    fi
     SEED=""
     ZAP=""
 }
@@ -254,6 +407,7 @@ EXPECT='zelto-launcher\|Notepad' MUSTNOT='zelto-launcher\|All clear' \
 run_shot 02-home-page2 "Home, page 2 (ROWS_PER_PAGE=2 forces overflow; HOME_PAGE=1)" 6 \
     ZELTO_HOME_ROWS_PER_PAGE=2 ZELTO_HOME_PAGE=1
 NOMARKER='a flip is a POSITION, not content: both pages are built either way and the shot is of the strip part-way between them. Verified by pixel diff against 02, not by a string.' \
+PIXEL='02-home-page2 all 2.0' \
 run_shot 03-home-flip-mid "Carousel flip mid-slide (page 0->1 frozen 7 frames in)" 6 \
     ZELTO_HOME_ROWS_PER_PAGE=2 ZELTO_HOME_PAGE_FROM=0 ZELTO_HOME_PAGE=1 \
     ZELTO_HOME_ANIM_FRAMES=7
@@ -304,7 +458,8 @@ run_shot 10a-app-library-search "App Library search: filtered, keyboard raised" 
 # areas moved the status bar from 40 units to 81. Every icon on the home screen
 # dropped by exactly that 41. Measured on the re-shot frame: the Notepad tile now
 # spans y 449..549, so 501 is its centre.
-NOMARKER='a touch-down VEIL is a wash of alpha over a tile, not a string. Checked with meta/pngdiff.py --expect-box against 01 at the same state.' \
+NOMARKER='a touch-down VEIL is a wash of alpha over a tile, not a string; the PIXEL check is what says it landed — as a SHAPE (small overall, concentrated in one place) rather than a place, because no client can learn where the compositor put its surface. See the PIXEL note at the head of this file.' \
+PIXEL='01-home-page1 spot 20' \
 run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
     ZELTO_PRESS_X=447 ZELTO_PRESS_Y=501
 # The Airplane Mode SWITCH — row 1 of the first card after P41's regrouping.
@@ -366,7 +521,8 @@ run_shot 11-control-center "Control Center: round toggle grid (pulled from top r
 EXPECT='zelto-shade\|Grocery list' \
 run_shot 11a-notification-center "Notification Center: clock + cards (pulled from top left)" 6 \
     ZELTO_SHADE_OPEN=nc ZELTO_BANNER_DEMO=3
-NOMARKER='the HUD is a glyph and a level bar; it draws no text at all. Its value is asserted instead by test_power_services_sim, off the line zelto-volume logs.' \
+NOMARKER='the HUD is a glyph and a level bar; it draws no text at all. Its value is asserted instead by test_power_services_sim, off the line zelto-volume logs; that it is ON SCREEN is the PIXEL check against the same home screen without it.' \
+PIXEL='01-home-page1 all 0.4' \
 SEED='sys.volume\t7\n' run_shot 12-volume-hud "Volume rocker HUD (shown at level 7)" 6 \
     ZELTO_VOLUME_SHOW=1
 
@@ -380,7 +536,13 @@ run_shot 14-keyboard-symbols "On-screen keyboard, symbols layer" 6 \
 # Lock lifecycle: seed the broker so zelto-lock arms short idle timeouts; headless
 # has no seat input, so it idles from boot into each phase deterministically.
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t2\nsys.idle_lock_s\t999\nsys.idle_off_s\t9999\n' \
-NOMARKER='a dim scrim is alpha over the screen behind it; nothing is added to the tree. The dim level is asserted by test_power_services_sim off zelto-dims own log line.' \
+# The dim scrim's LEVEL is asserted by test_power_services_sim, off the line
+# zelto-dim logs. What that test cannot say is that the scrim reached the SCREEN,
+# which is this frame's whole claim — so it is measured against 01-home-page1,
+# the same home screen undimmed. (A dim shot that quietly stopped dimming would
+# otherwise be a perfectly good picture of a home screen.)
+NOMARKER='a dim scrim is alpha over the screen behind it; nothing is added to the tree. The dim LEVEL is asserted by test_power_services_sim off zelto-dims own log line; that it reached the screen is the PIXEL check.' \
+PIXEL='01-home-page1 all 6' \
     run_shot 15-lock-dimmed "Pre-lock dim scrim (idle past idle_dim_s)" 7
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t9999\n' \
 EXPECT='zelto-lock\|' \
@@ -400,7 +562,17 @@ EXPECT='zelto-lock\|' \
     run_shot 16b-lock-unlock-drag "Lock screen lifted toward the unlock swipe (frozen -160px)" 9 \
     ZELTO_LOCK_NOTIFS=3 ZELTO_LOCK_DRAG=-160
 SEED='sys.lock_enabled\t1\nsys.idle_dim_s\t1\nsys.idle_lock_s\t3\nsys.idle_off_s\t6\n' \
-NOMARKER='the screen-off scrim is opaque black over everything; a marker would assert the presence of something this frame exists to hide.' \
+# 17 IS THE ONE THAT MOST NEEDED THIS. P46 rescued it from being MISSING on every
+# run (run-sim.sh's blank-frame guard rejects a flat fill, and this shot's whole
+# subject IS a flat fill), and then never established that the frame it finally
+# produced was CORRECT — a black PNG is also what a crashed compositor, a failed
+# capture and a boot that never got anywhere produce. Two checks settle it: the
+# frame is nearly black, AND it is a long way from 16-lock-screen, which is the
+# same boot recipe stopped one phase earlier. Neither alone would do: "dark" is
+# true of a dead sim, and "different from the lock screen" is true of the home
+# screen.
+NOMARKER='the screen-off scrim is opaque black over everything; a marker would assert the presence of something this frame exists to hide. Checked as pixels instead: PIXELMEAN + PIXEL below.' \
+PIXELMEAN='6' PIXEL='16-lock-screen all 8' \
     run_shot 17-lock-off "Screen-off scrim (idle past idle_off_s while locked)" 11     ALLOW_FLAT=1
 
 # App Switcher: three apps left running, then the overlay on top. Plus its two
@@ -453,7 +625,8 @@ run_shot 20-banner "Heads-up notification banner (auto-posted + auto-granted)" 1
 # flight via a ZELTO_*_ENTER=<0..1> hook, so the slide+fade is shot-verifiable.
 # ---------------------------------------------------------------------------
 SEED='sys.volume\t7\n' \
-NOMARKER='as 12: the volume HUD carries no text, and this frame is about how far up it has slid.' \
+NOMARKER='as 12: the volume HUD carries no text, and this frame is about how far up it has slid — a POSITION, which only a pixel comparison against the settled HUD can speak to.' \
+PIXEL='12-volume-hud all 0.15' \
     run_shot 42-volume-enter "Volume HUD mid slide+fade entrance (frozen 0.5)" 6 \
     ZELTO_VOLUME_ENTER=0.5
 EXPECT='zelto-consent\|Allow' \
@@ -498,6 +671,7 @@ run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)
 # band is surface-local 102..179, so its centre is 140. Verified by measurement,
 # not by assuming the old number still landed on a key.
 EXPECT='zelto-keyboard\|space' \
+PIXEL='13-keyboard spot 20' \
 run_shot 48-key-press "Keyboard: a key pressed (touch-down highlight veil)" 8 \
     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad \
     ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=364 ZELTO_PRESS_Y=140
@@ -518,7 +692,8 @@ run_shot 50-nav-push "Navigator push: detail slides + cross-fades in (frozen 0.4
 # collapsed, so the SAME ENTER=0.5 request that half-fades the HUD in shot 42 now
 # shows it fully seated — a still A/B proof that springs are suppressed.
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
-NOMARKER='as 12/42: no text on the HUD. The whole claim is that the entrance spring is COLLAPSED, which is a position, and it is read against 42 as an A/B pair.' \
+NOMARKER='as 12/42: no text on the HUD. The whole claim is that the entrance spring is COLLAPSED, which is a position, and it is read against 42 as an A/B pair — now measured rather than eyeballed.' \
+PIXEL='42-volume-enter all 0.15' \
     run_shot 51-reduce-motion "Reduce Motion: volume entrance collapsed (vs 42)" 6 \
     ZELTO_VOLUME_ENTER=0.5
 
@@ -535,7 +710,8 @@ run_shot 52-scroll-overpull "Scroll edge rubber-band: list over-pulled off the t
     SIM_APP=zelto-settings ZELTO_SCROLL_OVERPULL=160
 # Swipe-to-dismiss transient surfaces, each dragged partway toward dismissal.
 SEED='sys.volume\t7\n' \
-NOMARKER='as 12: no text on the HUD; the claim is the drag offset.' \
+NOMARKER='as 12: no text on the HUD; the claim is the drag offset, measured against the undragged HUD.' \
+PIXEL='12-volume-hud all 0.15' \
     run_shot 53-volume-dismiss "Volume HUD dragged up toward swipe-dismiss (frozen)" 6 \
     ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
 EXPECT='zelto-shade\|Ping' \
@@ -560,7 +736,8 @@ run_shot 58-shade-overpull "Control Center pulled past open, rubber-banding at t
 # Reduce Motion A/B: the release animation collapses, but the 1:1 drag itself is
 # intact — the SAME volume drag as 53, still shown at the frozen finger position.
 SEED='sys.volume\t7\nsys.reduce_motion\t1\n' \
-NOMARKER='as 53: the HUD has no text and the claim is where the finger left it.' \
+NOMARKER='as 53: the HUD has no text and the claim is where the finger left it. The A/B against 53 is the point of the shot, so it is the pixel control too.' \
+PIXEL='12-volume-hud all 0.15' \
     run_shot 60-reduce-drag "Reduce Motion: drag tracks finger, release would snap (vs 53)" 6 \
     ZELTO_VOLUME_SHOW=1 ZELTO_VOLUME_DRAG=-70
 # Hit-test on a MOVING subtree: the Control Center is frozen OVER-PULLED (slid
@@ -579,7 +756,7 @@ run_shot 61-hit-test-moving "Hit-test while moving: press lands on the offset Lo
 # STATUS BAR STATES (seed the brokered sys.* the bar reads; home behind it)
 # ===========================================================================
 SEED='sys.wifi\t1\nsys.airplane\t0\nsys.signal\t4\nsys.brightness\t5\n' \
-NOMARKER='the status bars radios and battery are GLYPHS (system/common/glyphs.h); its only text is the clock, which every frame has. The states are seeded settings and read as marks.' \
+NOMARKER='the status bars radios and battery are GLYPHS (system/common/glyphs.h); its only text is the clock, which every frame has. The states are seeded settings, asserted by test_settings_broker_sim and test_power_services_sim. A PIXEL check on the bar strip was written and DELETED on the evidence: a glyph change moves the 720x81 box by 0.13-0.33, and the clock in the same box moves it more, between boots — see the PIXEL note at the head of this file.' \
     run_shot 21-bar-wifi-bright "Status bar: full cellular + Wi-Fi, brightness high" 6
 # Weak cellular: the unlit bars stay drawn (TEXT_FAINT), so the mark keeps its
 # silhouette at every level instead of shrinking.

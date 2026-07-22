@@ -1594,6 +1594,41 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         done
     fi
 
+    # AND THEN LOOK AT WHAT WAS CAPTURED (P47). The measurement above is only
+    # useful if somebody runs it, and for two phases nobody did — a single frame
+    # came out with a teal band in it and the band was read as a layout bug.
+    #
+    # None of the harnesses in this file judges a frame: every one of them
+    # (HOME_TEST, QSPERSIST, ACTUATE, KBD) reaches its verdict from the SERIAL
+    # LOG, and the other eleven produce frames for a person to look at and assert
+    # nothing. That is why this is a REPORT and not a failure — there is no
+    # assertion here to make unsound. What there is, is a person about to draw a
+    # conclusion from a PNG, and this tells them whether the PNG is trustworthy
+    # before they do.
+    if command -v python3 >/dev/null 2>&1; then
+        # THIS RUN's frames only. `frame-*.png` also matches every harness frame
+        # any previous run left behind (frame-actuate-bright5.png and friends),
+        # and those are stale by definition — the first version of this reported
+        # on 1280x800 captures from before the P46 resolution fix, which is
+        # exactly the kind of confidently-wrong evidence the check exists to stop.
+        shots=""
+        for f in "$OUT"/frame.png "$OUT"/frame-[0-9]*.png; do
+            [ -f "$f" ] && shots="$shots $f"
+        done
+        if [ -n "$shots" ]; then
+            echo "==> capture check (meta/teal.py): compositor background in a"
+            echo "    frame means part of it was not captured, not that part of"
+            echo "    it was not drawn."
+            # shellcheck disable=SC2086
+            if ! python3 "$REPO_ROOT/meta/teal.py" $shots; then
+                echo "!! every frame is torn. Re-run with FRAMES=8 and use a"
+                echo "   frame teal.py calls clean; waiting longer does not fix"
+                echo "   this (P46 measured five of eight torn on a settled,"
+                echo "   unchanging screen)."
+            fi
+        fi
+    fi
+
     # Optional: drive the System UI over QMP input-send-event and capture a
     # *sequence* of frames proving the P7 app model works:
     #   - the launcher builds its tiles from on-disk manifests;

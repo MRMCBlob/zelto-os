@@ -107,4 +107,39 @@ if grep -q 'Z_RADIUS_WIDGET' "$REPO_ROOT/system/consent/main.c" 2>/dev/null; the
             "Z_RADIUS_PANEL (an alert is not a widget)" "Z_RADIUS_WIDGET"
 fi
 
+# --- 5. NESTED CORNERS: the container is never squarer than what is in it ----
+#
+# P45 left SHEET and CARD alone for want of an in-frame anchor — the widget got
+# one because an app icon's corner is calibrated (ICON_SIZE x Z_RADIUS_ICON) and
+# sits in the same frame. There is no calibrated object beside a sheet.
+#
+# There is, however, a relationship, and it needs no external reference at all:
+# a rounded thing INSIDE another rounded thing. The share sheet (Z_RADIUS_SHEET)
+# holds action rows drawn with Z_RADIUS_CARD, inset by SHEET_PAD. Two claims come
+# out of that, and only the first is checkable rather than taste:
+#
+#   MUST: outer >= inner. A container squarer than its own contents makes the
+#         inner corner poke out of the outer curve — it is wrong at any padding
+#         and in any style.
+#   IDEAL: outer == inner + padding (concentric corners: the gap between the two
+#         curves stays constant all the way round). Measured and REPORTED here,
+#         not asserted, because closing a small deficit means moving a token four
+#         surfaces share and that is a design decision, not a lint.
+sheet="$(radius_of Z_RADIUS_SHEET)"
+card="$(radius_of Z_RADIUS_CARD)"
+sheet_pad="$(sed -n 's/^#define SHEET_PAD[[:space:]]*\([0-9.]*\)f.*/\1/p' \
+    "$REPO_ROOT/system/chooser/main.c" | head -1)"
+if [ -z "$sheet" ] || [ -z "$card" ] || [ -z "$sheet_pad" ]; then
+    zt_fail "could not read the share sheet's nesting (radius/radius/padding)" \
+            "three numbers" "sheet='$sheet' card='$card' pad='$sheet_pad'"
+else
+    if awk -v o="$sheet" -v i="$card" 'BEGIN { exit !(o < i) }'; then
+        zt_fail "the share sheet's corner is SQUARER than the rows inside it, so their corners cut outside its curve" \
+                "Z_RADIUS_SHEET >= Z_RADIUS_CARD ($card)" "$sheet"
+    fi
+    echo "note: sheet corner $sheet, rows $card inset $sheet_pad — concentric" \
+         "would be $(awk -v i="$card" -v p="$sheet_pad" 'BEGIN{printf "%.0f", i+p}')" \
+         "(deficit $(awk -v o="$sheet" -v i="$card" -v p="$sheet_pad" 'BEGIN{printf "%.0f", i+p-o}'))"
+fi
+
 zt_done

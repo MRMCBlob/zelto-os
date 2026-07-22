@@ -134,6 +134,22 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
     total = 0
+    clean = []
     for a in sys.argv[1:]:
-        total += scan(a)
-    sys.exit(0)
+        n = scan(a)
+        total += n
+        if n == 0:
+            clean.append(a)
+    # Which frame to believe, and a NON-ZERO EXIT when none of them can be (P47).
+    # This used to exit 0 unconditionally, which made it a thing a person read
+    # rather than a thing a script could act on — and "a person read the frame"
+    # is exactly the step that let a torn capture be mistaken for a layout bug
+    # for two phases. A caller that wants the old behaviour reads the printout;
+    # a caller that wants an answer reads the status.
+    if clean:
+        print(f"clean: {clean[0]}" + (f"  ({len(clean)} of {len(sys.argv) - 1})"
+                                      if len(sys.argv) > 2 else ""))
+        sys.exit(0)
+    print(f"NO CLEAN FRAME among {len(sys.argv) - 1}: every capture has "
+          f"compositor background showing through. Take more (FRAMES=N).")
+    sys.exit(1)
