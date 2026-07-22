@@ -526,7 +526,26 @@ ZView CornerRadius(float radius, ZView view);
 ZView Clip(float radius, ZView view);
 
 ZView Font(ZFont size, ZView view);
+
+// Grow shares out the SLACK — whatever main-axis room is left after every child
+// has been measured at its own content size. So a Grow child's final size is
+// still its content plus a share, and two Grow(1) siblings come out EQUAL ONLY
+// IF THEY CONTAIN THE SAME THING.
+//
+// Share divides the whole axis instead: the child's own intrinsic main-axis size
+// is dropped, and the weights alone decide. Two Share(1) siblings are the same
+// size whatever is inside them. (Grow is CSS `flex-grow: N`; Share is `flex: N`,
+// i.e. flex-grow with flex-basis: 0.)
+//
+// Reach for Share whenever the row is a GRID and the content is a label that
+// happens to sit in it — a keyboard's key caps, a segmented control, a tab bar.
+// P46 found the on-screen keyboard's caps built with Grow, so every cap was as
+// wide as its own letter: 'w' 69 units against 'i' 49 in the same row, and
+// latching shift re-measured the uppercase glyphs and MOVED EVERY KEY IN THE ROW
+// under the finger. Nothing looked broken, because a keyboard of slightly
+// mis-sized keys still looks like a keyboard.
 ZView Grow(float weight, ZView view);
+ZView Share(float weight, ZView view);
 
 // Set the text weight (the emphasis axis of the type scale). Heavier weights are
 // a synthesised faux-bold (the bundled face is Regular-only), kept modest so text
@@ -1649,6 +1668,58 @@ void z_task_close(ZApp *app, const ZTask *task);
 //
 // Asking is what subscribes, so a client that never calls this costs nothing.
 const char *z_snapshot(ZApp *app, const ZTask *task);
+
+// ---------------------------------------------------------------------------
+// Layout probe (P46) — drive a surface by IDENTITY instead of by coordinates.
+//
+// Every harness this project has thrown away died the same death: it tapped a
+// number read off a screenshot, the layout moved, and the tap started landing on
+// whatever was there instead — silently, because a tap that hits nothing still
+// returns. The fix is not "stop testing surfaces", it is to stop being the one
+// who decides WHERE a control is. The layout already knows: after arrange() every
+// node carries its frame. So a test names the control by its HANDLER (which is
+// code, and moves when the code moves) and the toolkit answers with the frame.
+//
+// z_probe_tap does three separate things and reports each, because they are three
+// separate claims and only the first is about the test:
+//
+//   found    — a tappable node with this handler (and, for a data handler, this
+//              data) exists in the laid-out tree at all. False = the test named
+//              something that is not on screen; nothing below it means anything.
+//   hit_same — the REAL hit walk, run at the centre of that frame, came back with
+//              that same node. This is the claim a coordinate tap was always
+//              making implicitly and never checking: that the control is where
+//              the layout says AND that pressing there reaches it rather than
+//              something painted over it.
+//   ran      — the handler on the node THE HIT WALK FOUND was dispatched. It is
+//              deliberately the hit node and not the resolved one: if the two
+//              disagree, the wrong thing must actually happen, so the assertion
+//              downstream (a character, a toggle) fails too rather than passing
+//              on a technicality.
+//
+// Frames are surface pixels. Call it from a timer or an event callback, never
+// from body() — it reads the tree the LAST build laid out, and inside body() that
+// tree is the previous frame's, mid-teardown.
+typedef struct ZProbeTap {
+    bool found;
+    float x, y, w, h;   // the resolved node's frame (surface px)
+    bool hit_same;
+    bool ran;
+} ZProbeTap;
+
+// Resolve by handler. Pass on_data + data for an OnTapData node (data is compared
+// by pointer value, which is how a per-item handler is told apart from its
+// siblings), or on_plain for an OnTap node. Exactly one of the two is used.
+ZProbeTap z_probe_tap(ZApp *app, ZTapAction on_data, void *data, ZAction on_plain);
+
+// Every tappable node in the laid-out tree, front-to-back, with its frame — for
+// the assertions that are about the SET of controls rather than one of them
+// (a touch-target audit, a "nothing overlaps" check). The handler pointers come
+// back so the caller can name what it is looking at.
+typedef void (*ZProbeVisitor)(void *ud, ZTapAction on_data, void *data,
+                              ZAction on_plain, float x, float y, float w,
+                              float h);
+void z_probe_taps(ZApp *app, ZProbeVisitor fn, void *ud);
 
 #ifdef __cplusplus
 }

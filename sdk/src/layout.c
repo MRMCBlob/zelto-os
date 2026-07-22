@@ -182,10 +182,13 @@ static void arrange(ZView n, float x, float y, float w, float h) {
     float inner_main = horiz ? iw : ih;
     float inner_cross = horiz ? ih : iw;
 
+    // A Share() child contributes NOTHING to the measured total, which is what
+    // leaves the whole axis (less spacing) as freedom for the weights to divide.
+    // Grow, by contrast, only ever divides what its siblings' content left over.
     float total_main = 0.0f, total_grow = 0.0f;
     for (int i = 0; i < n->n_children; i++) {
         ZView c = n->children[i];
-        total_main += horiz ? c->w : c->h;
+        total_main += c->grow_share ? 0.0f : (horiz ? c->w : c->h);
         total_grow += c->grow;
     }
     if (n->n_children > 1) {
@@ -199,7 +202,7 @@ static void arrange(ZView n, float x, float y, float w, float h) {
     float pos = horiz ? ix : iy;
     for (int i = 0; i < n->n_children; i++) {
         ZView c = n->children[i];
-        float c_main = (horiz ? c->w : c->h);
+        float c_main = c->grow_share ? 0.0f : (horiz ? c->w : c->h);
         if (total_grow > 0.0f) {
             c_main += freedom * c->grow / total_grow;
         }

@@ -31,6 +31,7 @@ typedef struct NotepadState {
     bool wrote_this_boot;          // an INSERT has happened in this process
     bool autosaved;                // ZELTO_NOTEPAD_AUTOSAVE has fired once
     bool autofocused;              // the note field was focused for the harness
+    char echoed[Z_TEXTFIELD_CAP];  // last note text ZELTO_NOTEPAD_ECHO reported
 } NotepadState;
 
 // Reload the most-recent rows from the DB into the display snapshot.
@@ -75,10 +76,11 @@ static void ensure_init(NotepadState *s) {
     // demo without first typing it (typing still works — tap the field). Two words
     // so a long-press selects just one (proving word-, not whole-field, selection).
     //
-    // NOT pre-filled under the P45 KBD harness: that test's whole point is that
-    // what ends up on disk is what was TYPED, and a field seeded with "hello
-    // world" would persist a note nobody entered and pass either way.
-    if (!getenv("ZELTO_NOTEPAD_AUTOSAVE")) {
+    // NOT pre-filled under the P45 KBD harness or the P46 key-cap one: those
+    // tests' whole point is that what ends up in the field is what was TYPED, and
+    // a field seeded with "hello world" would show a note nobody entered and pass
+    // either way.
+    if (!getenv("ZELTO_NOTEPAD_AUTOSAVE") && !getenv("ZELTO_NOTEPAD_ECHO")) {
         snprintf(s->note.text, sizeof(s->note.text), "hello world");
         s->note.len = (int)strlen(s->note.text);
         s->note.caret = s->note.anchor = s->note.len;
@@ -150,7 +152,25 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     // rather than on a timer. Length, not time, is what makes it deterministic:
     // under TCG the guest clock lags wall time by an unpredictable amount, so
     // any "save 40s after launch" would race the keys instead of following them.
+    // P46 KEY-CAP harness hook. ZELTO_NOTEPAD_ECHO=1 reports the note field's
+    // exact content every time it changes. The autosave hook above cannot serve
+    // that test: it fires on a LENGTH, and a sequence with a backspace in it
+    // passes through the trigger length before it is finished, so what got saved
+    // would not be what was typed. An echo per change is also the only way to see
+    // the INTERMEDIATE states — that shift applied to exactly one letter, that
+    // backspace removed exactly one — rather than only the end of the string.
+    const char *echo = getenv("ZELTO_NOTEPAD_ECHO");
     const char *autosave = getenv("ZELTO_NOTEPAD_AUTOSAVE");
+    if (echo && echo[0] && strcmp(state->echoed, state->note.text) != 0) {
+        snprintf(state->echoed, sizeof(state->echoed), "%s", state->note.text);
+        fprintf(stderr, "[notepad] field='%s' len=%d\n", state->note.text,
+                state->note.len);
+        fflush(stderr);
+    }
+    if (echo && echo[0] && !state->autofocused) {
+        state->autofocused = true;
+        z_app_focus_field(app, &state->note);
+    }
     if (autosave && autosave[0]) {
         if (!state->autofocused) {
             state->autofocused = true;

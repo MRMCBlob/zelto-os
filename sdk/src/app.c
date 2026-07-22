@@ -365,6 +365,7 @@ ZTextField *z_app_active_field(ZApp *app) {
 static void perm_handle_reply(ZApp *app);
 static void press_release(ZApp *app);   // press-feedback spring (P31), defined below
 static void stamp_press(ZApp *app, ZView root);
+static void probe_dump_once(ZApp *app);   // ZELTO_PROBE_TAPS (P46), defined below
 static void clip_handle_read(ZApp *app);
 static void ctrl_handle_read(ZApp *app);
 static void ctrl_connect_register(ZApp *app);
@@ -586,6 +587,14 @@ static void render(ZApp *app) {
     app->cur_arena = other;
     app->root = new_root;
 
+    // ZELTO_PROBE_TAPS=1 prints every tappable node's frame once, the first time
+    // this surface is laid out. The generic form of the keyboard's cap audit: any
+    // surface's touch targets can be measured without adding a hook to it, which
+    // is what turns "that grid looks uneven" into a number. ZELTO_PROBE_APP scopes
+    // it to one surface, exactly like ZELTO_PRESS_APP — the env is process-global
+    // and the whole System UI boots at once.
+    probe_dump_once(app);
+
     ZBuf *buf = buf_acquire(app);
     if (!buf) {
         // Both buffers in flight (rare with the frame-callback throttle); try
@@ -692,6 +701,146 @@ static void dispatch_tap(ZApp *app, ZView node) {
     } else if (node->on_tap) {
         node->on_tap(app, app->state);
     }
+}
+
+// --- layout probe (P46) ---------------------------------------------------
+// See the contract over ZProbeTap in zelto/ui.h. This lives here rather than in
+// layout.c because the whole point is to end in a REAL dispatch: it needs both
+// the hit walk (hit_test, above) and dispatch_tap, and a probe that resolved a
+// frame but ran nothing would be one more coordinate-free way to assert nothing.
+//
+// Every view modifier in this toolkit MUTATES the node it is handed
+// (view.c: Grow/Background/OnTap all `return view`), so a key cap — its frame,
+// its fill and its tap handler — is a SINGLE node. That is what makes resolving
+// by handler and reading the frame off the result correct rather than
+// approximately correct: there is no wrapper whose frame differs from the
+// handler's.
+static ZView probe_find(ZView n, ZTapAction on_data, void *data,
+                        ZAction on_plain) {
+    if (!n) {
+        return NULL;
+    }
+    bool match = on_data ? (n->on_tap_data == on_data && n->tap_data == data)
+                         : (n->on_tap == on_plain);
+    if (match) {
+        return n;
+    }
+    // Build order (pre-order), so a caller with two identical handlers gets the
+    // first one declared — stable, and the only sane answer without a key.
+    for (int i = 0; i < n->n_children; i++) {
+        ZView f = probe_find(n->children[i], on_data, data, on_plain);
+        if (f) {
+            return f;
+        }
+    }
+    return NULL;
+}
+
+ZProbeTap z_probe_tap(ZApp *app, ZTapAction on_data, void *data,
+                      ZAction on_plain) {
+    ZProbeTap r = {0};
+    if (!app || !app->root || (!on_data && !on_plain)) {
+        return r;
+    }
+    ZView n = probe_find(app->root, on_data, data, on_plain);
+    if (!n) {
+        return r;
+    }
+    r.found = true;
+    r.x = n->x;
+    r.y = n->y;
+    r.w = n->w;
+    r.h = n->h;
+    // The centre of the frame the layout gave it — not a number anybody chose.
+    ZView hit = hit_test(app->root, (double)n->x + (double)n->w / 2.0,
+                         (double)n->y + (double)n->h / 2.0);
+    r.hit_same = hit == n;
+    // Dispatch what the HIT found, not what we resolved: when they disagree the
+    // wrong handler must really run, so the caller's own assertion catches it.
+    if (hit) {
+        dispatch_tap(app, hit);
+        r.ran = true;
+    }
+    return r;
+}
+
+static void probe_walk(ZView n, ZProbeVisitor fn, void *ud) {
+    if (!n) {
+        return;
+    }
+    if (n->on_tap || n->on_tap_data) {
+        fn(ud, n->on_tap_data, n->tap_data, n->on_tap, n->x, n->y, n->w, n->h);
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        probe_walk(n->children[i], fn, ud);
+    }
+}
+
+void z_probe_taps(ZApp *app, ZProbeVisitor fn, void *ud) {
+    if (!app || !app->root || !fn) {
+        return;
+    }
+    probe_walk(app->root, fn, ud);
+}
+
+// The first Text anywhere under a node — the only human-readable name a generic
+// dump can give a control. A disc with a mark in it and a label under it answers
+// with its label; a bare icon answers with nothing, and prints as "-".
+static const char *probe_label(ZView n) {
+    if (!n) {
+        return NULL;
+    }
+    if (n->kind == Z_K_TEXT && n->text && n->text[0]) {
+        return n->text;
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        const char *t = probe_label(n->children[i]);
+        if (t) {
+            return t;
+        }
+    }
+    return NULL;
+}
+
+static void probe_dump_walk(ZView n, int *count) {
+    if (!n) {
+        return;
+    }
+    if (n->on_tap || n->on_tap_data) {
+        const char *lbl = probe_label(n);
+        fprintf(stderr,
+                "zelto: probe tap '%s' x=%.0f y=%.0f w=%.0f h=%.0f\n",
+                lbl ? lbl : "-", n->x, n->y, n->w, n->h);
+        (*count)++;
+    }
+    for (int i = 0; i < n->n_children; i++) {
+        probe_dump_walk(n->children[i], count);
+    }
+}
+
+// ZELTO_PROBE_TAPS=1: dump this surface's touch targets once, after the first
+// build that has been through arrange(). Once, because the interesting question
+// ("is this grid even?") is answered by one frame and a per-frame dump would bury
+// the boot log. ZELTO_PROBE_APP scopes it to a single app_id/title.
+static void probe_dump_once(ZApp *app) {
+    static bool done;
+    const char *on = getenv("ZELTO_PROBE_TAPS");
+    if (done || !on || !on[0] || on[0] == '0' || !app->root) {
+        return;
+    }
+    const char *only = getenv("ZELTO_PROBE_APP");
+    if (only && only[0] &&
+        !((app->app_id && strcmp(only, app->app_id) == 0) ||
+          (app->title && strcmp(only, app->title) == 0))) {
+        return;
+    }
+    done = true;
+    int count = 0;
+    probe_dump_walk(app->root, &count);
+    fprintf(stderr, "zelto: probe taps: %d in %s (%dx%d)\n", count,
+            app->app_id ? app->app_id : (app->title ? app->title : "?"),
+            app->width, app->height);
+    fflush(stderr);
 }
 
 // --- xdg-shell handlers ---------------------------------------------------

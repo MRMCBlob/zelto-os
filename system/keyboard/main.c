@@ -41,11 +41,18 @@ typedef struct KbdState {
     // field really is focused. `typed` is how far through ZELTO_KBD_TYPE we are.
     int typed;
     bool typing;
+    // P46: the same idea one layer out — press the KEY CAPS instead of calling
+    // the commit function. `tapped` is how far through ZELTO_KBD_TAP we are.
+    int tapped;
+    bool tapping;
+    bool audited;
 } KbdState;
 
 // Commit the next character of ZELTO_KBD_TYPE, then re-arm until the string is
 // done. See the note over the arming code in on_show().
 static void type_tick(ZApp *app, void *ud);
+// Press the next cap named by ZELTO_KBD_TAP. See the note over tap_tick().
+static void tap_tick(ZApp *app, void *ud);
 
 // --- input-method show/hide (driven by the compositor) ---------------------
 static void on_show(ZApp *app, void *ud) {
@@ -68,6 +75,18 @@ static void on_show(ZApp *app, void *ud) {
     if (want && want[0] && !s->typing) {
         s->typing = true;
         z_after(app, 400, type_tick, s);
+    }
+    // THE KEY-CAP HOOK (P46). ZELTO_KBD_TAP="a,SHIFT,b" presses the caps
+    // themselves. Armed off the same handshake and for the same reason; what it
+    // adds over ZELTO_KBD_TYPE is everything BETWEEN a finger and the commit —
+    // see tap_tick().
+    const char *taps = getenv("ZELTO_KBD_TAP");
+    if (!taps || !taps[0]) {
+        taps = getenv("ZELTO_KBD_CAPS");   // the audit runs without a sequence
+    }
+    if (taps && taps[0] && !s->tapping) {
+        s->tapping = true;
+        z_after(app, 400, tap_tick, s);
     }
     z_invalidate(app);
 }
@@ -136,10 +155,274 @@ static void on_enter(ZApp *app, void *state) {
     z_im_commit_text(app, "\n");
 }
 
+// --- the key caps, driven as key caps (P46) ---------------------------------
+//
+// WHAT THIS COVERS THAT ZELTO_KBD_TYPE DOES NOT. The P45 hook calls
+// z_im_commit_text() from inside this process, which proves the text-input-v3 <->
+// input-method-v2 relay and the persistence behind it, and proves nothing
+// whatsoever about the keyboard as a SURFACE. Everything between a finger and
+// that call was untested: whether a cap is laid out where the grid says, whether
+// pressing it reaches that cap rather than a neighbour or the material behind it,
+// whether the mark on a modifier describes what the modifier does, and whether
+// the caps are big enough to hit.
+//
+// WHY THIS IS NOT THE COORDINATE TAPPING THAT ROTTED FIVE HARNESSES. Those
+// harnesses carried the numbers: a screenshot was measured, "the 'a' key is at
+// (96, 1180)" went into a shell script, the layout moved, and the tap kept
+// landing — on something else, silently. Here the test names a CHARACTER and the
+// layout answers where it is (z_probe_tap, sdk/src/app.c), so the only way for
+// this to drift is for the code that builds the row to change, which is the thing
+// under test. There is not a single coordinate in the harness or in this file.
+//
+// A name is one character ('a', '5', '?') or one of these words.
+static struct {
+    const char *name;
+    ZAction act;
+} KEY_WORDS[] = {
+    {"SHIFT", on_shift},
+    {"BKSP", on_backspace},
+    {"SPACE", on_space},
+    {"ENTER", on_enter},
+    {"SYM", on_symbols},
+};
+#define N_KEY_WORDS ((int)(sizeof(KEY_WORDS) / sizeof(KEY_WORDS[0])))
+
+// Name -> the handler the cap carries. A character key is an OnTapData node
+// keyed by the LOWERCASE codepoint (char_key binds `c`, not the shifted glyph),
+// which is exactly why tapping 'a' with shift latched must be asked for as 'a'.
+static bool key_handler(const char *name, ZTapAction *on_data, void **data,
+                        ZAction *on_plain) {
+    *on_data = NULL;
+    *data = NULL;
+    *on_plain = NULL;
+    for (int i = 0; i < N_KEY_WORDS; i++) {
+        if (strcmp(name, KEY_WORDS[i].name) == 0) {
+            *on_plain = KEY_WORDS[i].act;
+            return true;
+        }
+    }
+    if (name[0] && !name[1]) {
+        *on_data = on_char;
+        *data = (void *)(intptr_t)name[0];
+        return true;
+    }
+    return false;
+}
+
+// The reverse, for the audit: what is this cap called?
+static void key_name(ZTapAction on_data, void *data, ZAction on_plain, char *buf,
+                     size_t n) {
+    for (int i = 0; i < N_KEY_WORDS; i++) {
+        if (on_plain == KEY_WORDS[i].act) {
+            snprintf(buf, n, "%s", KEY_WORDS[i].name);
+            return;
+        }
+    }
+    if (on_data == on_char) {
+        snprintf(buf, n, "%c", (char)(intptr_t)data);
+        return;
+    }
+    snprintf(buf, n, "?");
+}
+
+// --- the touch-target audit -------------------------------------------------
+// ZELTO_KBD_CAPS=1 measures every cap on the laid-out grid and prints it. The
+// numbers are the assertion; this file does not decide what passes.
+#define AUDIT_MAX 64
+typedef struct CapAudit {
+    int n;
+    struct {
+        char name[16];
+        float x, y, w, h;
+    } cap[AUDIT_MAX];
+} CapAudit;
+
+static float in_pt(float units) {
+    return units * (float)Z_TYPE_DEN / (float)Z_TYPE_NUM;
+}
+
+static void audit_cap(void *ud, ZTapAction on_data, void *data, ZAction on_plain,
+                      float x, float y, float w, float h) {
+    CapAudit *a = ud;
+    if (a->n >= AUDIT_MAX) {
+        return;
+    }
+    key_name(on_data, data, on_plain, a->cap[a->n].name,
+             sizeof(a->cap[a->n].name));
+    a->cap[a->n].x = x;
+    a->cap[a->n].y = y;
+    a->cap[a->n].w = w;
+    a->cap[a->n].h = h;
+    a->n++;
+}
+
+static void audit_caps(ZApp *app) {
+    CapAudit a = {0};
+    z_probe_taps(app, audit_cap, &a);
+
+    float min_w = 0.0f, min_h = 0.0f;
+    for (int i = 0; i < a.n; i++) {
+        // Reported in POINTS as well as units, because 44pt is the number anybody
+        // arguing about a touch target reaches for, and converting it in a shell
+        // script is how a metric ends up wrong in two places.
+        fprintf(stderr,
+                "[keyboard] cap '%s' x=%.0f y=%.0f w=%.0f h=%.0f "
+                "(%.1fpt x %.1fpt)\n",
+                a.cap[i].name, a.cap[i].x, a.cap[i].y, a.cap[i].w, a.cap[i].h,
+                in_pt(a.cap[i].w), in_pt(a.cap[i].h));
+        if (i == 0 || a.cap[i].w < min_w) {
+            min_w = a.cap[i].w;
+        }
+        if (i == 0 || a.cap[i].h < min_h) {
+            min_h = a.cap[i].h;
+        }
+    }
+    fprintf(stderr,
+            "[keyboard] caps: %d total, smallest %.0fx%.0f units "
+            "(%.1fpt x %.1fpt)\n",
+            a.n, min_w, min_h, in_pt(min_w), in_pt(min_h));
+
+    // Per row: are the caps uniform, and how much of the row hits NOTHING?
+    //
+    // The second number is the one nobody had. A cap is a rounded face with a
+    // KEY_GAP between it and the next, and that gap belongs to no key — a press
+    // that lands in it reaches the material behind and does nothing. iOS gives
+    // its caps hit regions that meet in the gutter, so its keyboard has no dead
+    // strips at all; this one does, and their width is printed here so the claim
+    // is a measurement rather than an impression.
+    for (int i = 0; i < a.n; i++) {
+        if (i > 0 && a.cap[i].y == a.cap[i - 1].y) {
+            continue;             // same row, already summarised
+        }
+        float y = a.cap[i].y;
+        float lo = a.cap[i].x, hi = a.cap[i].x + a.cap[i].w;
+        float covered = 0.0f, cmin = 0.0f, cmax = 0.0f;
+        int cells = 0, chars = 0;
+        for (int j = 0; j < a.n; j++) {
+            if (a.cap[j].y != y) {
+                continue;
+            }
+            covered += a.cap[j].w;
+            if (a.cap[j].x < lo) { lo = a.cap[j].x; }
+            if (a.cap[j].x + a.cap[j].w > hi) { hi = a.cap[j].x + a.cap[j].w; }
+            cells++;
+            // Uniformity is a claim about the CHARACTER caps: a modifier is
+            // deliberately 1.6x or 5.6x a letter, so folding them in would make
+            // every row look ragged and hide the thing being watched for.
+            if (!a.cap[j].name[1]) {
+                if (chars == 0 || a.cap[j].w < cmin) { cmin = a.cap[j].w; }
+                if (chars == 0 || a.cap[j].w > cmax) { cmax = a.cap[j].w; }
+                chars++;
+            }
+        }
+        float span = hi - lo;
+        fprintf(stderr,
+                "[keyboard] row y=%.0f: %d caps, span %.0f, covered %.0f, "
+                "dead %.0f (%.1f%%), char widths %.0f..%.0f\n",
+                y, cells, span, covered, span - covered,
+                span > 0.0f ? 100.0f * (span - covered) / span : 0.0f, cmin,
+                cmax);
+    }
+    fflush(stderr);
+}
+
+// Press the next cap named by ZELTO_KBD_TAP, then re-arm.
+//
+// The wait for the slide is not politeness. The grid rides an Offset driven by
+// the show spring, and an Offset bakes into the layout — so while the keyboard is
+// sliding up, every cap's frame is genuinely somewhere else. Pressing then would
+// resolve a frame that is about to move and, worse, might still be off the bottom
+// of the surface where the hit walk's own surface clip refuses it.
+//
+// It is a GUARD, not a tested behaviour, and the difference is worth writing
+// down: removing this check did not make test_keyboard_caps_sim fail, because
+// the first press is armed 400ms after the show handshake and the spring has
+// already arrived by then. It earns its place on the runs where that is not
+// true — reduce-motion, a loaded machine, a longer sequence — not on this one.
+static void tap_tick(ZApp *app, void *ud) {
+    KbdState *s = ud;
+    if (z_animated_get(s->anim) < 0.999f) {
+        z_after(app, 100, tap_tick, s);   // still sliding; the caps are moving
+        return;
+    }
+    // The audit runs off the same settled grid, and on its own: measuring the
+    // caps is a claim about the LAYOUT, so it must not need a tap sequence.
+    if (!s->audited) {
+        s->audited = true;
+        if (getenv("ZELTO_KBD_CAPS")) {
+            audit_caps(app);
+        }
+    }
+    const char *spec = getenv("ZELTO_KBD_TAP");
+    if (!spec || !spec[0]) {
+        return;
+    }
+
+    // Walk to token number s->tapped.
+    const char *p = spec;
+    for (int i = 0; i < s->tapped && p; i++) {
+        p = strchr(p, ',');
+        if (p) {
+            p++;
+        }
+    }
+    if (!p || !*p) {
+        fprintf(stderr, "[keyboard] taps done (%d)\n", s->tapped);
+        fflush(stderr);
+        return;
+    }
+    char name[16];
+    const char *end = strchr(p, ',');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    if (len >= sizeof(name)) {
+        len = sizeof(name) - 1;
+    }
+    memcpy(name, p, len);
+    name[len] = '\0';
+    s->tapped++;
+
+    ZTapAction on_data;
+    void *data;
+    ZAction on_plain;
+    if (!key_handler(name, &on_data, &data, &on_plain)) {
+        fprintf(stderr, "[keyboard] tap '%s': no such key name\n", name);
+        fflush(stderr);
+        z_after(app, 250, tap_tick, s);
+        return;
+    }
+    ZProbeTap t = z_probe_tap(app, on_data, data, on_plain);
+    if (!t.found) {
+        // Not a crash: on the symbols layer there is no 'q' and no SHIFT, and a
+        // test that asks for one should read a specific line saying so.
+        fprintf(stderr, "[keyboard] tap '%s': NOT ON THIS LAYER\n", name);
+    } else {
+        fprintf(stderr,
+                "[keyboard] tap '%s' cap x=%.0f y=%.0f w=%.0f h=%.0f hit=%s "
+                "ran=%s\n",
+                name, t.x, t.y, t.w, t.h, t.hit_same ? "same" : "DIFFERENT",
+                t.ran ? "yes" : "no");
+    }
+    fflush(stderr);
+    // A gap wide enough for the rebuild a modifier triggers: shift and the layer
+    // key both change what the NEXT cap is, and the next resolve reads the tree
+    // the last build laid out.
+    z_after(app, 250, tap_tick, s);
+}
+
 // --- key views --------------------------------------------------------------
 // A key cap. Flanking the mark with Spacers centres it on the key's *main*
 // (horizontal) axis — .align only governs the cross (vertical) axis, so without
 // them the mark hugs the left edge.
+//
+// SHARE, NOT GROW. This was Grow for twenty-five phases, which means every cap
+// was as wide as the letter printed on it: measured at 720x1440, 'w' came out 69
+// units and 'i' 49 in the same row, and latching shift re-measured the uppercase
+// glyphs and moved every key in the row sideways under the finger. Grow divides
+// the SLACK left after each child is measured, so the content leaks through;
+// Share drops the intrinsic and lets the weights divide the row (zelto/ui.h).
+// A key cap is a grid cell that happens to have a letter in it, so the letter
+// must not have a vote. Found by the P46 cap audit, which is the first thing that
+// ever measured a key.
 //
 // Character caps are the LIGHTEST surface in the system (SURFACE_4): on a heavy
 // dark material, a field of forty SURFACE_3 caps reads as one grey slab with
@@ -152,7 +435,7 @@ static ZView key_cap(ZView inner, ZAction act, float grow, ZColor bg) {
                 Frame(0.0f, (float)ZELTO_KEY_H,
                     HStack(Spacer(), inner, Spacer(),
                            .align = Z_ALIGN_CENTER)))));
-    return Grow(grow, act ? OnTap(act, face) : face);
+    return Share(grow, act ? OnTap(act, face) : face);
 }
 static ZView glyph(const char *label) {
     return Weight(Z_WEIGHT_MEDIUM,
@@ -228,9 +511,11 @@ static ZView char_key(KbdState *s, char c) {
 
 // A half-key gutter at the end of a row (the a-s-d-f row is inset by half a key
 // on both sides, so its nine keys sit UNDER the gaps of the ten above them). It
-// is a grow-weighted empty cap with no fill, not a Spacer inside a Frame.
+// is a share-weighted empty cap with no fill, not a Spacer inside a Frame. Share
+// for the same reason the caps use it: half a key means half of what a key gets,
+// which is only true if a key's width is its share of the row.
 static ZView half_gutter(void) {
-    return Grow(0.5f, Rect(.color = z_rgba(0, 0, 0, 0)));
+    return Share(0.5f, Rect(.color = z_rgba(0, 0, 0, 0)));
 }
 
 // A row of character keys from a NUL-terminated string, optionally inset by half

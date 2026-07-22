@@ -33,6 +33,8 @@ struct ZNode {
     // Common box params.
     float padding;        // inset applied inside this node's frame
     float grow;           // flex weight on the parent's main axis (Spacer = 1)
+    bool grow_share;      // Share(): drop this child's intrinsic main size, so the
+                          // weights divide the WHOLE axis rather than the slack
     float fixed_w;        // Frame width  (0 = auto)
     float fixed_h;        // Frame height (0 = auto)
 

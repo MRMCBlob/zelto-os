@@ -546,6 +546,14 @@ ZView Grow(float weight, ZView view) {
     return view;
 }
 
+// Same weight, but the child's intrinsic main-axis size is dropped so the weights
+// alone divide the axis. See the contrast with Grow in zelto/ui.h.
+ZView Share(float weight, ZView view) {
+    view->grow = weight;
+    view->grow_share = true;
+    return view;
+}
+
 ZView Shadow(float elevation, ZView view) {
     view->elevation = elevation;
     return view;

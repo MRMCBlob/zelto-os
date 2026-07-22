@@ -498,7 +498,17 @@ static ZView cc_cell(ZAction on_tap, CcTint t, ZView mark, const char *label) {
     // OnTap sits on the DISC, not on the disc-plus-label column: the press veil is
     // masked to the tapped node's own corner radius, so a handler on the column
     // paints a rounded BOX over a round button. The disc is the target on iOS too.
-    return Grow(1.0f,
+    //
+    // SHARE, NOT GROW (P46). Grow divides only the SLACK, so a cell came out as
+    // wide as its own LABEL — and since the label sets the cell width and the disc
+    // is centred in the cell, the discs in a column sat at different x in the two
+    // rows. Measured with ZELTO_PROBE_TAPS: 108/329/548 in the "Airplane, Wi-Fi,
+    // Silent" row against 105/326/547 in "Bright, Lock, Motion". Three units is
+    // not much and that is exactly why it survived: a toggle grid one-and-a-half
+    // points out of column looks like a toggle grid. Share divides the whole row,
+    // so the word under a button no longer decides where the button is. Same bug,
+    // same phase, as the keyboard's key caps.
+    return Share(1.0f,
         VStack(
             OnTap(on_tap,
                 Frame(CC_BTN, CC_BTN,
