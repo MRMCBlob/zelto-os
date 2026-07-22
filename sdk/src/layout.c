@@ -37,6 +37,7 @@ static void measure(ZView n, ZText *text) {
         dw = z_text_measure(text, n->text, n->font_size, n->weight, &ascent,
                             &descent);
         dh = ascent + descent;
+        n->text_w = dw;   // what it will paint; arrange() may narrow n->w below it
         break;
     }
     case Z_K_IMAGE: {

@@ -195,6 +195,62 @@ static ZView wrap_group(const ZWrapLine *lines, int n, const ZWrapOpts *opts,
     return z_stack(Z_AXIS_VERTICAL, &col);
 }
 
+// One line, cut to fit. See the contract in zelto/ui.h.
+//
+// The ellipsis is U+2026, not three periods: the bundled face has it (gid check
+// aside, it measures 21.45 at Body against 24.38 for "..." — a real, narrower
+// glyph, not three dots and not .notdef's box), and one glyph is what typography
+// asks for.
+//
+// The scan is linear from the front and stops at the first prefix that does NOT
+// fit, so it costs one shaping call per byte KEPT rather than per byte given —
+// a 2KB payload cut at 40 characters measures 40 times, not 2000. Monotonicity
+// is what makes that correct: adding a byte never shortens the line.
+ZView z_text_ellipsize(ZApp *app, const char *s, const ZEllipsizeOpts *opts) {
+    static const char ELL[] = "\xe2\x80\xa6";
+    float size = opts->size > 0 ? (float)opts->size : (float)Z_FONT_BODY;
+    ZText *t = z_app_text(app);
+    const char *src = s ? s : "";
+    int len = (int)strlen(src);
+
+    ZView out;
+    float full = z_text_measure_n(t, src, len, size, opts->weight, NULL, NULL);
+    if (opts->width <= 0.0f || full <= opts->width) {
+        out = z_text("%s", src);          // fits: untouched, no ellipsis
+    } else {
+        float ew = z_text_measure_n(t, ELL, 3, size, opts->weight, NULL, NULL);
+        float avail = opts->width - ew;
+        int cut = 0;
+        for (int i = 1; i <= len; i++) {
+            // Only ever cut on a character boundary: a continuation byte
+            // (10xxxxxx) is the middle of a UTF-8 sequence, and half a sequence
+            // is not a shorter string, it is a broken one.
+            if (((unsigned char)src[i] & 0xC0) == 0x80) {
+                continue;
+            }
+            if (z_text_measure_n(t, src, i, size, opts->weight, NULL, NULL) >
+                avail) {
+                break;
+            }
+            cut = i;
+        }
+        // A space immediately before an ellipsis reads as a gap in the sentence.
+        while (cut > 0 && (src[cut - 1] == ' ' || src[cut - 1] == '\t')) {
+            cut--;
+        }
+        // Even the ellipsis alone does not fit (a column narrower than one
+        // glyph). Emit it anyway rather than nothing: an empty label says the
+        // field is empty, which is a different and worse lie than a cut one.
+        out = z_text("%.*s%s", cut, src, ELL);
+    }
+    out->font_size = size;
+    out->weight = opts->weight;
+    if (opts->color.a) {
+        out->fg = opts->color;
+    }
+    return out;
+}
+
 // THE LINE CAP IS AN ARRAY SIZE, NOT A FACT ABOUT PROSE, so P45 removed it
 // rather than reporting it. P44 capped at Z_MAX_CHILDREN and dropped the rest
 // with no diagnostic; the brief that found it asked whether the right answer was

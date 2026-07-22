@@ -260,6 +260,43 @@ ZView z_text_wrap(ZApp *app, const char *s, const ZWrapOpts *opts);
 #define WrapText(appp, s, ...) \
     z_text_wrap(appp, s, &(ZWrapOpts){__VA_ARGS__})
 
+// ONE line, cut to fit its column with an ellipsis. The other half of the answer
+// to "text I did not write, in a box I chose".
+//
+// WrapText is right for PROSE — a permission sentence, a package description, a
+// notification body — where every word matters and the box can grow. It is wrong
+// for an IDENTIFIER shown as a label: the share sheet's payload is a URL, and a
+// URL wrapped over six lines is not more readable than a URL cut short, it is a
+// sheet that has eaten the screen. What that wants is the head of the string and
+// a mark saying there is more, which is what every share sheet, tab title and
+// file row on every platform does.
+//
+// Until P46 the toolkit had neither for that case, so system/chooser drew the
+// payload as a bare Text in a fixed-height row and it ran off the sheet. P45
+// found that, wrote down why WrapText was the wrong tool, and left the overflow
+// shipping. Both halves of its reasoning were right and the conclusion was not:
+// the missing primitive is a measure-and-cut, and the shaper that does the
+// measuring was already here.
+//
+// The cut lands on a UTF-8 boundary, trailing spaces are trimmed before the
+// ellipsis, and the result is a plain Text node whose intrinsic width is
+// therefore <= .width — so the row it sits in cannot overflow, which is the
+// actual guarantee. A string that already fits comes back untouched, with no
+// ellipsis and no measuring beyond the one call that established it fits.
+typedef struct ZEllipsizeOpts {
+    float width;       // REQUIRED: the column width in screen units
+    ZFont size;        // 0 = Z_FONT_BODY
+    ZWeight weight;    // 0 = Regular
+    ZColor color;      // .a == 0 = inherit (Z_COLOR_TEXT)
+} ZEllipsizeOpts;
+
+ZView z_text_ellipsize(ZApp *app, const char *s, const ZEllipsizeOpts *opts);
+// Not "ClipText": Clip() already means a subtree paint mask in this toolkit, and
+// two different meanings of clipping in one file is how the next person reaches
+// for the wrong one.
+#define EllipsizeText(appp, s, ...) \
+    z_text_ellipsize(appp, s, &(ZEllipsizeOpts){__VA_ARGS__})
+
 // An image: a PNG or SVG loaded from `path` and drawn aspect-fit inside the
 // node's frame (letterboxed, never stretched). The decode is cached by path, so
 // listing an Image in a body() that rebuilds every frame is cheap. Give it a

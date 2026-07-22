@@ -598,13 +598,6 @@ static void render(ZApp *app) {
     app->cur_arena = other;
     app->root = new_root;
 
-    // ZELTO_PROBE_TAPS=1 prints every tappable node's frame once, the first time
-    // this surface is laid out. The generic form of the keyboard's cap audit: any
-    // surface's touch targets can be measured without adding a hook to it, which
-    // is what turns "that grid looks uneven" into a number. ZELTO_PROBE_APP scopes
-    // it to one surface, exactly like ZELTO_PRESS_APP — the env is process-global
-    // and the whole System UI boots at once.
-    probe_dump_once(app);
 
     ZBuf *buf = buf_acquire(app);
     if (!buf) {
@@ -685,6 +678,22 @@ static void render(ZApp *app) {
     if (anim_active) {
         app->dirty = true;
     }
+
+    // ZELTO_PROBE_TAPS=1 prints every tappable node's frame once. The generic
+    // form of the keyboard's cap audit: any surface's touch targets can be
+    // measured without adding a hook to it, which is what turns "that grid looks
+    // uneven" into a number. ZELTO_PROBE_APP scopes it to one surface, exactly
+    // like ZELTO_PRESS_APP — the env is process-global and the whole System UI
+    // boots at once.
+    //
+    // On the first SETTLED frame, not the first frame — probe_dump_once decides
+    // that for itself, because the flag above is computed BEFORE body() and body()
+    // is where a surface arms its entrance spring. The share sheet taught this:
+    // its very first build ticks nothing (no spring exists yet), so a dump gated
+    // on `anim_active` fired with the whole sheet still parked a sheet-height
+    // below the screen, and faithfully reported every row of it as off-screen. A
+    // measurement taken mid-animation is a measurement of the animation.
+    probe_dump_once(app);
 }
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
@@ -813,7 +822,25 @@ static const char *probe_label(ZView n) {
     return NULL;
 }
 
-static void probe_dump_walk(ZView n, int *count) {
+// Text that leaves the surface. The generic form of the bug the share sheet had
+// for two phases: a Text measures to ONE line however long that line is, so an
+// app-supplied string in a fixed row does not wrap, does not truncate and does
+// not warn — it simply paints past the edge of the screen, where nothing renders
+// and nothing complains. Judged against the SURFACE rather than against the
+// nearest container on purpose: "off the screen" needs no layout semantics to
+// interpret and cannot be argued with, where "wider than its box" depends on
+// which ancestor you decide the box is.
+static bool probe_off_surface(ZView root, ZView n) {
+    return n->x < root->x - 0.5f || n->y < root->y - 0.5f ||
+           n->x + n->w > root->x + root->w + 0.5f ||
+           n->y + n->h > root->y + root->h + 0.5f;
+}
+
+typedef struct ProbeCount {
+    int taps, texts, over;
+} ProbeCount;
+
+static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
     if (!n) {
         return;
     }
@@ -822,10 +849,37 @@ static void probe_dump_walk(ZView n, int *count) {
         fprintf(stderr,
                 "zelto: probe tap '%s' x=%.0f y=%.0f w=%.0f h=%.0f\n",
                 lbl ? lbl : "-", n->x, n->y, n->w, n->h);
-        (*count)++;
+        c->taps++;
+    }
+    if (n->kind == Z_K_TEXT && n->text && n->text[0]) {
+        c->texts++;
+        // Every string on the surface, not only the overflowing ones. This is
+        // what lets a test — or a screenshot catalogue — ask "is the thing this
+        // frame is NAMED for actually in it?", which is a question no pixel delta
+        // can answer: a shot of the wrong screen has a perfectly healthy delta.
+        fprintf(stderr, "zelto: probe text '%s' x=%.0f y=%.0f w=%.0f h=%.0f\n",
+                n->text, n->x, n->y, n->w, n->h);
+        // Two ways for a string to be somewhere it cannot be read. WIDER than the
+        // box it was given is the one that matters and the one the frames alone
+        // cannot show: arrange() clamps a Text's frame to its parent's inner box,
+        // so an unbounded string ends up with a perfectly reasonable `w` and
+        // paints straight through it (the renderer draws from the origin and does
+        // not clip). text_w is what measure() said it needs.
+        bool wide = n->text_w > n->w + 0.5f;
+        bool out = probe_off_surface(root, n);
+        if (wide || out) {
+            fprintf(stderr,
+                    "zelto: probe OVERFLOW text '%s' x=%.0f y=%.0f w=%.0f "
+                    "h=%.0f needs %.0f (%s)\n",
+                    n->text, n->x, n->y, n->w, n->h, n->text_w,
+                    wide ? (out ? "wider than its box, and off-surface"
+                                : "wider than its box")
+                         : "off-surface");
+            c->over++;
+        }
     }
     for (int i = 0; i < n->n_children; i++) {
-        probe_dump_walk(n->children[i], count);
+        probe_dump_walk(root, n->children[i], c);
     }
 }
 
@@ -845,12 +899,23 @@ static void probe_dump_once(ZApp *app) {
           (app->title && strcmp(only, app->title) == 0))) {
         return;
     }
+    // Settled? Asked AFTER the build, so a spring this build just armed counts.
+    // dt=0 advances nothing (advance_spring integrates one step of size zero), so
+    // this reads as a query; it runs only under the env var above.
+    if (z_anim_tick(app, 0.0f)) {
+        return;
+    }
     done = true;
-    int count = 0;
-    probe_dump_walk(app->root, &count);
-    fprintf(stderr, "zelto: probe taps: %d in %s (%dx%d)\n", count,
-            app->app_id ? app->app_id : (app->title ? app->title : "?"),
-            app->width, app->height);
+    ProbeCount c = {0};
+    probe_dump_walk(app->root, app->root, &c);
+    // The two text numbers share a line on purpose: "0 off-surface" out of 0 text
+    // nodes scanned is not a clean bill of health, it is an empty screen, and a
+    // reader (or a test) needs both to tell those apart.
+    fprintf(stderr,
+            "zelto: probe taps: %d in %s (%dx%d), text %d scanned %d "
+            "off-surface\n",
+            c.taps, app->app_id ? app->app_id : (app->title ? app->title : "?"),
+            app->width, app->height, c.texts, c.over);
     fflush(stderr);
 }
 

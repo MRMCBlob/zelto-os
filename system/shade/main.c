@@ -775,21 +775,70 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         z_animated_pin(s->banner_drag, (float)atof(bd_env));
         s->banner_mode = 2;
     }
-    // ZELTO_BANNER_DEMO=1 fabricates a heads-up banner directly in the sink on the
-    // first build, so the entrance transition is deterministically shot-verifiable
-    // WITHOUT the flaky multi-process post->consent->grant->deliver path.
+    // ZELTO_BANNER_DEMO=N fabricates N notifications directly in the sink on the
+    // first build, so both the heads-up entrance AND the Notification Center's
+    // list are deterministically shot-verifiable WITHOUT the flaky multi-process
+    // post->consent->grant->deliver path. Unset = none; `1` (the old spelling)
+    // still means exactly the one Ping banner, so the P32 banner shot is
+    // unchanged.
+    //
+    // WHY MORE THAN ONE. P45 found `11a-notification-center` photographing an
+    // EMPTY Notification Center — its whole delta was the blurred wallpaper
+    // behind it — because the shot recipe opened the panel and never posted
+    // anything to put in it. A panel that says "No notifications" is a real state
+    // worth a frame, but it is not the state that frame's NAME claims, and no
+    // delta threshold can tell the difference.
+    //
+    // The third seed carries deliberately LONG prose. The notification card is
+    // one of the surfaces P45 migrated to WrapText, and none of them had ever
+    // been shown a string long enough to need it — a wrap that is never exercised
+    // is a wrap that is never tested.
     static bool banner_demo_applied = false;
     if (!banner_demo_applied) {
         banner_demo_applied = true;
-        if (getenv("ZELTO_BANNER_DEMO") && !s->banners[0].used) {
-            Banner *b = &s->banners[0];
+        const char *demo = getenv("ZELTO_BANNER_DEMO");
+        int want = demo && demo[0] ? atoi(demo) : 0;
+        if (want < 0) {
+            want = 0;
+        }
+        static const struct {
+            const char *app_id, *title, *body, *action_id, *action_title;
+        } SEED[] = {
+            {"os.zelto.pinger", "Ping", "You have a new ping", "ack", "Ack"},
+            {"os.zelto.notes", "Grocery list",
+             "Milk, bread, and the thing you always forget", "open", "Open"},
+            // Sized to fill Banner.body (192 bytes) without being cut by it.
+            // P45 recorded a notification's title and body as "app-supplied and
+            // bounded by NOTHING", which is why they were migrated to WrapText;
+            // seeding one long enough to find out showed they ARE bounded — the
+            // sink snprintf()s into fixed fields on both the push path and here,
+            // so the worst case is 192 bytes, not unbounded prose. That does not
+            // make the wrap unnecessary (192 bytes is six lines in this column,
+            // where an unwrapped Text would be one line off the edge of the
+            // panel); it makes the worst case KNOWN, which it was not.
+            {"os.zelto.store", "Update available",
+             "Zelto Notepad 2.1 is ready to install. This release rewrites the "
+             "autosave path so a note survives being backgrounded mid-sentence, "
+             "and fixes the caret jumping after a paste.",
+             "install", "Install"},
+        };
+        int have = (int)(sizeof(SEED) / sizeof(SEED[0]));
+        if (want > have) {
+            want = have;
+        }
+        for (int i = 0; i < want && i < MAX_BANNERS; i++) {
+            if (s->banners[i].used) {
+                continue;
+            }
+            Banner *b = &s->banners[i];
             b->used = true;
-            b->id = 1;
-            snprintf(b->app_id, sizeof(b->app_id), "os.zelto.pinger");
-            snprintf(b->title, sizeof(b->title), "Ping");
-            snprintf(b->body, sizeof(b->body), "You have a new ping");
-            snprintf(b->action_id, sizeof(b->action_id), "ack");
-            snprintf(b->action_title, sizeof(b->action_title), "Ack");
+            b->id = i + 1;
+            snprintf(b->app_id, sizeof(b->app_id), "%s", SEED[i].app_id);
+            snprintf(b->title, sizeof(b->title), "%s", SEED[i].title);
+            snprintf(b->body, sizeof(b->body), "%s", SEED[i].body);
+            snprintf(b->action_id, sizeof(b->action_id), "%s", SEED[i].action_id);
+            snprintf(b->action_title, sizeof(b->action_title), "%s",
+                     SEED[i].action_title);
         }
     }
 

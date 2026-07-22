@@ -253,8 +253,14 @@ run_shot 41-settings-press "Settings: a detail row pressed (touch-down veil)" 8 
 # the Notification Center.
 run_shot 11-control-center "Control Center: round toggle grid (pulled from top right)" 6 \
     ZELTO_SHADE_OPEN=cc
+# ZELTO_BANNER_DEMO=3 seeds the cards. Without it this shot opened the panel and
+# photographed "No notifications" — a real state, but not the one the frame is
+# NAMED for, and its 6.94% delta came entirely from the blurred wallpaper behind
+# an empty panel. No delta threshold can catch that; only asking what the picture
+# is supposed to contain can. (test_prose_overflow_sim asserts the same three
+# cards are present, so this shot cannot quietly empty again.)
 run_shot 11a-notification-center "Notification Center: clock + cards (pulled from top left)" 6 \
-    ZELTO_SHADE_OPEN=nc
+    ZELTO_SHADE_OPEN=nc ZELTO_BANNER_DEMO=3
 SEED='sys.volume\t7\n' run_shot 12-volume-hud "Volume rocker HUD (shown at level 7)" 6 \
     ZELTO_VOLUME_SHOW=1
 

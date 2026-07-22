@@ -38,6 +38,7 @@
 // ZELTO_SHARE_MIME / ZELTO_SHARE_PAYLOAD in the forked child instead, so the
 // index mapping is untouched and an unset variable simply means no preview.
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,10 +56,24 @@
 // failed to load.
 #define SHEET_PAD 20.0f
 #define SHEET_ROW_H 60.0f
+// The gaps between the sheet's rows, named so that sheet_height() below can be an
+// expression over the SAME constants the rows are built from. They were bare
+// literals written out twice — once in the column and once in the sum — which is
+// the shape of every reserve this project has had to go back and fix.
+#define SHEET_GRAB_H 5.0f          // the drag grabber's bar
+#define SHEET_PREVIEW_GAP 16.0f    // above and below the preview row
+#define SHEET_RULE_H 1.0f          // the hairline
+#define SHEET_RULE_GAP 18.0f       // hairline to the target row
+#define SHEET_NAME_GAP 8.0f        // a target's icon to its name
+#define SHEET_MORE_GAP 10.0f       // above the "N more apps" line
+#define SHEET_ACTION_GAP 20.0f     // above the Cancel row
+#define SHEET_FOOT 14.0f           // clearance under the last row
 #define TARGET_ICON 68.0f
 #define TARGET_CELL 96.0f    // the fixed column a target occupies (icon + name)
 #define TARGET_MAX 6         // targets shown before the row would overflow 720px
 #define PREVIEW_ICON 52.0f
+#define PREVIEW_GAP 14.0f          // the mark to the text column
+#define PREVIEW_LINE_GAP 2.0f      // payload line to MIME line
 // Drag-to-dismiss: a downward drag past DISMISS_THRESH px (or a firm down-fling)
 // cancels, the way a sheet is dismissed everywhere else on the phone.
 #define DISMISS_THRESH 90.0f
@@ -141,16 +156,36 @@ static ZView target_cell(const char *app_id, int index) {
                     CornerRadius(TARGET_ICON * Z_RADIUS_ICON, Image(icon)))),
             Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION2, Text("%s", who))),
-            .spacing = 8, .align = Z_ALIGN_CENTER));
+            .spacing = SHEET_NAME_GAP, .align = Z_ALIGN_CENTER));
+}
+
+// The width the preview's text column gets: the sheet less its padding, less the
+// document mark and the gap after it. Needed in two places — to cut the text to
+// it, and to know how tall the row comes out — so it is a function, not a literal
+// repeated at both.
+static float preview_text_w(float sw) {
+    return sw - 2.0f * SHEET_PAD - PREVIEW_ICON - PREVIEW_GAP;
 }
 
 // The preview of what is being shared: the payload as the headline with its MIME
 // type under it, behind a generic document mark. Without ZELTO_SHARE_PAYLOAD (an
 // older zsysd, or a deep link rather than a share) it degrades to the action.
-static ZView preview_row(void) {
+//
+// THE PAYLOAD IS CUT TO THE COLUMN, NOT WRAPPED. It was a bare Text, which
+// measures to one line however long that line is, so a shared URL — the single
+// most likely thing to arrive here — ran off the right edge of the sheet and off
+// the screen. P45 found this, wrote down that WrapText was the wrong tool for it
+// (a share preview wants one line, and a sheet whose height is a sum of its rows
+// cannot absorb a paragraph), and left the overflow shipping because the toolkit
+// had no truncation. It has one now: EllipsizeText measures with the real shaper
+// and cuts on a character boundary, so the node's own width is bounded by the
+// column and the row cannot overflow whatever it is handed. The MIME line takes
+// the same treatment — it is shorter, but it is not bounded either.
+static ZView preview_row(ZApp *app, float sw) {
     const char *payload = getenv("ZELTO_SHARE_PAYLOAD");
     const char *mime = getenv("ZELTO_SHARE_MIME");
     bool have = payload && payload[0];
+    float tw = preview_text_w(sw);
 
     return HStack(
         Frame(PREVIEW_ICON, PREVIEW_ICON,
@@ -161,18 +196,18 @@ static ZView preview_row(void) {
                             Weight(Z_WEIGHT_SEMIBOLD,
                                 Font(Z_FONT_CALLOUT, Text("\xe2\x86\x91")))),
                         .align = Z_ALIGN_CENTER)))),
-        Grow(1.0f,
+        Frame(tw, 0.0f,
             VStack(
-                Weight(Z_WEIGHT_SEMIBOLD,
-                    Foreground(Z_COLOR_TEXT,
-                        Font(Z_FONT_HEADLINE,
-                             Text("%s", have ? payload : "Share")))),
-                Foreground(Z_COLOR_TEXT_MUTED,
-                    Font(Z_FONT_SUBHEAD,
-                         Text("%s", (mime && mime[0]) ? mime
-                                                      : "Choose a destination"))),
-                .spacing = 2, .align = Z_ALIGN_LEADING)),
-        .spacing = 14, .align = Z_ALIGN_CENTER);
+                EllipsizeText(app, have ? payload : "Share", .width = tw,
+                              .size = Z_FONT_HEADLINE,
+                              .weight = Z_WEIGHT_SEMIBOLD,
+                              .color = Z_COLOR_TEXT),
+                EllipsizeText(app,
+                              (mime && mime[0]) ? mime : "Choose a destination",
+                              .width = tw, .size = Z_FONT_SUBHEAD,
+                              .color = Z_COLOR_TEXT_MUTED),
+                .spacing = PREVIEW_LINE_GAP, .align = Z_ALIGN_LEADING)),
+        .spacing = PREVIEW_GAP, .align = Z_ALIGN_CENTER);
 }
 
 // An action row: full-width, centred label, in the grouped-list card shape the
@@ -193,6 +228,40 @@ static ZView action_row(ZAction act, const char *label) {
 // A fixed gap: NOT Frame(w, h, Spacer()), which keeps its grow flag.
 static ZView sgap(float h) {
     return Frame(1.0f, h, Rect(.color = z_rgba(0, 0, 0, 0)));
+}
+
+// How tall the sheet really stands, MEASURED. Every addend names the row it pays
+// for and every text row asks the face how tall a line is (z_line_height), so
+// this and the column it describes cannot disagree.
+//
+// It used to be a hand-written sum with the type metrics guessed: a target's name
+// was budgeted 14 units where a Caption2 line stands 26, and the preview row was
+// budgeted the height of its ICON (52) where its two lines of text stand 77. Off
+// by 40 units in a 372-unit sheet, and — this is why nobody saw it — off in a way
+// that does not overflow anything. The stack simply measured taller than the
+// Frame asked for and stood at its own height, so the sheet LOOKED right. What
+// was wrong was everything computed FROM sheet_h:
+//
+//   - the backdrop blur (z_backdrop) covered a rectangle 40 units shorter than
+//     the sheet, so the top strip of the material sat over unblurred wallpaper;
+//   - the entrance rise is `(1 - e) * sheet_h`, and a sheet that rises by 40 less
+//     than its own height does not start off the bottom edge — it starts with its
+//     top 40 units already on screen and pops. The comment on that line claimed
+//     the opposite, and was the reason to compute the height at all.
+static float sheet_height(ZApp *app, bool more) {
+    // The preview row is as tall as the taller of its two columns.
+    float text_h = z_line_height(app, Z_FONT_HEADLINE) + PREVIEW_LINE_GAP +
+                   z_line_height(app, Z_FONT_SUBHEAD);
+    float preview_h = text_h > PREVIEW_ICON ? text_h : PREVIEW_ICON;
+    float target_h = TARGET_ICON + SHEET_NAME_GAP +
+                     z_line_height(app, Z_FONT_CAPTION2);
+    float h = 2.0f * SHEET_PAD + SHEET_GRAB_H + SHEET_PREVIEW_GAP + preview_h +
+              SHEET_PREVIEW_GAP + SHEET_RULE_H + SHEET_RULE_GAP + target_h +
+              SHEET_ACTION_GAP + SHEET_ROW_H + SHEET_FOOT;
+    if (more) {
+        h += SHEET_MORE_GAP + z_line_height(app, Z_FONT_FOOTNOTE);
+    }
+    return h;
 }
 
 static ZView chooser_body(ZApp *app, ChooserState *s) {
@@ -230,19 +299,20 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
     // The grabber: the mark that says this surface is draggable, and the only
     // affordance the dismiss gesture gets. It is centred, so it is its own row.
     col.children[k++] = HStack(Spacer(),
-        Rect(.color = Z_COLOR_TEXT_FAINT, .width = 44, .height = 5, .radius = 3),
+        Rect(.color = Z_COLOR_TEXT_FAINT, .width = 44, .height = SHEET_GRAB_H,
+             .radius = 3),
         Spacer(), .spacing = 0, .align = Z_ALIGN_CENTER);
-    col.children[k++] = sgap(16.0f);
-    col.children[k++] = preview_row();
-    col.children[k++] = sgap(16.0f);
+    col.children[k++] = sgap(SHEET_PREVIEW_GAP);
+    col.children[k++] = preview_row(app, (float)z_app_width(app));
+    col.children[k++] = sgap(SHEET_PREVIEW_GAP);
     // The hairline. The growing Rect must sit in a HORIZONTAL stack: `.grow`
     // expands along its parent's MAIN axis, so a grow-Rect dropped straight into
     // this vertical column stretches DOWNWARD and paints a 40px grey slab where a
     // 1px rule belongs.
-    col.children[k++] = Frame(0.0f, 1.0f,
+    col.children[k++] = Frame(0.0f, SHEET_RULE_H,
         HStack(Rect(.color = Z_COLOR_MATERIAL_EDGE, .grow = 1.0f),
                .spacing = 0, .align = Z_ALIGN_CENTER));
-    col.children[k++] = sgap(18.0f);
+    col.children[k++] = sgap(SHEET_RULE_GAP);
 
     // The target row. Cells are fixed-width and the row is LEADING-aligned, so a
     // sheet with two targets puts them where the first two of four would be.
@@ -252,20 +322,20 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
     }
     col.children[k++] = z_stack(Z_AXIS_HORIZONTAL, &row);
     if (s->n > n) {
-        col.children[k++] = sgap(10.0f);
+        col.children[k++] = sgap(SHEET_MORE_GAP);
         col.children[k++] = Foreground(Z_COLOR_TEXT_FAINT,
             Font(Z_FONT_FOOTNOTE,
                  Text("%d more app%s can handle this", s->n - n,
                       s->n - n == 1 ? "" : "s")));
     }
-    col.children[k++] = sgap(20.0f);
+    col.children[k++] = sgap(SHEET_ACTION_GAP);
     col.children[k++] = action_row(on_cancel, "Cancel");
-    col.children[k++] = sgap(14.0f);   // minimum clearance under the last row
-    // sheet_h below is a SUM of the parts, and a sum of type metrics is never
-    // exact to the pixel. Any slack lands here, at the bottom of the sheet, where
-    // a few extra px of material reads as breathing room rather than as a gap in
-    // the layout. (Without it the stack's spare space goes wherever a grow-flagged
-    // node happens to be.)
+    col.children[k++] = sgap(SHEET_FOOT);   // clearance under the last row
+    // Any slack lands HERE, at the bottom of the sheet, rather than wherever a
+    // grow-flagged node happens to sit. It used to be load-bearing: sheet_h was a
+    // hand-written sum with the type metrics guessed, so there was always slack.
+    // Now that sheet_height() measures, there should be none — this stays as the
+    // place for a rounding unit to go, not as the absorber for a wrong number.
     col.children[k++] = Grow(1.0f, Spacer());
 
     // --- the sheet ---
@@ -279,12 +349,17 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
     // Content height: the sheet is sized by what is in it. The rise distance is
     // that height, so the sheet starts exactly off the bottom edge whatever it
     // holds — a fixed rise would either overshoot or leave a gap on the first
-    // frame. Each addend below mirrors one child above.
-    float sheet_h = SHEET_PAD * 2.0f + 5.0f + 16.0f + PREVIEW_ICON + 16.0f + 1.0f +
-                    18.0f + (TARGET_ICON + 8.0f + 14.0f) + 20.0f + SHEET_ROW_H +
-                    14.0f;
-    if (s->n > n) {
-        sheet_h += 10.0f + 16.0f;
+    // frame. sheet_height() measures; see the note over it for what it cost when
+    // it guessed. Said out loud once, so the number can be checked against where
+    // the rows actually land (ZELTO_PROBE_TAPS dumps the laid-out frames on the
+    // first SETTLED build).
+    float sheet_h = sheet_height(app, s->n > n);
+    static bool said;
+    if (!said) {
+        said = true;
+        fprintf(stderr, "[chooser] sheet_h=%.1f screen=%.0fx%.0f targets=%d\n",
+                sheet_h, sw, sh, n);
+        fflush(stderr);
     }
     float dy = (1.0f - e) * sheet_h + (d > 0.0f ? d : 0.0f);
     float dprog = d > 0.0f ? d / DISMISS_DIST : 0.0f;
@@ -296,7 +371,16 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
     ZView sheet = Shadow(Z_ELEV_3,
         Background(Z_COLOR_MATERIAL_SHEET,
             CornerRadius(Z_RADIUS_SHEET,
-                Frame(sw, sheet_h, z_stack(Z_AXIS_VERTICAL, &col)))));
+                // MINUS the padding: a Frame's fixed height is an INNER height
+                // when the node it sizes also carries a .padding — measure()
+                // does `n->h = fixed_h + 2 * padding` (sdk/src/layout.c), so
+                // handing it the outer height makes the sheet stand a full
+                // SHEET_PAD taller on each side than the number every other user
+                // of sheet_h believes. That is 40 units here, and it is where the
+                // old backdrop seam and the 40-unit entrance pop came from: they
+                // were not two bugs, they were this one, seen twice.
+                Frame(sw, sheet_h - 2.0f * SHEET_PAD,
+                      z_stack(Z_AXIS_VERTICAL, &col)))));
 
     // The sheet takes the dismiss drag and rides the entrance offset; the backdrop
     // behind it does NOT move — only the sheet leaves.

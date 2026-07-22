@@ -45,6 +45,13 @@ struct ZNode {
     float elevation;      // soft drop-shadow blur px (Shadow(); 0 = flat)
     ZColor color;         // Rect fill
     char *text;           // Text content (arena-owned)
+    float text_w;         // Z_K_TEXT: the shaped width of that string — what it
+                          // will PAINT. Kept because arrange() then clamps the
+                          // node's frame to its parent's inner box, so `w` says
+                          // how much room the text was given and this says how
+                          // much it needs; the renderer draws from the origin and
+                          // does not clip, so text_w > w is glyphs outside the
+                          // box, which is invisible in the frames alone.
     float font_size;
     ZWeight weight;       // text weight (variable-font wght axis); default Regular
     ZColor fg;
