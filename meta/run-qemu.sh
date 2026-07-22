@@ -1560,6 +1560,27 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # capture race — the screendump reading the scanout while the compositor is
     # part-way through writing it — then nothing about the guest has changed
     # between the dumps, and teal appears in a RANDOM SUBSET of them forever.
+    #
+    # ANSWERED (P46), and it is BOTH, with the persistent one being the race:
+    #
+    #   SHOT_DELAY=30, five dumps a second apart:
+    #     99.451% -> 9.693% -> 0.135% -> 0.415% -> none
+    #   which is first paint. Under TCG on this machine the shell needs ~35s to
+    #   come up, well past the SHOT_DELAY every harness here used — so a lot of
+    #   what P45 saw was simply a photograph of a boot in progress, and that is
+    #   also why it "moved between boots": which surface had painted by the
+    #   deadline varied.
+    #
+    #   SHOT_DELAY=50, eight dumps a second apart, everything long since painted
+    #   and nothing on screen changing:
+    #     0.147% (y0..63) · 0.373% (y1112..1215) · 0.026% (y0..3) · NONE ·
+    #     0.158% (y0..63) · NONE · NONE · 0.732% (y0..63)
+    #   Five of eight, in DIFFERENT regions, forever. That is the capture race,
+    #   and it is not the harmless answer: waiting longer does not fix it.
+    #
+    # SO: NEVER TRUST A SINGLE QEMU SCREENDUMP. Take several and use one that
+    # meta/teal.py reports clean; a lone frame can be missing a band of any
+    # surface, silently, at any time.
     frames="${FRAMES:-1}"
     if [ "$frames" -gt 1 ]; then
         echo "==> FRAMES=$frames: $((frames - 1)) more dumps of the same settled screen"

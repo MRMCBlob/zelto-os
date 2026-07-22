@@ -70,8 +70,41 @@ def read_png(path):
     return w, h, out, nch
 
 
+def read_ppm(path):
+    """Binary P6, which is what QEMU's screendump writes. Preferred over the
+    converted PNG: pnmtopng emits a PALETTE image for a frame with few colours,
+    and a palette PNG is a different decode entirely — the first attempt at this
+    read the .png and simply refused every frame."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:2] != b"P6":
+        raise SystemExit(f"{path}: not a binary PPM")
+    fields, pos = [], 2
+    while len(fields) < 3:
+        while pos < len(data) and data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b"#":
+            while pos < len(data) and data[pos] != 0x0A:
+                pos += 1
+            continue
+        start = pos
+        while pos < len(data) and not data[pos:pos + 1].isspace():
+            pos += 1
+        fields.append(int(data[start:pos]))
+    pos += 1                       # the single whitespace after maxval
+    w, h, maxv = fields
+    if maxv != 255:
+        raise SystemExit(f"{path}: maxval {maxv}, expected 255")
+    stride = w * 3
+    rows = [data[pos + y * stride:pos + (y + 1) * stride] for y in range(h)]
+    return w, h, rows, 3
+
+
 def scan(path):
-    w, h, rows, nch = read_png(path)
+    if path.endswith(".ppm"):
+        w, h, rows, nch = read_ppm(path)
+    else:
+        w, h, rows, nch = read_png(path)
     n = 0
     x0, y0, x1, y1 = w, h, -1, -1
     for y, row in enumerate(rows):

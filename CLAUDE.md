@@ -32,12 +32,17 @@ runs them (five rotted into unconditional `exit 0`s that way).
 
 **The sim is not the target.** "Same results" is the belief that let the real
 target render **zero glyphs from P30 to P45** — the sim sets its own
-`ZELTO_FONT`. Also: a QEMU screendump can be silently incomplete (teal `#0a858c`
-= `ZCOMP_BG` through an unpainted surface — `meta/teal.py` counts it, and
-`FRAMES=N` takes repeat dumps of one settled screen to tell a first-paint race
-from a capture race). So: sim by default, QEMU when the claim is about the
-**image** (initramfs, packaging, kernel, net). Boot QEMU once a phase and grep
-the serial log. Never write "verified on target" for a sim-only run.
+`ZELTO_FONT`. So: sim by default, QEMU when the claim is about the **image**
+(initramfs, packaging, kernel, net). Boot QEMU once a phase and grep the serial
+log. Never write "verified on target" for a sim-only run.
+
+**NEVER TRUST A SINGLE QEMU SCREENDUMP.** Teal `#0a858c` = `ZCOMP_BG` through an
+unpainted region. Measured with `FRAMES=8` on a settled, unchanging screen: teal
+appeared in **five of eight** dumps, in different bands each time. That is QMP
+reading the scanout mid-composite, and waiting longer does not fix it. Take
+several frames and use one `meta/teal.py` reports clean. (Separately, under TCG
+the shell needs **~35s** to finish painting — a short `SHOT_DELAY` photographs a
+boot in progress, which is what made the teal look like it "moved between boots".)
 qemu-virt ran at **1280x800** from P6 to P45 — QEMU's default virtio-gpu EDID —
 against a 720x1440 design, so no on-target frame had ever shown the metrics at
 the geometry they were computed for. It is `xres`/`yres` on `virtio-gpu-pci` now

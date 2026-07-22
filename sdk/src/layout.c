@@ -517,17 +517,27 @@ static ZView hit_walk(ZView n, double x, double y, HitClip *clip, ZHitWant want)
 // frame rate, not event rate. That is the case worth measuring, so the cost is
 // measurable rather than asserted. ZELTO_HIT_STATS=1 prints the worst walk seen.
 //
-// MEASURED (P45, simulator at 720x1440, ZELTO_HIT_STATS=1 with a held press so
+// MEASURED (simulator at 720x1440, ZELTO_HIT_STATS=1 with a held press so
 // stamp_press runs the walk every build):
-//     launcher, home carousel — the largest tree in the OS: WORST 124 NODES,
-//     WORST 6.1us per walk.
-// So P44's "tens of nodes" was low by about 4x, and its "not per frame" was
+//     P45  launcher, home carousel:        WORST 124 NODES,  6.1us per walk
+//     P46  settings, scrolled detail list: WORST 134 NODES, 12.9us per walk
+//          (steady state 91 nodes / ~3us; the 12.9 is one outlier walk, which at
+//          this scale is scheduler noise rather than a deeper tree)
+//
+// The scrolled list is the case P45's brief asked for and P45 could not
+// attribute, because the report line did not say WHICH process it came from and
+// the whole System UI writes to one log. It does now. The answer is that a
+// scrolled list is the bigger tree of the two — 134 nodes against the carousel's
+// 124 — which is the opposite of what "a list is one column" suggests, and still
+// 0.077% of a 16,667us frame at 60Hz.
+//
+// So P44's "tens of nodes" was low by about 5x, and its "not per frame" was
 // simply wrong. Both corrections leave the conclusion standing, which is why the
-// cull stays out: 6.1us against a 16,667us frame at 60Hz is 0.04% of the budget,
-// on the worst tree, in the worst mode (per frame rather than per event). A cull
-// would buy back four hundredths of one percent and reintroduce the class of bug
-// that made a visible node untappable for thirteen phases. The number is written
-// down here so the next phase can re-measure instead of re-arguing.
+// cull stays out: a cull would buy back under a tenth of one percent, on the
+// worst tree, in the worst mode (per frame rather than per event), and would
+// reintroduce the class of bug that made a visible node untappable for thirteen
+// phases. The numbers are written down here so the next phase re-measures
+// instead of re-arguing.
 //
 // The env check is hoisted so that when the instrumentation is OFF the two
 // clock_gettime calls are skipped as well — an "off" measurement that still
