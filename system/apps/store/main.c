@@ -82,8 +82,20 @@ static void install_tampered(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
+// Prose columns. P43's rescale roughly doubled every glyph and P44 built
+// WrapText; this screen still hand-set neither, so both runs of prose below
+// measured to ONE line and ran off the edge. The strap line is authored here,
+// but `last_msg` is an INSTALLER RESULT — it carries package names and failure
+// reasons, so its length is not something this file gets to assume.
+#define STORE_PAD 32.0f
+#define STORE_PANEL_W 620.0f
+#define STORE_PANEL_PAD 18.0f
+
 static ZView store_body(ZApp *app, StoreState *state) {
-    (void)app;
+    float strap_w = (float)z_app_width(app) - 2.0f * STORE_PAD;
+    if (strap_w < 200.0f) {
+        strap_w = 720.0f - 2.0f * STORE_PAD;   // before the first configure
+    }
     ZColor panel_bg = !state->ran     ? Z_COLOR_SURFACE_2
                       : state->last_ok ? Z_COLOR_SUCCESS_DIM
                                        : Z_COLOR_DANGER_DIM;
@@ -93,8 +105,8 @@ static ZView store_body(ZApp *app, StoreState *state) {
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Store"))),
             Foreground(Z_COLOR_TEXT_MUTED,
-                Font(Z_FONT_CALLOUT,
-                     Text("Install signed .zap packages onto the disk"))),
+                WrapText(app, "Install signed .zap packages onto the disk",
+                         .width = strap_w, .size = Z_FONT_CALLOUT)),
             Spacer(),
             Background(Z_COLOR_PRIMARY,
                 Button(install_widget, "Install Widget")),
@@ -102,19 +114,25 @@ static ZView store_body(ZApp *app, StoreState *state) {
                 Button(install_tampered, "Install tampered")),
             Background(panel_bg,
                 CornerRadius(14,
-                    Frame(620.0f, 96.0f,
+                    // Height 0, not 96: a wrapped result is however many lines
+                    // it needs, and a fixed box would just move the overflow
+                    // from the right edge to the bottom one.
+                    Frame(STORE_PANEL_W, 0.0f,
                         VStack(
                             Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("result"))),
                             Foreground(Z_COLOR_TEXT_INV,
-                                Font(Z_FONT_BODY,
-                                    Text("%s", state->ran
-                                                   ? state->last_msg
-                                                   : "(tap a button to install)"))),
+                                WrapText(app,
+                                         state->ran
+                                             ? state->last_msg
+                                             : "(tap a button to install)",
+                                         .width = STORE_PANEL_W
+                                                  - 2.0f * STORE_PANEL_PAD,
+                                         .size = Z_FONT_BODY)),
                             .spacing = 8, .align = Z_ALIGN_LEADING,
-                            .padding = 18)))),
+                            .padding = STORE_PANEL_PAD)))),
             Spacer(),
-            .padding = 32, .spacing = 16, .align = Z_ALIGN_CENTER));
+            .padding = STORE_PAD, .spacing = 16, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(StoreState, store_body, "os.zelto.store")

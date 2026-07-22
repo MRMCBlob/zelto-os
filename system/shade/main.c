@@ -368,20 +368,25 @@ static void tap_action(ZApp *app, void *state, void *data) {
 // is the body-tap target; the action button is a deeper tap target nested inside
 // (deepest handler wins). A non-interactive (history) card carries no handlers
 // and renders dimmer.
-static ZView notif_card(Banner *b, bool interactive) {
+// `card_w` is the width the caller will frame this card at — the notification's
+// title and body are wrapped to it (they are app-supplied strings and were
+// running off the edge before P45), and the action button is pinned to
+// ZELTO_NOTIF_ACTION_W so the column beside it is known at build time.
+static ZView notif_card(ZApp *app, float card_w, Banner *b, bool interactive) {
     ZView action = NULL;
     if (interactive && b->action_id[0]) {
-        action = OnTapData(tap_action, b,
-            Background(Z_COLOR_PRIMARY,
-                CornerRadius(Z_RADIUS_CHIP,
-                    Padding(12,
-                        Foreground(Z_COLOR_ON_PRIMARY,
-                            Weight(Z_WEIGHT_SEMIBOLD,
-                                Font(Z_FONT_SUBHEAD,
-                                    Text("%s", b->action_title))))))));
+        action = Frame(ZELTO_NOTIF_ACTION_W, 0.0f,
+            OnTapData(tap_action, b,
+                Background(Z_COLOR_PRIMARY,
+                    CornerRadius(Z_RADIUS_CHIP,
+                        Padding(12,
+                            Foreground(Z_COLOR_ON_PRIMARY,
+                                Weight(Z_WEIGHT_SEMIBOLD,
+                                    Font(Z_FONT_SUBHEAD,
+                                        Text("%s", b->action_title)))))))));
     }
-    ZView card = zelto_notif_card(b->app_id, b->title, b->body, action,
-                                  interactive);
+    ZView card = zelto_notif_card(app, card_w, b->app_id, b->title, b->body,
+                                  action, interactive);
     return interactive ? OnTapData(tap_body, b, card) : card;
 }
 
@@ -851,10 +856,14 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         // sliding down + fading in on the entrance spring (P32).
         z_full_repaint(app);
         ZStackOpts col = {.padding = 8, .spacing = 8, .align = Z_ALIGN_LEADING};
+        // The strip's cards span the surface less its own 8px padding on each
+        // side. WrapText needs this at BUILD time, so it is derived here rather
+        // than left to layout.
+        float card_w = (float)w - 2.0f * 8.0f;
         int k = 0;
         for (int i = 0; i < MAX_BANNERS && k < Z_MAX_CHILDREN - 1; i++) {
             if (s->banners[i].used) {
-                col.children[k++] = notif_card(&s->banners[i], true);
+                col.children[k++] = notif_card(app, card_w, &s->banners[i], true);
             }
         }
         col.children[k++] = Spacer();
@@ -887,6 +896,9 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     // little recently-dismissed history. Neither list scrolls yet (no Scroll
     // here), so a drag anywhere on the panel still controls the pull.
     ZStackOpts list = {.spacing = 12, .padding = 22, .align = Z_ALIGN_LEADING};
+    // Same derivation as the banner strip: the panel's width less the list's own
+    // padding is the width a notification card is laid out at.
+    float card_w = panel_w - 2.0f * 22.0f;
     int li = 0;
     if (cc) {
         list.children[li++] = cc_grid(app, s);
@@ -897,12 +909,12 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         bool any = false;
         for (int i = 0; i < MAX_BANNERS && li < Z_MAX_CHILDREN - 4; i++) {
             if (s->banners[i].used) {
-                list.children[li++] = notif_card(&s->banners[i], true);
+                list.children[li++] = notif_card(app, card_w, &s->banners[i], true);
                 any = true;
             }
         }
         for (int i = 0; i < s->n_history && li < Z_MAX_CHILDREN - 3; i++) {
-            list.children[li++] = notif_card(&s->history[i], false);
+            list.children[li++] = notif_card(app, card_w, &s->history[i], false);
             any = true;
         }
         if (!any) {

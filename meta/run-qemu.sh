@@ -787,179 +787,128 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         echo "==> settings test done; frames in $OUT/frame-settings-*.png"
         exit 0
     fi
-
-    # P19 settings ACTUATION (ACTUATE=1): prove the brokered toggles now DO
-    # something system-wide, not just recolour a chip. THREE actuations + the bar
-    # as a third independent broker reader, then persistence. A TWO-BOOT test
-    # against the same data.img (the var is ACTUATE, not BRIGHT/DIM, to avoid
-    # clobbering a shell env var):
-    #   Boot #1 — home (bar shows a green Wi-Fi dot + a mid brightness pip). Open
-    #     the drawer, launch Settings. Step Brightness DOWN to 1 -> the whole app
-    #     area visibly DIMS (the zelto-dim OVERLAY scrim) AND the bar's brightness
-    #     pip shrinks. Toggle Airplane ON -> the bar grows an orange airplane dot
-    #     and greys the Wi-Fi dot. Open the drawer, launch Fetch, tap Fetch -> the
-    #     GET FAILS immediately ("request failed", NO consent modal) because
-    #     sys.airplane gates the network path. Sync + kill (brightness=1,
-    #     airplane=1 persisted to /var/zelto).
-    #   Boot #2 — FRESH QEMU, SAME disk: at boot the dim overlay reads
-    #     sys.brightness=1 back from disk so the screen is ALREADY dimmed, and the
-    #     bar shows the airplane dot — both persisted. Launch Settings (shows
-    #     Brightness 1, Airplane On), turn Airplane OFF + step Brightness back to 5
-    #     -> the screen un-dims. Launch Fetch -> consent -> Allow -> 200 OK (the
-    #     network is restored: airplane off => GET succeeds). The off/on proof.
-    # Coordinates are overridable (rerun SKIP_BUILD=1 + overrides to retune to the
-    # rendered layout). Boot is slow under TCG: keep SHOT_DELAY high. Use launchtap
-    # (zero-hold) for drawer launches so a held tap can't flake into the long-press.
+    # P19 settings ACTUATION (ACTUATE=1), REWRITTEN IN P45.
+    #
+    # THE CLAIM: a brokered toggle does something SYSTEM-WIDE, not just recolour
+    # its own chip. That is the one claim none of the other harnesses carry —
+    # QSPERSIST proves a setting SURVIVES a power cycle, and the shot catalogue
+    # proves a chip LOOKS right, but neither proves the setting reaches anything.
+    # Two actuations are tested here:
+    #   1. sys.brightness -> the zelto-dim OVERLAY paints a real scrim.
+    #   2. sys.airplane   -> libzelto's net path REFUSES a request outright.
+    #
+    # WHY IT HAD TO BE REWRITTEN. The old version navigated the app drawer P40
+    # deleted and tapped the three-button nav bar P40 deleted, at coordinates
+    # copied off screenshots, and ended in an unconditional `exit 0` — so from P40
+    # to P44 it injected a swipe that now means Home, tapped wherever stale
+    # numbers landed, and reported success. P44 disabled it rather than deleting
+    # it, because the claim is covered nowhere else.
+    #
+    # WHAT REPLACED THE TAPS. A setting is STATE, not a gesture. `zelto.seedsettings=`
+    # on the kernel cmdline writes settings.conf before zsysd starts — the same
+    # file a previous boot's write would have left — so the test sets the state
+    # directly and observes what the system does about it. No coordinates exist to
+    # re-derive, so this cannot rot the way its predecessor did.
+    #
+    # THE ASSERTION IS ON THE SERIAL LOG, and both actuations had to be made
+    # SAYABLE first (P45 added the two lines; P43 hit the same wall with
+    # "capture: suppressed" — an anonymous line cannot carry which thing happened):
+    #   [dim] sys.brightness=N -> scrim alpha=A
+    #   zelto: net: request refused (airplane mode)
+    #
+    # EVERY RUN CARRIES ITS OWN CONTROL, which is the design P43 established for
+    # the capture-privacy test: "X did not happen" passes trivially if the boot
+    # never got far enough for X to be possible. So boot 2 is not a repeat — it is
+    # the OFF case, and it must show the scrim GONE and the request NOT refused,
+    # from the same image, the same binaries and the same delay as boot 1.
     if [ "${ACTUATE:-0}" = "1" ]; then
-        harness_rotted ACTUATE \n            "It taps the deleted three-button nav bar (NAV_HOME_X/Y) AND swipes up to the deleted app drawer."
-        OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
-        SWIPE_X="${SWIPE_X:-640}"
-        # Home favourites row (y~115): Cards 172, Fetch 484, Notepad 796, Notes 1108.
-        FETCH_FAV_X="${FETCH_FAV_X:-484}"; FAV_Y="${FAV_Y:-115}"
-        NAV_HOME_X="${NAV_HOME_X:-630}"; NAV_HOME_Y="${NAV_HOME_Y:-757}"
-        SETTINGS_X="${SETTINGS_X:-786}"; SETTINGS_Y="${SETTINGS_Y:-317}"
-        # Settings app rows (label left, On/Off chip right at x~890), measured off
-        # frame-actuate-settings: Wi-Fi 265, Mute 331, Bright-boost 397, Airplane 463.
-        AIR_X="${AIR_X:-890}"; AIR_Y="${AIR_Y:-463}"          # Airplane toggle chip
-        # Brightness stepper row (y~529): "-" at x~811, the number, "+" at x~897.
-        BRIGHT_DEC_X="${BRIGHT_DEC_X:-811}"
-        BRIGHT_INC_X="${BRIGHT_INC_X:-897}"
-        BRIGHT_ROW_Y="${BRIGHT_ROW_Y:-529}"
-        # The "Fetch" button bar is centred ~y356 (taps at 392 land in the gap below
-        # it and never fire the GET — measured off frame-actuate-fetch-app).
-        FETCH_BTN_X="${FETCH_BTN_X:-640}"; FETCH_BTN_Y="${FETCH_BTN_Y:-356}"
-        ALLOW_X="${ALLOW_X:-894}"; ALLOW_Y="${ALLOW_Y:-527}"
-        NET_PORT="${NET_PORT:-8080}"
-        ax() { echo $(( $1 * 32767 / OUTW )); }
-        ay() { echo $(( $1 * 32767 / OUTH )); }
+        SERIAL_DIM="$OUT/actuate-on.log"
+        SERIAL_UNDIM="$OUT/actuate-off.log"
+        mkdir -p "$OUT"
 
-        have_socat=0
-        command -v socat >/dev/null 2>&1 && have_socat=1
-        [ "$have_socat" = "1" ] || echo "WARN: socat not installed; cannot drive QMP"
-        qmp() {
-            [ "$have_socat" = "1" ] || return 0
-            printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
-                | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
-        }
-        to_png() {
-            [ -f "$1" ] || return 0
-            echo "==> wrote $1"
-            if command -v pnmtopng >/dev/null 2>&1; then
-                pnmtopng "$1" > "$2" 2>/dev/null && echo "==> wrote $2"
-            elif command -v convert >/dev/null 2>&1; then
-                convert "$1" "$2" && echo "==> wrote $2"
-            elif command -v python3 >/dev/null 2>&1; then
-                python3 "$REPO_ROOT/meta/ppm2png.py" "$1" "$2" && echo "==> wrote $2"
-            fi
-        }
-        move() {
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$(ax "$1")}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$(ay "$2")}}]}}"
-        }
-        btn() {
-            local d=true; [ "$1" = up ] && d=false
-            qmp "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[{\"type\":\"btn\",\"data\":{\"down\":$d,\"button\":\"left\"}}]}}"
-        }
-        tap() { move "$1" "$2"; sleep 0.2; btn down; sleep 0.1; btn up; }
-        launchtap() { move "$1" "$2"; sleep 0.3; btn down; btn up; }
-        drag() {
-            local x="$1" y1="$2" y2="$3"
-            move "$x" "$y1"; sleep 0.2; btn down; sleep 0.3
-            move "$x" $(( (y1*2 + y2) / 3 )); sleep 0.3
-            move "$x" $(( (y1 + y2*2) / 3 )); sleep 0.3
-            move "$x" "$y2"; sleep 0.4; btn up
-        }
-        shot() {
-            rm -f "$OUT/$1.ppm"
-            qmp "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$OUT/$1.ppm\"}}"
-            sleep 1
-            to_png "$OUT/$1.ppm" "$OUT/$1.png"
-        }
-        actuate_boot() {
-            QMP_SOCK="$(mktemp -u "${STAGE:-${TMPDIR:-/tmp}}/zelto-qmp.XXXXXX.sock")"
-            rm -f "$QMP_SOCK"
+        # The boot has to reach zcomp + zsysd + the dim overlay + the demo app
+        # before anything is observable. P44 measured the launcher activating
+        # around 23s of guest time and much more wall time under TCG, and found
+        # the inherited SHOT_DELAY of 16 fired during udev coldplug. Same floor
+        # here, for the same reason; raise it on a slower host, never lower it.
+        ACT_DELAY="${SHOT_DELAY:-16}"
+        if [ "$ACT_DELAY" -lt 150 ]; then
+            ACT_DELAY=150
+            echo "==> SHOT_DELAY raised to ${ACT_DELAY}s: the dim overlay and the"
+            echo "    demo app have to be up before the log is read."
+        fi
+
+        # Boot once with a seeded settings store, capturing the serial console.
+        act_boot() {
+            local logfile="$1" seed="$2"
+            rm -f "$logfile"
             qemu-system-aarch64 "${common[@]}" \
-                -append "$KCMD" \
+                -append "$KCMD zelto.seedsettings=$seed zelto.actuate=1" \
                 -display none \
-                -serial mon:stdio \
-                -qmp "unix:$QMP_SOCK,server,nowait" &
+                -serial "file:$logfile" &
             QPID=$!
-        }
-        actuate_kill() {
+            sleep "$ACT_DELAY"
             sync
             kill "$QPID" 2>/dev/null || true
             wait "$QPID" 2>/dev/null || true
         }
 
-        # Host HTTP endpoint (guest reaches it at 10.0.2.2) for the Fetch proof.
-        NET_SRV_PID=""
-        if command -v python3 >/dev/null 2>&1; then
-            SERVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zelto-www.XXXXXX")"
-            printf 'Hello from the Zelto host! (P19 airplane off => GET works)\n' \
-                > "$SERVE_DIR/hello.txt"
-            echo "==> [actuate] host HTTP server on :$NET_PORT ($SERVE_DIR)"
-            ( cd "$SERVE_DIR" && python3 -m http.server "$NET_PORT" ) \
-                >/dev/null 2>&1 &
-            NET_SRV_PID=$!
-            sleep 1
+        # The LAST scrim alpha the dim overlay reported, or "".
+        scrim_alpha_from() {
+            sed -n 's/.*\[dim\] sys\.brightness=[0-9-]* -> scrim alpha=\([0-9]*\).*/\1/p' \
+                "$1" 2>/dev/null | tail -1 | tr -d '\r'
+        }
+        # `|| true` is load-bearing: grep -c exits 1 when the count is ZERO, and
+        # under `set -e` that aborts the harness in the middle of the control
+        # boot — the boot whose whole job is to find nothing.
+        airplane_refusals_in() {
+            grep -c "net: request refused (airplane mode)" "$1" 2>/dev/null \
+                | tr -d '\r' || true
+        }
+
+        echo "==> [actuate 1/2] brightness=1 + airplane=1: the ON case"
+        act_boot "$SERIAL_DIM" "sys.brightness:1,sys.airplane:1"
+        A_ON="$(scrim_alpha_from "$SERIAL_DIM")"
+        R_ON="$(airplane_refusals_in "$SERIAL_DIM")"
+        echo "    scrim alpha: ${A_ON:-<none>}   airplane refusals: ${R_ON:-0}"
+
+        echo "==> [actuate 2/2] brightness=5 + airplane=0: the CONTROL"
+        act_boot "$SERIAL_UNDIM" "sys.brightness:5,sys.airplane:0"
+        A_OFF="$(scrim_alpha_from "$SERIAL_UNDIM")"
+        R_OFF="$(airplane_refusals_in "$SERIAL_UNDIM")"
+        echo "    scrim alpha: ${A_OFF:-<none>}   airplane refusals: ${R_OFF:-0}"
+
+        rc=0
+        if [ -z "$A_ON" ] || [ -z "$A_OFF" ]; then
+            echo "!! FAIL: the dim overlay never reported a scrim alpha."
+            echo "   zelto-dim did not start, or never read sys.brightness."
+            echo "   Without that line there is no actuation to assert on."
+            echo "   (see $SERIAL_DIM / $SERIAL_UNDIM)"; rc=1
+        elif [ "$A_ON" -le "$A_OFF" ]; then
+            echo "!! FAIL: brightness did not actuate the screen."
+            echo "     brightness=1 produced scrim alpha $A_ON"
+            echo "     brightness=5 produced scrim alpha $A_OFF"
+            echo "   A dimmer level must produce a STRONGER scrim. Equal values"
+            echo "   mean the overlay is not reading the setting at all."; rc=1
+        elif [ "$A_OFF" -ne 0 ]; then
+            echo "!! FAIL: brightness=5 should mean NO dim, but the scrim is $A_OFF."
+            echo "   The control is supposed to be un-dimmed; if it is not, the"
+            echo "   comparison above proves nothing about the setting."; rc=1
+        elif [ "${R_ON:-0}" -lt 1 ]; then
+            echo "!! FAIL: airplane mode did not gate the network."
+            echo "   sys.airplane=1 and zelto-fetch still issued its request"
+            echo "   without the net path refusing it (see $SERIAL_DIM)."; rc=1
+        elif [ "${R_OFF:-0}" -ne 0 ]; then
+            echo "!! FAIL: a request was refused for airplane mode with"
+            echo "   sys.airplane=0 ($R_OFF refusal(s) in the control boot)."
+            echo "   The gate is stuck on, so the ON case above is not evidence."
+            echo "   (see $SERIAL_UNDIM)"; rc=1
         else
-            echo "WARN: python3 not found; Fetch success half can't be checked"
+            echo "==> PASS: brightness actuates (alpha $A_OFF -> $A_ON) and"
+            echo "    airplane gates the network ($R_ON refused, control clean)."
         fi
-
-        echo "==> [actuate boot 1/2] home; bar status cluster (Wi-Fi dot + pip)"
-        actuate_boot
-        sleep "$SHOT_DELAY"
-        shot frame-actuate-home
-        # --- network: airplane OFF (persisted default) => Fetch succeeds ---------
-        echo "==> [actuate 1] launch Fetch (home favourite); GET -> consent -> 200"
-        launchtap "$FETCH_FAV_X" "$FAV_Y"
-        sleep 5; shot frame-actuate-fetch-app
-        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
-        sleep 4; shot frame-actuate-consent      # airplane off: the perm modal shows
-        tap "$ALLOW_X" "$ALLOW_Y"
-        sleep 6; shot frame-actuate-fetch-ok      # 200 OK body (network reachable)
-        # --- brightness: an unambiguous A/B on the Settings stepper -------------
-        echo "==> [actuate 1] Home, open drawer, launch Settings"
-        tap "$NAV_HOME_X" "$NAV_HOME_Y"; sleep 2
-        drag "$SWIPE_X" 690 110            # open the app drawer
-        sleep 4
-        launchtap "$SETTINGS_X" "$SETTINGS_Y"
-        sleep 5; shot frame-actuate-settings
-        # NB: space the stepper taps ~1.6s apart — under TCG libinput drops taps
-        # that arrive faster than it can process ("system too slow"), so rapid
-        # 0.5s taps mostly no-op. 1.6s gaps land every step reliably.
-        echo "==> [actuate 1] Brightness UP to 5 -> NO dim (A); pip widest"
-        for i in 1 2 3 4 5; do tap "$BRIGHT_INC_X" "$BRIGHT_ROW_Y"; sleep 1.6; done
-        shot frame-actuate-bright5               # brightness 5: undimmed (compare B)
-        echo "==> [actuate 1] Brightness DOWN to 1 -> screen DIMS (B); pip min"
-        for i in 1 2 3 4; do tap "$BRIGHT_DEC_X" "$BRIGHT_ROW_Y"; sleep 1.6; done
-        shot frame-actuate-dim                   # brightness 1: zelto-dim scrim, pip min
-        # --- airplane ON -> bar dot + the network gate --------------------------
-        echo "==> [actuate 1] Airplane ON -> bar airplane dot; Wi-Fi greys"
-        tap "$AIR_X" "$AIR_Y"
-        sleep 3; shot frame-actuate-airplane
-        echo "==> [actuate 1] Home -> Fetch again; GET FAILS (airplane gate, no modal)"
-        tap "$NAV_HOME_X" "$NAV_HOME_Y"; sleep 2
-        launchtap "$FETCH_FAV_X" "$FAV_Y"
-        sleep 5
-        tap "$FETCH_BTN_X" "$FETCH_BTN_Y"
-        sleep 4; shot frame-actuate-fetch-fail   # "request failed", NO consent modal
-        echo "==> [actuate 1] sync + shutdown (brightness=1, airplane=1 persisted)"
-        sleep 3
-        actuate_kill
-
-        echo "==> [actuate boot 2/2] REBOOT same disk; dim + airplane persisted"
-        actuate_boot
-        sleep "$SHOT_DELAY"
-        shot frame-actuate-reboot                # home dimmed at b=1 + bar airplane dot
-        echo "==> [actuate 2] open drawer, launch Settings -> Brightness 1, Airplane On"
-        drag "$SWIPE_X" 690 110
-        sleep 4
-        launchtap "$SETTINGS_X" "$SETTINGS_Y"
-        sleep 5; shot frame-actuate-reboot-settings
-        actuate_kill
-        [ -n "$NET_SRV_PID" ] && kill "$NET_SRV_PID" 2>/dev/null || true
-        echo "==> actuate test done; frames in $OUT/frame-actuate-*.png"
-        exit 0
+        echo "==> settings actuation test done; logs in $OUT/actuate-*.log"
+        exit "$rc"
     fi
 
     # P23 volume + battery (VOLUME=1): prove the two hardware indicators every

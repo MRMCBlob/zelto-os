@@ -408,6 +408,12 @@ void z_net_send(ZNetRequest *r, ZNetCallback cb, void *ud) {
     // Enforced here in the one path every libzelto net client (HTTP + WS) funnels
     // through; a fast in-memory broker read, like z_perm_status.
     if (z_setting_get_int("sys.airplane", 0) != 0) {
+        // Logged for the same reason the dim scrim is (P45): "airplane gates the
+        // network" is a claim about something NOT happening, and the only honest
+        // way to test a negative is to make the refusal itself observable. An
+        // absent connection is indistinguishable from a request never made.
+        fprintf(stderr, "zelto: net: request refused (airplane mode)\n");
+        fflush(stderr);
         finish_err(r);
         return;
     }

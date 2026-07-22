@@ -22,6 +22,8 @@
 #define ALERT_W 420.0f
 #define ALERT_H 226.0f
 #define ALERT_PAD 22.0f
+// The prose column inside the card — the width WrapText needs at build time.
+#define ALERT_TEXT_W (ALERT_W - 2.0f * ALERT_PAD)
 #define ALERT_BTN_H 46.0f
 
 // Flick-to-Deny (P33). The modal stays button-driven for Allow, but a DOWNWARD
@@ -185,15 +187,28 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
     // thumb reaches first is decided by which hand you are holding the phone in.
     // A phone alert is NARROW and CENTRED, and its actions are STACKED: both land
     // under the same thumb, one above the other, in a fixed order you can learn.
+    // WrapText takes a ready string, not a format: compose first.
+    char wants[160];
+    snprintf(wants, sizeof(wants), "wants to use %s", s->perm);
+
     ZView card = Shadow(Z_ELEV_3, Background(Z_COLOR_MATERIAL_SHEET,
         CornerRadius(Z_RADIUS_PANEL,
             Frame(ALERT_W, ALERT_H,
                 VStack(
+                    // Both lines WRAP to the card's inner column. Neither is
+                    // bounded by anything this file controls: `who` is an app's
+                    // display name out of its manifest and `perm` is the
+                    // permission it asked for, and at the P43 type sizes a long
+                    // one ran straight out of a 420-wide card and off the
+                    // scrim. The Spacer below absorbs the extra line, so a
+                    // wrapped title pushes the buttons down rather than out.
                     Weight(Z_WEIGHT_SEMIBOLD, Foreground(Z_COLOR_TEXT,
-                        Font(Z_FONT_HEADLINE, Text("%s", who)))),
+                        WrapText(app, who, .width = ALERT_TEXT_W,
+                                 .size = Z_FONT_HEADLINE,
+                                 .weight = Z_WEIGHT_SEMIBOLD))),
                     Foreground(Z_COLOR_TEXT_MUTED,
-                        Font(Z_FONT_SUBHEAD,
-                            Text("wants to use %s", s->perm))),
+                        WrapText(app, wants, .width = ALERT_TEXT_W,
+                                 .size = Z_FONT_SUBHEAD)),
                     Spacer(),
                     // Deny on TOP, Allow at the BOTTOM: the affirmative action is
                     // the one nearest the thumb, and the safe one is the one you
