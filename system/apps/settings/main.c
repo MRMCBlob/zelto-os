@@ -235,8 +235,21 @@ static void lock_now(ZApp *app, void *state) {
 // what the group does when you change it. The rows carry no explanation of their
 // own, which is what lets them stay one line each.
 #define LIST_W 640.0f     // the inset column (a ~40px gutter each side of 720)
-#define ROW_H 44.0f       // a row's CONTENT height; ROW_PAD adds the air around it
-#define ROW_PAD 16.0f     // a row's leading/trailing inset inside its card
+// A row is Z_ROW_H TALL and inset ROW_PAD on the LEADING/TRAILING edges. Both of
+// those changed meaning in P44 and it is worth saying why, because the numbers
+// they replace were right by accident.
+//
+// ROW_H was 44 — Apple's row height, in POINTS, spent as screen units — and the
+// row still measured 76 units because `Padding` insets BOTH axes, so the 16 above
+// and below made up most of the difference (44 + 32 = 76, against the 81 that
+// 44pt actually converts to). Two wrong numbers landing near the right answer.
+// Now ROW_H is the row's TOTAL height and comes from the toolkit's Z_ROW_H, and
+// the inset is horizontal only — which is also what fixes the LEADING edge, where
+// nothing was making up any difference: 16 units is 8.6pt where the list it
+// copies uses 16pt, so every label in the app sat half as far from the card's
+// edge as it should.
+#define ROW_H ((float)Z_ROW_H)         // 81 — the row's TOTAL height (Apple's 44pt)
+#define ROW_PAD ((float)Z_PT(16))      // 29 — leading/trailing inset inside a card
 #define SEC_GAP 30.0f     // between one group's footer and the next group's header
 
 // A fixed gap. NOT Frame(w, h, Spacer()) — a Spacer keeps its grow flag through
@@ -245,48 +258,45 @@ static ZView gap(float h) {
     return Frame(1.0f, h, Rect(.color = z_rgba(0, 0, 0, 0)));
 }
 
-// One inset line of a header/footer. Takes an explicit LENGTH so a caller can
-// hand it a slice of a longer string without copying it (Text is a printf format,
-// and "%.*s" is the whole trick).
-static ZView inset_line(const char *s, int len, ZFont size, ZColor ink,
-                        ZWeight w) {
-    return HStack(
-        Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
-        Weight(w, Foreground(ink, Font(size, Text("%.*s", len, s)))),
-        .spacing = 0, .align = Z_ALIGN_CENTER);
-}
-
 // A header or footer, inset to sit under the card's text column rather than
 // under the card's edge — the alignment is what makes the three parts read as one
 // group instead of as three stacked objects.
 //
-// Explicitly LINE-BROKEN on '\n' by the caller, because the toolkit has no text
-// wrapping: a Text node measures to one line at its intrinsic width and layout is
-// a single intrinsic-size pass, so a caption wider than the screen simply runs off
-// the right edge (which is what the P43 type rescale did to every prose footer
-// here — at 13px they fit, at 24px they do not). Real wrapping needs a
-// width-then-height layout pass and is not this phase's job; an author breaking
-// the line is honest, visible in the source, and cannot silently overflow.
-static ZView inset_text(const char *s, ZFont size, ZColor ink, ZWeight w) {
-    ZStackOpts col = {.spacing = 4.0f, .align = Z_ALIGN_LEADING};
-    int k = 0;
-    const char *p = s;
-    while (p && k < Z_MAX_CHILDREN) {
-        const char *nl = strchr(p, '\n');
-        int len = nl ? (int)(nl - p) : (int)strlen(p);
-        col.children[k++] = inset_line(p, len, size, ink, w);
-        p = nl ? nl + 1 : NULL;
-    }
-    // One line: return it directly rather than wrapped in a one-child stack, so
-    // the common case lays out exactly as it did before this existed.
-    return k == 1 ? col.children[0] : z_stack(Z_AXIS_VERTICAL, &col);
+// WRAPPED, as of P44. This prose used to be hand-broken on '\n' by the author,
+// because the toolkit had no text wrapping — layout is one intrinsic-size pass,
+// so a Text measures to one line and a caption wider than the column runs off the
+// right edge (which is what the P43 type rescale did to every footer here: at
+// 13px they fit, at 24px they did not, and P43 broke them by hand). WrapText now
+// does the split at build time against the real font, so the strings below are
+// written as plain sentences and a longer one cannot silently overflow. The
+// column is LIST_W less the leading/trailing insets that hold it under the card's
+// text.
+#define INSET_TEXT_W (LIST_W - 2.0f * ROW_PAD)
+
+static ZView inset_text(ZApp *app, const char *s, ZFont size, ZColor ink,
+                        ZWeight w) {
+    return HStack(
+        Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+        WrapText(app, s, .width = INSET_TEXT_W, .size = size, .weight = w,
+                 .color = ink, .line_gap = 4.0f),
+        Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+        .spacing = 0, .align = Z_ALIGN_LEADING);
 }
 
 // One list row: a fixed height so every row in every group shares a baseline
 // rhythm (a row that sizes to its control makes a switch row and a stepper row
 // different heights, and the list stops looking like a list).
+//
+// The inset is two explicit end gaps rather than Padding, because Padding is BOTH
+// axes: as padding it would add its 29 above and below the fixed height and the
+// row would be 139 tall. The content Grow(1)s between them so the label column
+// still spans the card.
 static ZView list_row(ZView content) {
-    return Frame(0.0f, ROW_H, Padding(ROW_PAD, content));
+    return Frame(0.0f, ROW_H,
+        HStack(Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+               Grow(1.0f, content),
+               Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+               .spacing = 0, .align = Z_ALIGN_CENTER));
 }
 
 // A label on the left, its control on the right. This is the whole grammar of the
@@ -476,19 +486,20 @@ static ZView group(ZView *rows, int n) {
 // A whole SECTION: header, card, footer, as one unit with its own internal
 // rhythm (tight to its card, loose to its neighbours), so the outer column only
 // has to space sections apart. Either label may be NULL.
-static ZView section_block(const char *header, ZView card, const char *foot) {
+static ZView section_block(ZApp *app, const char *header, ZView card,
+                           const char *foot) {
     ZStackOpts col = {.spacing = 0, .align = Z_ALIGN_LEADING};
     int k = 0;
     if (header) {
-        col.children[k++] = inset_text(header, Z_FONT_FOOTNOTE,
+        col.children[k++] = inset_text(app, header, Z_FONT_FOOTNOTE,
                                        Z_COLOR_TEXT_MUTED, Z_WEIGHT_SEMIBOLD);
         col.children[k++] = gap(8.0f);
     }
     col.children[k++] = card;
     if (foot) {
         col.children[k++] = gap(8.0f);
-        col.children[k++] = inset_text(foot, Z_FONT_FOOTNOTE, Z_COLOR_TEXT_FAINT,
-                                       Z_WEIGHT_REGULAR);
+        col.children[k++] = inset_text(app, foot, Z_FONT_FOOTNOTE,
+                                       Z_COLOR_TEXT_FAINT, Z_WEIGHT_REGULAR);
     }
     return z_stack(Z_AXIS_VERTICAL, &col);
 }
@@ -576,9 +587,9 @@ static ZView screen_network(ZApp *app, void *props) {
         toggle_row(app, 0x5E7101u, "Wi-Fi", s->wifi, t_wifi),
     };
     ZView blocks[] = {
-        section_block(NULL, group(rows, 2),
-            "Airplane Mode turns the radios off.\n"
-            "Network calls fail while it is on."),
+        section_block(app, NULL, group(rows, 2),
+            "Airplane Mode turns the radios off. Network calls fail while it "
+            "is on."),
     };
     return settings_screen(app, "Network", blocks, 1);
 }
@@ -591,9 +602,8 @@ static ZView screen_display(ZApp *app, void *props) {
         toggle_row(app, 0x5E7102u, "Silent", s->mute, t_mute),
     };
     ZView blocks[] = {
-        section_block(NULL, group(rows, 3),
-            "Brightness runs 1 to 5 and dims the\n"
-            "screen with a scrim."),
+        section_block(app, NULL, group(rows, 3),
+            "Brightness runs 1 to 5 and dims the screen with a scrim."),
     };
     return settings_screen(app, "Display & Sound", blocks, 1);
 }
@@ -610,7 +620,7 @@ static ZView screen_wallpaper(ZApp *app, void *props) {
                     Foreground(Z_COLOR_TEXT_MUTED,
                         Font(Z_FONT_BODY, Text("None found"))))}, 1);
     ZView blocks[] = {
-        section_block(NULL, card, "Shown on the Home and Lock screens."),
+        section_block(app, NULL, card, "Shown on the Home and Lock screens."),
     };
     return settings_screen(app, "Wallpaper", blocks, 1);
 }
@@ -637,9 +647,9 @@ static ZView screen_lock(ZApp *app, void *props) {
                             Font(Z_FONT_BODY, Text("Lock Now")))),
                     .align = Z_ALIGN_CENTER))));
     ZView blocks[] = {
-        section_block(NULL, group(rows, 5),
+        section_block(app, NULL, group(rows, 5),
             "Each delay is measured from your last touch."),
-        section_block(NULL, OnTap(lock_now, act), NULL),
+        section_block(app, NULL, OnTap(lock_now, act), NULL),
     };
     return settings_screen(app, "Lock Screen", blocks, 2);
 }
@@ -676,9 +686,9 @@ static ZView screen_root(ZApp *app, void *props) {
         detail_row("Lock Screen", s->lock_enabled ? "On" : "Off", &r_lock),
     };
     ZView blocks[] = {
-        section_block(NULL, group(rows, 4),
-            "These settings are shared with Control Center.\n"
-            "Changes apply live and persist."),
+        section_block(app, NULL, group(rows, 4),
+            "These settings are shared with Control Center. Changes apply live "
+            "and persist."),
     };
     return settings_screen(app, "Settings", blocks, 1);
 }

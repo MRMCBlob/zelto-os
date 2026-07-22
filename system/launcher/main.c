@@ -95,6 +95,7 @@
 
 #include "common/app_icons.h"
 #include "common/exec_cmd.h"
+#include "common/safe_areas.h"
 #include "common/wallpaper.h"
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
@@ -529,10 +530,9 @@ static void ensure_home_layout(void) {
 // SAFE AREAS. The home window is the full output (zcomp gives the launcher the
 // whole screen, not the usable area) so the wallpaper runs edge to edge under the
 // transparent status bar and behind the nav bar — as it does on a phone. Nothing
-// the launcher draws may land under either bar, so the grid starts below BAR_H and
+// the launcher draws may land under either bar, so the grid starts below the status
+// bar's safe area and
 // the bottom reserve covers the dock AND the nav bar's height.
-#define BAR_H 40.0f              // status bar (zcomp exclusive zone)
-#define HOMEBAR_H 34.0f          // home-indicator strip (must match system/homebar)
 
 // A FIXED vertical gap. Note it cannot be Frame(w, h, Spacer()): a Spacer carries
 // grow, and Frame only sets a size — the node keeps eating every spare pixel in
@@ -545,11 +545,11 @@ static ZView vgap(float h) {
 #define GRID_COLS 4
 #define GRID_GAP 16.0f
 #define GRID_PAD 20.0f
-#define GRID_TOP (BAR_H + 20.0f)
+#define GRID_TOP ((float)ZELTO_BAR_H + 20.0f)
 #define MAX_ROWS 20              // per-page occupancy height cap
 #define MAX_PAGES 8              // carousel cap
 // page dots + dock, then the home-indicator strip under all of it.
-#define BOTTOM_RESERVE (208.0f + HOMEBAR_H)
+#define BOTTOM_RESERVE (208.0f + (float)ZELTO_HOMEBAR_H)
 #define ICON_SIZE 104.0f
 // The corner is a FRACTION of the icon (Z_RADIUS_ICON — Apple's icon-grid
 // proportion), not a fixed px, so the tile keeps its shape at every size it is
@@ -1501,7 +1501,6 @@ static ZView raster_layer(LauncherState *s, int rows) {
 // already sorted), over a search field. It reuses the home's cell metrics and
 // app_cell_content verbatim — an app icon must be the same object here as it is
 // on home, or paging into the Library reads as arriving in a different program.
-#define KBD_H 300.0f     // system/keyboard's strip height (== its exclusive zone)
 #define LIB_TOP 116.0f   // the title + search field above the grid
 
 // Case-insensitive substring test. strcasestr is a GNU extension and this file
@@ -1536,7 +1535,7 @@ static bool lib_matches(const AppEntry *e, const char *q) {
 // that height itself instead of the dots + dock it hides.
 static int lib_rows(float sw, float sh, bool searching) {
     float cell = cell_side(sw);
-    float reserve = searching ? (KBD_H + 24.0f) : BOTTOM_RESERVE;
+    float reserve = searching ? ((float)ZELTO_KBD_H + 24.0f) : BOTTOM_RESERVE;
     float avail = sh - GRID_TOP - LIB_TOP - reserve;
     int r = (int)floorf((avail + GRID_GAP) / (cell + GRID_GAP));
     if (r < 1) {
@@ -1636,7 +1635,7 @@ static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
     }
     col.children[k++] = Spacer();
     // The bottom reserve: the keyboard while searching, else the dots + dock.
-    col.children[k++] = vgap(searching ? KBD_H : BOTTOM_RESERVE);
+    col.children[k++] = vgap(searching ? (float)ZELTO_KBD_H : BOTTOM_RESERVE);
 
     ZStackOpts opts = col;
     opts.padding = GRID_PAD;
@@ -2102,7 +2101,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         bstack.children[bk++] = page_dots(npages, state->nlib, page_v);
         bstack.children[bk++] = bottom_content;
         // The surface runs under the home indicator, so hold the dock clear of it.
-        bstack.children[bk++] = vgap(HOMEBAR_H);
+        bstack.children[bk++] = vgap((float)ZELTO_HOMEBAR_H);
         bottom = Fill(z_stack(Z_AXIS_VERTICAL, &bstack));
     }
 

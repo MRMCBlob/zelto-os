@@ -97,18 +97,43 @@ typedef enum ZAxis {
 // enough to look like a bug, which is why it survived thirteen phases: every
 // surface was uniformly, quietly under-typed.
 //
-// The fix is here rather than in the metrics because it is one ratio in one file
-// against several hundred constants spread over every system binary — and because
-// the metrics are the half that is RIGHT (see the proportions above), several of
-// them contractual (BAR_H matches zcomp's exclusive zone, HOMEBAR_H matches the
-// gesture strip). So the ramp is authored in points, as a designer reads it, and
-// Z_TYPE converts to screen units at the single point of truth. Retuning the
-// whole system's type is now one numerator.
+// The ramp is therefore authored in points, as a designer reads it, and Z_PT
+// converts to screen units at the single point of truth. Retuning the whole
+// system's type is one numerator.
+//
+// P43 ALSO GENERALISED FROM TWO METRICS AND GOT IT WRONG, which is why Z_PT
+// exists as a name of its own. The two proportions above are real, but they are
+// the metrics that were DERIVED from the screen (the icon falls out of a 4-column
+// grid on 720 units; the settings row's total falls out of a 44 + 2x16 padding
+// that happens to sum to 76). The metrics LIFTED FROM APPLE'S SPEC TABLES had
+// exactly the type scale's bug and kept it a phase longer: a 34-unit home
+// indicator where the spec says 34 POINTS (2.4% of the display against Apple's
+// 4.0%), a 40-unit status bar that is proportionally the CLASSIC 20pt one on a
+// design that had otherwise dropped the home button, a keyboard whose keys stood
+// 30pt tall against a 44pt touch-target minimum. P44 moved those onto Z_PT too;
+// see system/common/safe_areas.h.
+//
+// So: a number copied off a spec sheet is in POINTS and goes through Z_PT. A
+// number derived from the screen (a fraction of the width, a cell that divides a
+// grid) is already in screen units and must NOT. Nothing else in the OS is a
+// bare pixel constant by choice.
 //
 // Integer arithmetic, not a float multiply: an enum needs a constant expression.
 #define Z_TYPE_NUM 185
 #define Z_TYPE_DEN 100
-#define Z_TYPE(pt) ((pt) * Z_TYPE_NUM / Z_TYPE_DEN)
+
+// A HIG point in screen units. Rounds down; the half-unit that costs is below
+// what the renderer resolves.
+#define Z_PT(pt) ((pt) * Z_TYPE_NUM / Z_TYPE_DEN)
+
+// The type ramp's spelling of the same conversion — a step is points, always.
+#define Z_TYPE(pt) Z_PT(pt)
+
+// A standard list row's TOTAL height — Apple's 44pt table row, which is also the
+// HIG minimum touch target and therefore the floor for anything tappable. It is
+// a TOOLKIT metric (List's default row, a settings row), not a safe area: the
+// cross-process contracts with the compositor live in system/common/safe_areas.h.
+#define Z_ROW_H Z_PT(44)
 
 // Type scale — a semantic set of steps, à la the platform text styles (Apple HIG
 // / Material type scale). Pick by ROLE, not by pixel count, so the OS retypes
@@ -204,9 +229,36 @@ typedef struct ZRectOpts {
 ZView z_rect(const ZRectOpts *opts);
 #define Rect(...) z_rect(&(ZRectOpts){__VA_ARGS__})
 
-// A line of text (printf-style).
+// A line of text (printf-style). ONE line: it measures to its natural width and
+// does not wrap (layout is a single intrinsic-size pass). For a run of prose
+// wider than its column — a caption, a description, a paragraph — use WrapText,
+// which breaks it to a known width.
 ZView z_text(const char *fmt, ...);
 #define Text(...) z_text(__VA_ARGS__)
+
+// Prose wrapped to a fixed pixel WIDTH. Unlike Text, this is not printf: pass a
+// ready string (it is the paragraph as written, '\n's included — a newline is a
+// hard break, and a blank line is kept as a paragraph gap). It splits into as
+// many Text lines as needed, measuring with the real font so no line exceeds
+// `.width`; a word too long to fit alone is broken mid-word rather than allowed
+// to run off the edge.
+//
+// It needs the app because it measures at BUILD time, before the tree the layout
+// pass would measure exists — that is the whole reason it can wrap when Text
+// cannot. `.width` is required; the rest take the Text defaults. Capped at
+// Z_MAX_CHILDREN lines (a screenful of a single paragraph; longer prose belongs
+// in a Scroll, and each WrapText inside it wraps its own block).
+typedef struct ZWrapOpts {
+    float width;       // REQUIRED: the column width in screen units
+    ZFont size;        // 0 = Z_FONT_BODY
+    ZWeight weight;    // 0 = Regular
+    ZColor color;      // .a == 0 = inherit (Z_COLOR_TEXT)
+    float line_gap;    // extra px between lines (0 = snug)
+} ZWrapOpts;
+
+ZView z_text_wrap(ZApp *app, const char *s, const ZWrapOpts *opts);
+#define WrapText(appp, s, ...) \
+    z_text_wrap(appp, s, &(ZWrapOpts){__VA_ARGS__})
 
 // An image: a PNG or SVG loaded from `path` and drawn aspect-fit inside the
 // node's frame (letterboxed, never stretched). The decode is cached by path, so

@@ -331,6 +331,9 @@ struct ZApp {
 // Accessors so the toolkit modules (animation/scroll/navigation) reach the
 // retained state without app.c's wayland-heavy ZApp definition.
 ZUI *z_app_ui(ZApp *app) { return &app->ui; }
+// The shaping context, for builders that must measure before the tree exists
+// (WrapText). NULL when the font failed to open — callers degrade to one line.
+ZText *z_app_text(ZApp *app) { return app ? app->text : NULL; }
 void *z_app_state(ZApp *app) { return app->state; }
 // Recover the owning app from a foreign-toplevel record.
 static ZApp *rec_app(ZTaskRec *rec) { return rec->app; }
@@ -464,65 +467,24 @@ static ZView find_focusable(ZView n) {
     return NULL;
 }
 
-static bool point_in(ZView n, double x, double y) {
-    return x >= n->x && x < n->x + n->w && y >= n->y && y < n->y + n->h;
-}
-
-// Deepest (top-most) node with an on_tap handler whose frame contains (x,y).
+// Which node owns a point — tap, scroll, pan and long-press targets alike — is
+// z_hit_test() in layout.c, next to the arrange() that wrote the frames it reads.
+// Four near-identical recursive walks used to live here, and all four masked a
+// subtree by every ANCESTOR's frame rather than by the clip stack the renderer
+// masks paint with, so what was touchable and what was visible were different
+// regions (test/test_hit_test_clip.c). These wrappers keep the call sites below
+// reading as they did.
 static ZView hit_test(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    // Children paint last-on-top; search them front-to-back first.
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = hit_test(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return (n->on_tap || n->on_tap_data) ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_TAP);
 }
-
-// Deepest scroll container under (x,y) — the wheel/vertical-drag target.
 static ZView find_scroll(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = find_scroll(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return (n->kind == Z_K_SCROLL && n->scroll) ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_SCROLL);
 }
-
-// Deepest custom OnPan / OnPanData target under (x,y).
 static ZView find_pan(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = find_pan(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return (n->on_pan || n->on_pan_data) ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_PAN);
 }
-
-// Deepest OnLongPress target under (x,y).
 static ZView find_long_press(ZView n, double x, double y) {
-    if (!n || !point_in(n, x, y)) {
-        return NULL;
-    }
-    for (int i = n->n_children - 1; i >= 0; i--) {
-        ZView h = find_long_press(n->children[i], x, y);
-        if (h) {
-            return h;
-        }
-    }
-    return n->on_long_press ? n : NULL;
+    return z_hit_test(n, x, y, Z_HIT_LONG_PRESS);
 }
 
 // --- build/layout/paint/commit -------------------------------------------

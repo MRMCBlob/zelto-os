@@ -87,15 +87,15 @@
 #include "common/app_icons.h"
 #include "common/glyphs.h"
 #include "common/notif_card.h"
+#include "common/safe_areas.h"
 #include "common/settings_defaults.h"
 
 #define MAX_BANNERS 8
 #define MAX_HISTORY 6   // recently-dismissed notifications kept for the panel list
 
-// Footprints (px). The status bar owns the top BAR_H (we float below it via
+// Footprints (px). The status bar owns the top ZELTO_BAR_H (we float below it via
 // margin_top so it stays visible); GRAB_H is the idle down-swipe gesture strip;
 // BANNER_STRIP_H is the heads-up cards strip.
-#define BAR_H 40
 #define GRAB_H 72   // generous top-edge gesture inset so a down-swipe reliably
                     // starts on the strip and the expand-to-full happens before
                     // the finger leaves it (input then stays over the full surface)
@@ -808,7 +808,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     // the INPUT region, not the surface, which would race pointer delivery.
     int full_h = z_app_height(app);
     if (full_h < GRAB_H + 1) {
-        full_h = z_screen_height(app) - BAR_H;   // before the first configure
+        full_h = z_screen_height(app) - ZELTO_BAR_H;   // before the first configure
     }
     int w = z_app_width(app);
     g_dist_cc = CC_H;
@@ -960,7 +960,7 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
 }
 
 // OVERLAY layer anchored to ALL FOUR edges (so it always fills the area below the
-// BAR_H status bar — margin_top keeps the bar visible — without ever resizing),
+// status bar — margin_top keeps the bar visible — without ever resizing),
 // NOT keyboard-exclusive. It is visually transparent except where it paints (the
 // banners / a pulled-down panel); the app shows through everywhere else. What it
 // CATCHES is set by its input region each rebuild (shade_body via
@@ -972,5 +972,5 @@ Z_LAYER_APP(ShadeState, shade_body,
             .anchor = Z_ANCHOR_TOP | Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT |
                       Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .margin_top = BAR_H,
+            .margin_top = ZELTO_BAR_H,
             .keyboard = false)

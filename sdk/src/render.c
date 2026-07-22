@@ -4,6 +4,7 @@
 // the MVP — it needs no client GPU context, which is robust under QEMU's virtio
 // software path. See docs/contributing/sdk-internals.md.
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "internal.h"
@@ -568,6 +569,31 @@ static void paint(ZCanvas *canvas, ZView n, float alpha) {
         // intersected rect — a clip corner stays where the shape's corner is even
         // when a damage rect or an outer viewport has cropped the region being
         // painted, which is what keeps a partial repaint identical to a full one.
+        if (n->clip_radius > 0.5f && canvas->n_rclip >= Z_MAX_ROUND_CLIPS) {
+            // The stack is full: this level's ROUNDED half is dropped and the
+            // rectangular clip above still applies, so the shape silently gets
+            // squarer corners. Say so, once per process — a soft-fail nobody can
+            // see in a screenshot is the kind of thing that gets diagnosed as
+            // "the radius token must be wrong". Not fatal: a squarer corner is a
+            // cosmetic loss, and aborting a UI process over one is worse.
+            //
+            // The bound is not arbitrary. A rounded clip only nests when one
+            // masked shape sits inside another, and the deepest chain the system
+            // UI builds is three — a Control Center slab inside a rounded sheet
+            // inside a scrolled card. Four leaves a level of headroom; a tree
+            // that needs five is describing a shape nobody can perceive, since
+            // each level only refines corners the level above already cut.
+            static bool warned;
+            if (!warned) {
+                warned = true;
+                fprintf(stderr,
+                        "[zelto] Clip(): more than %d nested rounded clips; the "
+                        "innermost corner mask is ignored (corners will be "
+                        "square). Flatten the nesting or raise "
+                        "Z_MAX_ROUND_CLIPS.\n",
+                        Z_MAX_ROUND_CLIPS);
+            }
+        }
         if (n->clip_radius > 0.5f && canvas->n_rclip < Z_MAX_ROUND_CLIPS) {
             int fx0 = (int)(n->x + 0.5f), fy0 = (int)(n->y + 0.5f);
             int fx1 = (int)(n->x + n->w + 0.5f), fy1 = (int)(n->y + n->h + 0.5f);

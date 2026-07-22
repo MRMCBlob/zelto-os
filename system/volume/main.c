@@ -25,7 +25,8 @@
 
 #include <zelto/ui.h>
 
-#define BAR_H 40
+#include "common/safe_areas.h"
+
 #define VOL_MAX 10
 #define VOL_DEFAULT 5
 // How long the HUD stays up after the last change. Overridable so a screenshot
@@ -317,5 +318,5 @@ Z_LAYER_APP(VolState, vol_body,
             .anchor = Z_ANCHOR_TOP | Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT |
                       Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .margin_top = BAR_H,
+            .margin_top = ZELTO_BAR_H,
             .keyboard = false)

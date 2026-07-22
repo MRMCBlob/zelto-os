@@ -197,8 +197,14 @@ run_shot 10a-app-library-search "App Library search: filtered, keyboard raised" 
 # Press feedback (P31): freeze the global press spring over a tappable node so the
 # touch-down highlight veil paints on a still frame (ZELTO_PRESS_X/Y in surface px,
 # ZELTO_PRESS_AMT the spring value). The launcher is the full-screen surface here.
+#
+# P44: +41 on y. The launcher gets the whole output, so these are SCREEN
+# coordinates -- but the grid starts at GRID_TOP = ZELTO_BAR_H + 20, and the safe
+# areas moved the status bar from 40 units to 81. Every icon on the home screen
+# dropped by exactly that 41. Measured on the re-shot frame: the Notepad tile now
+# spans y 449..549, so 501 is its centre.
 run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
-    ZELTO_PRESS_X=447 ZELTO_PRESS_Y=460
+    ZELTO_PRESS_X=447 ZELTO_PRESS_Y=501
 # The Airplane Mode SWITCH — row 1 of the first card after P41's regrouping.
 #
 # TWO traps here, both of which photograph as "nothing happened":
@@ -218,18 +224,26 @@ run_shot 40-home-press "Home app icon pressed (touch-down highlight veil)" 6 \
 #
 # P43 retarget, and the THIRD trap: a coordinate aimed at a row is really aimed at
 # everything ABOVE that row. The type rescale grew the "Settings" large title from
-# 40px to 74px, which pushed the whole card down 38px, and 140 — correct in P42 —
+# 40px to 74px, which pushed the whole card down 38px, and 140 -- correct in P42 --
 # landed in the gap just above the card. It photographed a perfectly plausible
 # Settings screen with no veil on it at all, and the only thing that moved between
-# it and the baseline was the status-bar clock ticking over (measured: mean |delta|
-# 0.013, two changed tiles, both at y=0). This is the same failure P41 and P42 each
-# found once and is why the rule is MEASURE, never look:
-#   meta/pngdiff.py 34-app-settings.png 41-settings-press.png \
-#       --expect-box 40 183 640 76
-# The Network row is screen y 183..259 (card 183..490, four 77px rows), so its
-# centre is 221 on screen and 181 in the app's surface after the 40px bar.
+# it and the baseline was the status-bar clock ticking over.
+#
+# P44 retarget, and the FOURTH time this shot has moved. BOTH terms changed:
+# ZELTO_BAR_H went 40 -> 81 (so the app surface starts 41 lower on screen) and a
+# settings row went 76 -> 81 (ROW_H is the row's TOTAL height now, and it is
+# Apple's 44pt converted rather than 44 spent as pixels). MEASURED off a re-shot
+# frame rather than derived: the card's top edge is screen y=224 and its rows are
+# exactly 81 tall (separators at 305, 387, 469), so the Network row is 224..305,
+# centre 264 on screen and 264-81 = 183 in the app's surface.
+#
+# Note how close that is to P43's 181 -- and that 181 would now land at screen
+# 221, three pixels ABOVE the card, photographing no veil at all. A number that is
+# nearly right is exactly how this shot has rotted every phase since P41. The rule
+# is unchanged and is the only thing that catches it: MEASURE, never look.
+#   meta/pngdiff.py 34-app-settings.png 41-settings-press.png --expect-box 40 224 640 81
 run_shot 41-settings-press "Settings: a detail row pressed (touch-down veil)" 8 \
-    SIM_APP=zelto-settings ZELTO_PRESS_X=360 ZELTO_PRESS_Y=181
+    SIM_APP=zelto-settings ZELTO_PRESS_X=360 ZELTO_PRESS_Y=183
 
 # ===========================================================================
 # SYSTEM OVERLAYS (shade / volume / keyboard / lock / recents / consent / banner)
@@ -344,9 +358,15 @@ run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)
 # the press veil has to read at a glance. Coordinates are KEYBOARD-LOCAL (the
 # surface is KBD_H tall, bottom-anchored above the home indicator): the home row's
 # "g", centre of the grid.
+#
+# P44: 114 -> 140. The keyboard strip is ZELTO_KBD_H now (369, derived from four
+# ZELTO_KEY_H caps + gaps + padding) where it was a flat 300 with 56-unit caps --
+# the caps stood 30pt tall, under the 44pt touch-target minimum. The home row's
+# band is surface-local 102..179, so its centre is 140. Verified by measurement,
+# not by assuming the old number still landed on a key.
 run_shot 48-key-press "Keyboard: a key pressed (touch-down highlight veil)" 8 \
     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad \
-    ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=364 ZELTO_PRESS_Y=114
+    ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=364 ZELTO_PRESS_Y=140
 
 # App-open continuity (P32 item 3b): the tapped tile drifts toward centre while the
 # rest of home fades — the launch hand-off, frozen mid-flight.

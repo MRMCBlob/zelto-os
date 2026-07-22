@@ -23,9 +23,8 @@
 #include <zelto/ui.h>
 
 #include "common/glyphs.h"
+#include "common/safe_areas.h"
 #include "common/settings_defaults.h"
-
-#define BAR_H 40
 
 // A FIXED horizontal gap. Not Frame(w, h, Spacer()): a Spacer carries grow, so
 // Frame'ing one still lets it eat every spare pixel in the stack and the "12px"
@@ -161,17 +160,16 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // legible over both; the text shadow covers a bright wallpaper.
     //
     // A long-press on the bar manually locks now (bumps sys.lock_now).
-    // The bar is the tightest box in the OS: BAR_H is a contract (it is the
-    // exclusive zone every app window is laid out against), so the type has to fit
-    // 40px rather than the box growing to fit the type. Caption (22px) is the step
-    // that does — and it is the right step by proportion too: a 22px label in a
-    // 40px strip is 12pt in a 20pt bar, which is exactly what the phone this
-    // copies puts there. Subhead, which this used before the P43 rescale, measures
-    // a 35px line box and was cropped top and bottom on every screen in the OS.
+    // Caption (22 units = 12pt) is the status-bar step, and it stays there after
+    // P44 grew the strip from 40 units to ZELTO_BAR_H. It was chosen in P43 for
+    // the wrong reason — as the largest step that would fit 40 units — and the
+    // note said "12pt in a 20pt bar, exactly what the phone this copies puts
+    // there", which was true of the type and an admission about the bar: 12pt IS
+    // Apple's status-bar size, but it sits in a 44pt inset there, not a 20pt one.
+    // The strip moved; the type was already right.
     //
-    // Padding is 4, not 14: the uniform .padding is BOTH axes, and 14 leaves 12px
-    // of a 40px strip for the text. The horizontal inset it used to provide comes
-    // from explicit end gaps instead, so the two axes can differ.
+    // Padding is 4, not 14: the uniform .padding is BOTH axes. The horizontal
+    // inset comes from explicit end gaps instead, so the two axes can differ.
     return OnLongPress(bar_longpress, NULL,
         HStack(
             hgap(12.0f),
@@ -190,5 +188,5 @@ static ZView bar_body(ZApp *app, BarState *state) {
 Z_LAYER_APP(BarState, bar_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_TOP | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
-            .exclusive_zone = BAR_H,
-            .height = BAR_H)
+            .exclusive_zone = ZELTO_BAR_H,
+            .height = ZELTO_BAR_H)

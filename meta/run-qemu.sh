@@ -98,6 +98,57 @@ common=(
 
 KCMD="console=ttyAMA0 rdinit=/init loglevel=7"
 
+# EVERY two-boot harness below lives inside the HEADLESS branch, so asking for one
+# without HEADLESS=1 used to boot a plain interactive QEMU, wait, and exit 0 — a
+# green run that tested nothing. P44 found this the direct way: `QSPERSIST=1
+# meta/run-qemu.sh` sat for sixteen minutes and reported success without ever
+# sending a key. Refuse instead, in the same spirit as QSPERSIST refusing to run
+# without socat: a harness that cannot execute must not exit 0.
+for _h in STORAGE NET INSTALL HOME_TEST QSPERSIST SETTINGS ACTUATE LOCK KBD \
+          VOLUME SHADE2 QUICK NAV; do
+    if [ "${!_h:-0}" = "1" ] && [ "${HEADLESS:-0}" != "1" ]; then
+        echo "!! $_h=1 needs HEADLESS=1 — every harness runs inside the headless"
+        echo "   branch, and without it this script would boot a window, wait and"
+        echo "   exit 0 having tested nothing."
+        echo "   Try: HEADLESS=1 $_h=1 meta/run-qemu.sh"
+        exit 2
+    fi
+done
+unset _h
+
+# ---------------------------------------------------------------------------
+# ROTTED HARNESSES. P44 audited every block below and found five that still
+# drive the APP DRAWER — a slide-up panel P40 stage 2 deleted, whose job is now
+# the last page of the home carousel — by swiping up from the home screen and
+# then tapping a tile at coordinates from the drawer's grid. ACTUATE also taps
+# the three-button nav bar P40 stage 1 replaced with the home-indicator pill.
+#
+# Every one of them ends in an unconditional `exit 0`. They inject a swipe that
+# now means something else (an up-swipe from the bottom strip is the Home /
+# app-switcher gesture), tap wherever those stale coordinates land, screenshot
+# whatever is on screen, and report success. That is worse than a missing test:
+# it is a green light with nothing behind it, which is exactly how NAV=1 and
+# SHADE2=1 survived to P43 and how three consecutive phases shipped a rotted
+# 41-settings-press.
+#
+# They are DISABLED rather than deleted or rewritten. Deleting them would throw
+# away the claims they encode (brightness actually dims the screen; the lock
+# screen's timeouts persist; a typed note survives a reboot), and none of those
+# is covered elsewhere. Rewriting all five coordinate-free — the HOME_TEST /
+# QSPERSIST treatment, assertions off the serial log and no x/y at all — is more
+# than one phase's work. So the honest state is: refuse, and say why.
+harness_rotted() {
+    echo "!! $1=1 is DISABLED: it drives UI that no longer exists."
+    echo "   $2"
+    echo "   It ends in an unconditional 'exit 0', so it cannot fail — running it"
+    echo "   would produce plausible screenshots and a green result that means"
+    echo "   nothing. See the P44 note above this function in meta/run-qemu.sh."
+    echo "   To revive it: drive the surface through the env test-hooks the shot"
+    echo "   catalogue uses and assert on the SERIAL LOG, as HOME_TEST=1 and"
+    echo "   QSPERSIST=1 now do. Do not re-derive the tap coordinates."
+    exit 2
+}
+
 if [ "${HEADLESS:-0}" = "1" ]; then
     echo "==> launching QEMU headless; frame -> $OUT/frame.ppm after ${SHOT_DELAY}s"
     rm -f "$OUT/frame.ppm" "$OUT/frame-after.ppm"
@@ -492,6 +543,23 @@ if [ "${HEADLESS:-0}" = "1" ]; then
             echo "   Refusing to run rather than reporting a pass it did not earn."
             exit 2
         fi
+
+        # THE KEY MUST ARRIVE AFTER THE COMPOSITOR EXISTS, and under TCG that is
+        # not soon. P44 ran this harness for the first time (P43 wrote it and did
+        # not) at the inherited SHOT_DELAY of 16 and it failed with "the media key
+        # did not reach the broker" — correctly, but for the wrong reason: the
+        # keys were sent while the guest was still running udev coldplug, so there
+        # was no zcomp to bind the chord and no zsysd to write to. Measured on this
+        # host, zcomp activates the launcher around 23s of guest time and rather
+        # more of wall time. So this harness sets its own floor rather than
+        # inheriting a screenshot delay tuned for a different job; raise it with
+        # SHOT_DELAY on a slower machine, never lower it.
+        QS_DELAY="${SHOT_DELAY:-16}"
+        if [ "$QS_DELAY" -lt 150 ]; then
+            QS_DELAY=150
+            echo "==> SHOT_DELAY raised to ${QS_DELAY}s: the volume key has to land"
+            echo "    after zcomp and zsysd are up, not during the guest's boot."
+        fi
         qmp() {
             printf '%s\n' '{"execute":"qmp_capabilities"}' "$1" \
                 | socat - "UNIX-CONNECT:$QMP_SOCK" >/dev/null 2>&1 || true
@@ -515,7 +583,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
                 -serial "file:$logfile" \
                 -qmp "unix:$QMP_SOCK,server,nowait" &
             QPID=$!
-            sleep "$SHOT_DELAY"
+            sleep "$QS_DELAY"
             "$after"
             sleep 3
             sync
@@ -592,6 +660,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # under TCG: keep SHOT_DELAY high; the grab strip is a thin top region so the
     # pull-down swipe MUST start just below the 40px bar (y ~ 72).
     if [ "${SETTINGS:-0}" = "1" ]; then
+        harness_rotted SETTINGS \n            "It swipes up to open the deleted app drawer and taps a Settings tile at the drawer grid's coordinates."
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"                       # vertical swipe column
         # Settings drawer tile: apps are alphabetical by name in a 4-col grid; on
@@ -742,6 +811,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # rendered layout). Boot is slow under TCG: keep SHOT_DELAY high. Use launchtap
     # (zero-hold) for drawer launches so a held tap can't flake into the long-press.
     if [ "${ACTUATE:-0}" = "1" ]; then
+        harness_rotted ACTUATE \n            "It taps the deleted three-button nav bar (NAV_HOME_X/Y) AND swipes up to the deleted app drawer."
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"
         # Home favourites row (y~115): Cards 172, Fetch 484, Notepad 796, Notes 1108.
@@ -912,6 +982,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     #     (the setting survived). Coordinates overridable; TCG boot is slow so keep
     #     SHOT_DELAY high.
     if [ "${VOLUME:-0}" = "1" ]; then
+        harness_rotted VOLUME \n            "It opens the deleted app drawer to launch Settings."
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         # Fake battery: start just above the 20% low threshold and drain fast so
         # the low-battery warning fires within the first SHOT_DELAY window.
@@ -1025,6 +1096,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # SKIP_BUILD=1 + overrides to retune from a captured frame). Boot is slow under
     # TCG: keep SHOT_DELAY high. Use launchtap (zero-hold) for drawer launches.
     if [ "${LOCK:-0}" = "1" ]; then
+        harness_rotted LOCK \n            "It opens the deleted app drawer to launch Settings."
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"
         # Settings drawer tile: alphabetical 4-col grid, row 2 col 3 on a fresh
@@ -1185,6 +1257,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
     # under TCG: keep SHOT_DELAY high; TCG drops rapid taps so keys are spaced, and
     # the screendump lags a frame so trust the downstream state.
     if [ "${KBD:-0}" = "1" ]; then
+        harness_rotted KBD \n            "It opens the deleted app drawer to launch Notepad, and its key coordinates assume the deleted 64px nav bar."
         OUTW="${OUTW:-1280}"; OUTH="${OUTH:-800}"
         SWIPE_X="${SWIPE_X:-640}"
         # Notepad drawer tile: alphabetical 4-col grid, row 1 col 3 on a fresh

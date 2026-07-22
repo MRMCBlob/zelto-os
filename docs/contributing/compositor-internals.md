@@ -53,6 +53,22 @@ changed is redrawn ([../tooling/profiling.md](../tooling/profiling.md)).
 - **Android surfaces** from Waydroid are ordinary surfaces; the **APK bridge** assigns
   them decoration and placement ([services-and-ipc.md](services-and-ipc.md)).
 
+### Safe areas are a cross-process contract
+
+Three surfaces publish an **exclusive zone** and `zcomp` shrinks every app window by the
+sum: the status bar at the top, the home indicator at the bottom, and the on-screen
+keyboard while it is up. Four more surfaces position themselves against those numbers (the
+Control/Notification Center, the dim scrim and the volume HUD float below the bar; the
+launcher starts its grid under it and reserves the keyboard's strip while searching).
+
+So the heights are not a shared constant, they are an agreement between five processes,
+and they live in ONE place — `system/common/safe_areas.h`, pinned by
+`test/test_safe_areas_shared.sh`. They are written in HIG **points** through `Z_PT()`, for
+the same reason the type scale is: they came off Apple's spec tables, and spending a point
+value as a pixel gets you a strip at 54% of the size it was specified at. Nothing fails
+when a copy drifts — an overlay just lands on top of the clock — which is why it is a lint
+and not a code-review note.
+
 ## Input & gestures
 
 libinput events are routed to the focused surface. System-level gestures (edge-back, home

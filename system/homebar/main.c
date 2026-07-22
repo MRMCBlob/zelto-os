@@ -9,9 +9,10 @@
 //
 // A wlr-layer-shell client anchored to the BOTTOM edge in the TOP layer with an
 // exclusive zone, the mirror of the status bar (P6 usable-area math handles a
-// bottom exclusive zone the same as a top one). The zone is 34px — the same
-// bottom safe-area inset Apple reserves on a gesture phone — so apps stop above
-// the pill instead of drawing under it. Always-running like the bar/shade;
+// bottom exclusive zone the same as a top one). The zone is ZELTO_HOMEBAR_H —
+// Apple's 34pt bottom safe-area inset, converted (P44: it used to be 34 raw
+// units, i.e. the point value spent as pixels) — so apps stop above the pill
+// instead of drawing under it. Always-running like the bar/shade;
 // started by init in the slot the nav bar used to hold.
 //
 // The gestures, all read off ONE upward pan from the strip:
@@ -34,10 +35,15 @@
 
 #include <zelto/ui.h>
 
-#define HOMEBAR_H 34            // Apple's bottom safe-area inset
+#include "common/safe_areas.h"
+
+// The pill itself. The WIDTH is a fraction of the screen (already in screen
+// units, so it does not convert); the other two are Apple's 5pt bar sitting 8pt
+// off the bottom edge, and they do — a 5-unit pill in a 62-unit strip is a
+// hairline, which is what it looked like when the strip grew.
 #define PILL_W_FRAC 0.36f       // pill spans ~a third of the width, as on iOS
-#define PILL_H 5.0f
-#define PILL_BOTTOM 9.0f        // gap under the pill, inside the strip
+#define PILL_H ((float)Z_PT(5))
+#define PILL_BOTTOM ((float)Z_PT(8))   // gap under the pill, inside the strip
 #define LAUNCHER_APP_ID "os.zelto.launcher"
 #define RECENTS_BIN "/usr/bin/zelto-recents"
 
@@ -186,5 +192,5 @@ static ZView bar_body(ZApp *app, HomeBarState *s) {
 Z_LAYER_APP(HomeBarState, bar_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
-            .exclusive_zone = HOMEBAR_H,
-            .height = HOMEBAR_H)
+            .exclusive_zone = ZELTO_HOMEBAR_H,
+            .height = ZELTO_HOMEBAR_H)

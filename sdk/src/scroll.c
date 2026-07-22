@@ -175,7 +175,10 @@ ZView z_scroll_view(ZApp *app, const ZScrollOpts *opts) {
 // --- List (virtualised) ---------------------------------------------------
 ZView z_list(ZApp *app, const ZListOpts *opts) {
     ZScroll *sc = next_scroll_cell(app);
-    float rh = opts->row_height > 1.0f ? opts->row_height : 44.0f;
+    // Z_ROW_H, not 44: 44 is Apple's row height in POINTS, and this number is in
+    // screen units (see Z_PT in ui.h — the same confusion P43 found in the type
+    // scale and P44 in the safe areas).
+    float rh = opts->row_height > 1.0f ? opts->row_height : (float)Z_ROW_H;
     int count = opts->count < 0 ? 0 : opts->count;
 
     ZView scroll = new_node(Z_K_SCROLL);

@@ -52,6 +52,32 @@ Single-pass, constraint-light:
 - Frames/min-max constrain; safe-area insets are applied at the screen root.
 - Designed to avoid multi-pass constraint solving for predictable, fast mobile layout.
 
+The cost of the single pass is that **a node cannot report a height that depends on the
+width it will be given** — which is why `Text` never wraps and prose goes through
+`WrapText`, a builder that measures with the real shaper and splits to a known column
+before the tree exists ([../api-reference/c/ui.md](../api-reference/c/ui.md)).
+
+### Hit testing: a node is tappable exactly where it is painted
+
+`z_hit_test()` lives in `layout.c`, beside the `arrange()` whose frames it reads, and is
+the inverse of it: tap, scroll, pan and long-press targets are one walk with four
+predicates.
+
+The invariant is the title of this section, and it is easy to get wrong in a way nothing
+reports. The renderer masks a subtree at exactly one kind of node: one with `clip` set (a
+`Scroll` viewport, or an explicit `Clip()`). Everywhere else a child paints wherever
+layout put it, **including outside its parent** — an `OffsetXY`'d icon mid-drag, a screen
+sliding through a transition, the last child of an overfull stack. So the walk carries the
+same clip stack the renderer carries, pushed and popped at the same nodes, and culls on
+THAT — never on a plain ancestor's frame.
+
+Before P44 it culled on every ancestor's frame, which is neither the painted region nor
+the clip stack, and produced two mismatches in opposite directions: a node painted outside
+a non-clipping ancestor was **visible but not tappable**, and the corners `Clip(radius)`
+masks away stayed **tappable but not visible**. `test/test_hit_test_clip.c` pins both, and
+pins the case that turned out to be fine — a row scrolled out of a viewport was already
+unreachable, by accident, via the same rule that caused the first bug.
+
 ## Text
 
 Shaping via **HarfBuzz**, rasterization via **FreeType**, with a glyph atlas cached on the

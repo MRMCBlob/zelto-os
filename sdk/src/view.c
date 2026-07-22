@@ -146,6 +146,59 @@ ZView z_text(const char *fmt, ...) {
     return n;
 }
 
+// --- WrapText -------------------------------------------------------------
+// Prose that fits its column. The split happens HERE, at build time, with the
+// same shaper the renderer will use — see the long note above z_wrap_lines() in
+// layout.c for why this is a builder and not a layout pass.
+//
+// Each line is a Text node over a SLICE of the caller's string ("%.*s"), so a
+// paragraph costs one arena copy per line and no allocation for the split.
+typedef struct WrapUD {
+    ZText *text;
+    float size;
+    ZWeight weight;
+} WrapUD;
+
+static float wrap_measure(void *ud, const char *s, int len) {
+    WrapUD *w = ud;
+    if (!w->text || len <= 0) {
+        return 0.0f;
+    }
+    // z_text_measure takes a NUL-terminated string; measure the slice through a
+    // stack buffer rather than mutating the caller's constant string.
+    char buf[512];
+    if (len > (int)sizeof(buf) - 1) {
+        len = (int)sizeof(buf) - 1;
+    }
+    memcpy(buf, s, (size_t)len);
+    buf[len] = '\0';
+    return z_text_measure(w->text, buf, w->size, w->weight, NULL, NULL);
+}
+
+ZView z_text_wrap(ZApp *app, const char *s, const ZWrapOpts *opts) {
+    float size = opts->size > 0 ? (float)opts->size : (float)Z_FONT_BODY;
+    WrapUD ud = {z_app_text(app), size, opts->weight};
+    ZWrapLine lines[Z_MAX_CHILDREN];
+    int n = z_wrap_lines(s ? s : "", opts->width, wrap_measure, &ud, lines,
+                         Z_MAX_CHILDREN);
+    ZStackOpts col = {.spacing = opts->line_gap, .align = Z_ALIGN_LEADING};
+    for (int i = 0; i < n; i++) {
+        ZView t = z_text("%.*s", lines[i].len, lines[i].s);
+        t->font_size = size;
+        t->weight = opts->weight;
+        if (opts->color.a) {
+            t->fg = opts->color;
+        }
+        col.children[i] = t;
+    }
+    // One line: return it bare, so the common case lays out exactly as a plain
+    // Text does (a one-child stack is not the same node for a parent's measure).
+    if (n == 1) {
+        return col.children[0];
+    }
+    return z_stack(Z_AXIS_VERTICAL, &col);
+}
+
 ZView z_image(const char *path) {
     ZView n = node_new(Z_K_IMAGE);
     n->img_path = path ? z_arena_strdup(z_build_arena, path) : NULL;

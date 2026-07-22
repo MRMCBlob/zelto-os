@@ -81,7 +81,8 @@ flexible gap.
 
 ```c
 Rect(.color = Z_COLOR_PRIMARY, .width = 80, .height = 80, .radius = 12);  // solid box
-Text(const char *fmt, ...);              // printf-style, shaped with HarfBuzz/FreeType
+Text(const char *fmt, ...);              // printf-style, ONE line, never wraps
+WrapText(app, s, .width = 480, .size = Z_FONT_FOOTNOTE);  // prose, broken to a column
 Image(const char *source);               // Planned
 Button(ZAction onTap, const char *fmt, ...);
 TextField(.value = s, .on_change = cb, .placeholder = "…");
@@ -178,6 +179,33 @@ This matters when you write a metric next to a type step. **Metrics are in scree
 — `Frame(104, 104, …)` is 104 pixels, not points — so pairing a raw 17 with a 104px icon
 gets you type at half the size the layout was built for. Always name the step; never
 write a pixel size into `Font()`.
+
+### Prose has to be wrapped explicitly
+
+`Text` measures to ONE line. Layout is a single intrinsic-size pass — a node reports the
+size it wants, then the parent assigns frames — so a Text cannot report a height that
+depends on the width its parent will grant it, and a caption wider than its column simply
+runs off the right edge.
+
+`WrapText` is the answer, and it works because the column width is known when the tree is
+BUILT (an inset of the screen, or of a card). It measures with the real shaper and emits
+one `Text` per line, so the breaks are exact rather than estimated:
+
+```c
+WrapText(app, "A long description that will not fit on one line.",
+         .width = LIST_W - 2 * ROW_PAD, .size = Z_FONT_FOOTNOTE,
+         .color = Z_COLOR_TEXT_FAINT, .line_gap = 4.0f);
+```
+
+A `'
+'` in the string is a hard break and a blank line is kept as a paragraph gap. No
+emitted line ever exceeds `.width`: a word too long to fit alone is broken mid-word rather
+than allowed to overflow. It takes the `app` because it measures before the tree exists,
+which is exactly what `Text` cannot do.
+
+The limit worth knowing: a view that does not learn its width until arrange time still
+cannot wrap. That is the point at which the single-pass layout would have to become a
+measure-under-constraint protocol, and nothing in the OS has needed it yet.
 
 ## Callbacks & actions
 

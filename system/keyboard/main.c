@@ -28,8 +28,7 @@
 
 #include <zelto/ui.h>
 
-#define KBD_H 300     // keyboard strip height (px)
-#define KEY_H 56      // one key's height
+#include "common/safe_areas.h"
 
 typedef struct KbdState {
     bool inited;
@@ -107,7 +106,7 @@ static ZView key_cap(ZView inner, ZAction act, float grow, ZColor bg) {
     ZView face = Shadow(Z_ELEV_1,
         Background(bg,
             CornerRadius(Z_RADIUS_CHIP,
-                Frame(0.0f, (float)KEY_H,
+                Frame(0.0f, (float)ZELTO_KEY_H,
                     HStack(Spacer(), inner, Spacer(),
                            .align = Z_ALIGN_CENTER)))));
     return Grow(grow, act ? OnTap(act, face) : face);
@@ -128,12 +127,22 @@ static ZView glyph_on(const char *label, ZColor ink) {
 // each one needing to be READ. They are marks now — the same three every phone
 // keyboard has drawn for fifteen years — built from the toolkit's round-capped
 // polyline in the unit box, so they scale with the cap and ship no bitmaps.
+// The marks are drawn in the unit box, so only the frame around them carries a
+// size — and that size used to be 22, chosen against a 56-unit key cap. A cap is
+// ZELTO_KEY_H (Apple's 42pt) now, so the frame is a point size too: ~20pt is the
+// keyboard glyph on the phone this copies. The two non-square marks keep the
+// aspect they were drawn at.
+#define MARK_H ((float)Z_PT(20))                 // 37
+#define MARK_W_DELETE (MARK_H * 26.0f / 22.0f)   // the drawn glyph's aspect
+#define MARK_W_RETURN (MARK_H * 24.0f / 22.0f)
+#define MARK_STROKE ((float)Z_PT(2))             // 3 — the ink, at the glyph's scale
+
 static ZView mark_shift(ZColor ink) {
     static const float arrow[] = {0.50f, 0.12f, 0.88f, 0.50f, 0.68f, 0.50f,
                                   0.68f, 0.82f, 0.32f, 0.82f, 0.32f, 0.50f,
                                   0.12f, 0.50f};
-    return Frame(22.0f, 22.0f,
-        Stroke(.points = arrow, .count = 7, .thickness = 2.0f, .color = ink,
+    return Frame(MARK_H, MARK_H,
+        Stroke(.points = arrow, .count = 7, .thickness = MARK_STROKE, .color = ink,
                .closed = true));
 }
 static ZView mark_delete(ZColor ink) {
@@ -141,27 +150,27 @@ static ZView mark_delete(ZColor ink) {
                                  0.36f, 0.80f, 0.06f, 0.50f};
     static const float x1[] = {0.54f, 0.37f, 0.80f, 0.63f};
     static const float x2[] = {0.80f, 0.37f, 0.54f, 0.63f};
-    return Frame(26.0f, 22.0f,
+    return Frame(MARK_W_DELETE, MARK_H,
         ZStack(
-            Frame(26.0f, 22.0f,
-                Stroke(.points = body, .count = 5, .thickness = 2.0f,
+            Frame(MARK_W_DELETE, MARK_H,
+                Stroke(.points = body, .count = 5, .thickness = MARK_STROKE,
                        .color = ink, .closed = true)),
-            Frame(26.0f, 22.0f,
-                Stroke(.points = x1, .count = 2, .thickness = 2.0f, .color = ink)),
-            Frame(26.0f, 22.0f,
-                Stroke(.points = x2, .count = 2, .thickness = 2.0f, .color = ink)),
+            Frame(MARK_W_DELETE, MARK_H,
+                Stroke(.points = x1, .count = 2, .thickness = MARK_STROKE, .color = ink)),
+            Frame(MARK_W_DELETE, MARK_H,
+                Stroke(.points = x2, .count = 2, .thickness = MARK_STROKE, .color = ink)),
             .align = Z_ALIGN_CENTER));
 }
 static ZView mark_return(ZColor ink) {
     static const float hook[] = {0.86f, 0.22f, 0.86f, 0.60f, 0.22f, 0.60f};
     static const float head[] = {0.42f, 0.42f, 0.22f, 0.60f, 0.42f, 0.78f};
-    return Frame(24.0f, 22.0f,
+    return Frame(MARK_W_RETURN, MARK_H,
         ZStack(
-            Frame(24.0f, 22.0f,
-                Stroke(.points = hook, .count = 3, .thickness = 2.0f,
+            Frame(MARK_W_RETURN, MARK_H,
+                Stroke(.points = hook, .count = 3, .thickness = MARK_STROKE,
                        .color = ink)),
-            Frame(24.0f, 22.0f,
-                Stroke(.points = head, .count = 3, .thickness = 2.0f,
+            Frame(MARK_W_RETURN, MARK_H,
+                Stroke(.points = head, .count = 3, .thickness = MARK_STROKE,
                        .color = ink)),
             .align = Z_ALIGN_CENTER));
 }
@@ -184,7 +193,8 @@ static ZView half_gutter(void) {
 // A row of character keys from a NUL-terminated string, optionally inset by half
 // a key at both ends (the home row).
 static ZView char_row(KbdState *s, const char *chars, bool inset) {
-    ZStackOpts row = {.spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f};
+    ZStackOpts row = {.spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
+                      .grow = 1.0f};
     int k = 0;
     if (inset) {
         row.children[k++] = half_gutter();
@@ -225,7 +235,8 @@ static ZView keyboard_grid(KbdState *s) {
                           !s->symbols);
 
     // Row 3: shift (letters only), the last char keys, delete.
-    ZStackOpts r3 = {.spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f};
+    ZStackOpts r3 = {.spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER,
+                     .grow = 1.0f};
     int k = 0;
     if (!s->symbols) {
         r3.children[k++] = mark_key(mark_shift(shift_ink), on_shift, 1.6f,
@@ -250,14 +261,15 @@ static ZView keyboard_grid(KbdState *s) {
         word_key(s->symbols ? "ABC" : "123", on_symbols, 1.7f, sp, spi),
         word_key("space", on_space, 5.6f, Z_COLOR_SURFACE_4, Z_COLOR_TEXT),
         mark_key(mark_return(spi), on_enter, 2.0f, sp),
-        .spacing = 6.0f, .align = Z_ALIGN_CENTER, .grow = 1.0f);
+        .spacing = (float)ZELTO_KEY_GAP, .align = Z_ALIGN_CENTER, .grow = 1.0f);
 
     // A heavy material: the app behind shows only as a hint. See kbd_body for why
     // this one is a tint rather than a compositor blur.
     return Fill(
         Background(Z_COLOR_MATERIAL_THICK,
             VStack(row1, row2, row3, row4,
-                   .spacing = 8.0f, .padding = 8.0f, .grow = 1.0f)));
+                   .spacing = (float)ZELTO_KEY_GAP,
+                   .padding = (float)ZELTO_KEY_PAD, .grow = 1.0f)));
 }
 
 // --- body -------------------------------------------------------------------
@@ -281,7 +293,7 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
 
     // Reserve our height only while shown (app shrinks to keep the field above
     // the keyboard); catch input only while shown (else taps fall through).
-    z_layer_set_exclusive_zone(app, s->visible ? KBD_H : 0);
+    z_layer_set_exclusive_zone(app, s->visible ? ZELTO_KBD_H : 0);
     if (s->visible) {
         z_layer_set_input_region(app, 0, 0, 0, 0);   // whole surface (input on)
     } else {
@@ -296,7 +308,7 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
 
     // Slide: v animates 0->1; parked slides the whole grid off the bottom edge.
     float v = z_animated_get(s->anim);
-    float slide = (1.0f - v) * (float)KBD_H;
+    float slide = (1.0f - v) * (float)ZELTO_KBD_H;
     z_full_repaint(app);   // a big translated subtree wants a full repaint
     return Offset(NULL, slide, keyboard_grid(s));
 }
@@ -308,5 +320,5 @@ Z_LAYER_APP(KbdState, kbd_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
-            .height = KBD_H,
+            .height = ZELTO_KBD_H,
             .keyboard = false)

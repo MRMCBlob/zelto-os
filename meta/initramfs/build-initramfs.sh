@@ -410,7 +410,11 @@ if is_dynamic "$ZCOMP"; then
     # 1b. the libzelto apps' closure (libwayland-client, libharfbuzz,
     #     libfreetype + transitive deps: glib, png, brotli, z, ...). They share
     #     a closure, but bundle each so a future divergence can't break boot.
-    for binp in "$SAMPLE" "$CARDS" "$BAR" "$NAV" "$RECENTS" "$LAUNCHER" \
+    # $HOMEBAR, not $NAV: P40 replaced the three-button nav bar with the home
+    # indicator and renamed the variable at the top of this file, but this list
+    # kept the old name. Under `set -u` an unset variable is fatal, so EVERY
+    # QEMU boot died here ("NAV: unbound variable") until P44 ran one.
+    for binp in "$SAMPLE" "$CARDS" "$BAR" "$HOMEBAR" "$RECENTS" "$LAUNCHER" \
                 "$ZSYSD" "$CONSENT" "$CHOOSER" "$SHARE_APP" "$NOTES" "$SHADE" \
                 "$DIM" "$LOCKAPP" "$VOLAPP" "$KBDAPP" "$PINGER" "$NOTEPAD" \
                 "$SETTINGS_APP" "$FETCH" "$INSTALLER" "$STORE"; do
