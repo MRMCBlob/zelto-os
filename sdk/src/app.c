@@ -2247,10 +2247,20 @@ static int app_run(ZApp *app) {
     app->clip_fd = -1;
     z_active_app = app;
 
+    // NAME THE PATH. The old message was "could not open font (text disabled)"
+    // and nothing else, which is why a stale ZELTO_FONT in the initramfs went
+    // fifteen phases undiagnosed: the line was true, unactionable and repeated
+    // once per client, so it read as boot noise rather than as "this image ships
+    // no usable font". A failure whose cause is a filename should print the
+    // filename.
     const char *font = getenv("ZELTO_FONT");
-    app->text = z_text_open(font ? font : Z_DEFAULT_FONT);
+    const char *font_path = font ? font : Z_DEFAULT_FONT;
+    app->text = z_text_open(font_path);
     if (!app->text) {
-        fprintf(stderr, "zelto: warning: could not open font (text disabled)\n");
+        fprintf(stderr,
+                "zelto: warning: could not open font '%s' (%s) — TEXT DISABLED, "
+                "this surface will render no glyphs\n",
+                font_path, font ? "from $ZELTO_FONT" : "compiled-in default");
     }
 
     app->xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);

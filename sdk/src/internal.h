@@ -312,6 +312,13 @@ void z_text_close(ZText *t);
 // advances, so measure must use the same weight the renderer will paint at.
 float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
                      float *ascent, float *descent);
+// The same, over the first `len` bytes of `s` (len < 0 = to the NUL). A line
+// breaker measures SLICES of a paragraph it does not own; without a length it
+// would have to copy each slice somewhere to NUL-terminate it, and any fixed
+// buffer used for that silently truncates — measuring SHORT, so the breaker
+// emits a line that overflows. Shaping has taken a length all along.
+float z_text_measure_n(ZText *t, const char *s, int len, float size,
+                       ZWeight weight, float *ascent, float *descent);
 
 // The app's shaping context (ZApp is private to app.c). Needed by builders that
 // have to measure at BUILD time rather than at layout time — WrapText, whose
@@ -337,9 +344,15 @@ typedef struct ZWrapLine {
 // what makes the algorithm testable without a font. '\n' always breaks. A word
 // too long to fit alone is broken mid-word rather than allowed to overflow, so
 // the result NEVER exceeds max_w. Returns the number of lines written.
+//
+// `rest` (nullable) receives the first byte NOT consumed, so a caller that hit
+// max_lines can continue instead of silently dropping the tail. It points at the
+// terminating NUL when the whole string was broken. P44 shipped this without it
+// and lost everything past line 32 with no diagnostic — the same silent-degrade
+// it had just added a warning for elsewhere in the same commit.
 typedef float (*ZWrapMeasure)(void *ud, const char *s, int len);
 int z_wrap_lines(const char *text, float max_w, ZWrapMeasure measure, void *ud,
-                 ZWrapLine *out, int max_lines);
+                 ZWrapLine *out, int max_lines, const char **rest);
 
 // --- Hit testing ----------------------------------------------------------
 // The inverse of layout: which node owns a point. It lives beside layout.c's

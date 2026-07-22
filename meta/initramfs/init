@@ -144,11 +144,24 @@ fi
 # socket appears, so zcomp composites a real shell rather than just the
 # background. The bar is a wlr-layer-shell client anchored at the top with an
 # exclusive zone; the launcher is a back toplevel filling the area below it and
-# fork/execs an app binary when a tile is tapped. Both inherit WAYLAND_DISPLAY +
-# ZELTO_FONT from this environment, so apps the launcher spawns find them too.
+# fork/execs an app binary when a tile is tapped. Both inherit WAYLAND_DISPLAY
+# from this environment, so apps the launcher spawns find the display too.
 # The socket is wayland-0 under XDG_RUNTIME_DIR.
 export WAYLAND_DISPLAY=wayland-0
-export ZELTO_FONT=/usr/share/zelto/fonts/ZeltoSans.ttf
+# NO ZELTO_FONT HERE, DELIBERATELY. This line used to export
+# /usr/share/zelto/fonts/ZeltoSans.ttf. P30 (71d4908) switched the bundled face
+# to Satoshi-Variable.ttf in build-initramfs.sh and did not touch this file, so
+# for fifteen phases every libzelto client on the real target opened a path that
+# did not exist, z_text_open() returned NULL, and QEMU rendered NOT ONE GLYPH —
+# eight "could not open font (text disabled)" lines per boot, in a 60k-line
+# serial log nobody grepped. Everything after P30 was verified in the simulator,
+# which sets its own ZELTO_FONT and was therefore never affected.
+#
+# The path now has ONE definition, Z_DEFAULT_FONT in sdk/src/app.c, which the
+# image is built to satisfy; test/test_bundled_font_path.sh fails the day the
+# two disagree again. ZELTO_FONT survives as a pure override (the simulator and
+# a device with a different face still set it) — it just no longer has a stale
+# default sitting in front of the working one.
 # P23 power source: qemu-virt has no real battery, so the BATTERY/VOLUME harness
 # passes zelto.fakebattery=1 on the kernel cmdline to make zsysd drive a fake
 # drain (sys.battery_pct / _charging), driveable without hardware. A fast tick is

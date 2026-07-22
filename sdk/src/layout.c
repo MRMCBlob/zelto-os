@@ -2,6 +2,10 @@
 // report a desired size (measure), then each parent distributes free main-axis
 // space to flexible children and aligns the cross axis (arrange).
 // See docs/guides/layout.md and docs/contributing/sdk-internals.md.
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
 #include "internal.h"
 
 static float maxf(float a, float b) { return a > b ? a : b; }
@@ -254,7 +258,10 @@ void z_layout(ZView root, float w, float h, ZText *text) {
 // mid-word rather than allowed to overflow, because a caption that silently
 // leaves the screen is the bug this exists to end.
 int z_wrap_lines(const char *text, float max_w, ZWrapMeasure measure, void *ud,
-                 ZWrapLine *out, int max_lines) {
+                 ZWrapLine *out, int max_lines, const char **rest) {
+    if (rest) {
+        *rest = text ? text : "";
+    }
     if (!text || !out || max_lines <= 0) {
         return 0;
     }
@@ -324,6 +331,14 @@ int z_wrap_lines(const char *text, float max_w, ZWrapMeasure measure, void *ud,
         if (*p == '\n') {
             p++;                     // a break the author wrote, now consumed
         }
+    }
+    // Whatever is left, so the caller can continue rather than lose it. Trailing
+    // spaces are the breaker's to consume, not the caller's to re-encounter.
+    while (*p == ' ') {
+        p++;
+    }
+    if (rest) {
+        *rest = p;
     }
     return n;
 }
@@ -435,10 +450,14 @@ static bool wants(ZView n, ZHitWant want) {
     return false;
 }
 
+// Nodes entered by the walk in progress (P45 instrumentation; see below).
+unsigned long z_hit_nodes;
+
 static ZView hit_walk(ZView n, double x, double y, HitClip *clip, ZHitWant want) {
     if (!n) {
         return NULL;
     }
+    z_hit_nodes++;
     HitClip saved;
     bool pushed = false;
     if (n->clip) {
@@ -484,9 +503,68 @@ static ZView hit_walk(ZView n, double x, double y, HitClip *clip, ZHitWant want)
     return found;
 }
 
+// --- instrumentation ------------------------------------------------------
+// P44 dropped the ancestor-frame cull (it was the bug) and justified the full
+// walk with "trees are tens of nodes at a depth under ten, and this runs once
+// per pointer event, not per frame". The first half is checkable and the second
+// half is WRONG: stamp_press() in app.c re-hit-tests at the frozen press point
+// on EVERY BUILD while the press spring is live, so during a press this runs at
+// frame rate, not event rate. That is the case worth measuring, so the cost is
+// measurable rather than asserted. ZELTO_HIT_STATS=1 prints the worst walk seen.
+//
+// MEASURED (P45, simulator at 720x1440, ZELTO_HIT_STATS=1 with a held press so
+// stamp_press runs the walk every build):
+//     launcher, home carousel — the largest tree in the OS: WORST 124 NODES,
+//     WORST 6.1us per walk.
+// So P44's "tens of nodes" was low by about 4x, and its "not per frame" was
+// simply wrong. Both corrections leave the conclusion standing, which is why the
+// cull stays out: 6.1us against a 16,667us frame at 60Hz is 0.04% of the budget,
+// on the worst tree, in the worst mode (per frame rather than per event). A cull
+// would buy back four hundredths of one percent and reintroduce the class of bug
+// that made a visible node untappable for thirteen phases. The number is written
+// down here so the next phase can re-measure instead of re-arguing.
+//
+// The env check is hoisted so that when the instrumentation is OFF the two
+// clock_gettime calls are skipped as well — an "off" measurement that still
+// costs two syscalls on a per-frame path is not off.
+static bool hit_stats_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("ZELTO_HIT_STATS");
+        on = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return on == 1;
+}
+
+static void hit_stats_report(double us) {
+    static unsigned long worst_nodes;
+    static double worst_us;
+    static unsigned long calls;
+    calls++;
+    if (z_hit_nodes > worst_nodes) {
+        worst_nodes = z_hit_nodes;
+    }
+    if (us > worst_us) {
+        worst_us = us;
+    }
+    // Report on a cadence: a per-call line would itself dominate the cost.
+    if (calls % 32 == 0) {
+        fprintf(stderr,
+                "zelto: hit-test stats: %lu calls, worst %lu nodes, "
+                "worst %.1fus, this %lu nodes/%.1fus\n",
+                calls, worst_nodes, worst_us, z_hit_nodes, us);
+    }
+}
+
 ZView z_hit_test(ZView root, double x, double y, ZHitWant want) {
     if (!root) {
         return NULL;
+    }
+    bool stats = hit_stats_on();
+    struct timespec t0 = {0, 0};
+    if (stats) {
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        z_hit_nodes = 0;
     }
     // The surface bounds everything: a node scrolled or slid off the display is
     // not reachable, whatever its frame says.
@@ -495,8 +573,12 @@ ZView z_hit_test(ZView root, double x, double y, ZHitWant want) {
         .x1 = root->x + root->w, .y1 = root->y + root->h,
         .n_rc = 0,
     };
-    if (!clip_admits(&clip, x, y)) {
-        return NULL;
+    ZView r = clip_admits(&clip, x, y) ? hit_walk(root, x, y, &clip, want) : NULL;
+    if (stats) {
+        struct timespec t1;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        hit_stats_report((double)(t1.tv_sec - t0.tv_sec) * 1e6
+                         + (double)(t1.tv_nsec - t0.tv_nsec) / 1e3);
     }
-    return hit_walk(root, x, y, &clip, want);
+    return r;
 }

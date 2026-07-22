@@ -136,16 +136,25 @@ static void set_px(ZText *t, int px) {
     t->cur_px = px;
 }
 
-// Shape `s` and run `glyph_cb` for each glyph; returns total advance width.
-// glyph_cb may be NULL (measure only).
-static float shape_line(ZText *t, const char *s, int px, ZWeight weight,
+// Shape the first `len` bytes of `s` (len < 0 = up to the NUL) and run
+// `glyph_cb` for each glyph; returns total advance width. glyph_cb may be NULL
+// (measure only).
+//
+// The LENGTH is what makes WrapText correct. A line breaker measures prefixes
+// of the paragraph it is breaking, i.e. SLICES of a string it does not own and
+// must not mutate. Copying each slice into a fixed buffer to NUL-terminate it —
+// which is what view.c did until P45 — silently truncates any slice longer than
+// the buffer, and a truncated slice measures SHORT, so the breaker concludes it
+// fits and emits a line that runs off the column. HarfBuzz has taken an explicit
+// length here all along.
+static float shape_line(ZText *t, const char *s, int nbytes, int px, ZWeight weight,
                         void (*glyph_cb)(ZText *, unsigned glyph,
                                          float x_off, float y_off, void *ud),
                         void *ud) {
     set_weight(t, weight);
     set_px(t, px);
     hb_buffer_t *buf = hb_buffer_create();
-    hb_buffer_add_utf8(buf, s, -1, 0, -1);
+    hb_buffer_add_utf8(buf, s, nbytes, 0, -1);
     hb_buffer_guess_segment_properties(buf);
     hb_shape(t->hb_font, buf, NULL, 0);
 
@@ -165,9 +174,13 @@ static float shape_line(ZText *t, const char *s, int px, ZWeight weight,
     return advance;
 }
 
-float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
-                     float *ascent, float *descent) {
+float z_text_measure_n(ZText *t, const char *s, int len, float size,
+                       ZWeight weight, float *ascent, float *descent) {
     int px = (int)(size + 0.5f);
+    if (!s) {
+        s = "";
+        len = 0;
+    }
     if (!t || !t->face) {
         // Rough fallback so layout still allocates space.
         if (ascent) {
@@ -176,9 +189,10 @@ float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
         if (descent) {
             *descent = size * 0.2f;
         }
-        return (float)strlen(s) * size * 0.5f;
+        size_t n = len < 0 ? strlen(s) : (size_t)len;
+        return (float)n * size * 0.5f;
     }
-    float adv = shape_line(t, s, px, weight, NULL, NULL);
+    float adv = shape_line(t, s, len, px, weight, NULL, NULL);
     if (ascent) {
         *ascent = t->face->size->metrics.ascender / 64.0f;
     }
@@ -186,6 +200,11 @@ float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
         *descent = -t->face->size->metrics.descender / 64.0f;
     }
     return adv;
+}
+
+float z_text_measure(ZText *t, const char *s, float size, ZWeight weight,
+                     float *ascent, float *descent) {
+    return z_text_measure_n(t, s, -1, size, weight, ascent, descent);
 }
 
 // --- rasterization --------------------------------------------------------
@@ -287,5 +306,5 @@ void z_text_draw(ZCanvas *canvas, const char *s, float size, ZWeight weight,
         .baseline = pen_y + t->face->size->metrics.ascender / 64.0f,
         .color = color,
     };
-    shape_line(t, s, px, weight, draw_glyph, &ctx);
+    shape_line(t, s, -1, px, weight, draw_glyph, &ctx);
 }
