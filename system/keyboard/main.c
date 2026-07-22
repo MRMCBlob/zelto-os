@@ -23,6 +23,7 @@
 // screen shows its own passcode keypad, never the app's keyboard (and text-input
 // focus is dropped under the lock anyway). See docs/platform/soft-keyboard.md.
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,14 +37,56 @@ typedef struct KbdState {
     bool shift;        // one-shot uppercase for the next letter
     bool symbols;      // symbols/numbers layer instead of letters
     ZAnimated *anim;   // 0 = parked off the bottom, 1 = fully up
+    // P45 KBD harness: type a string by itself, one character per tick, once a
+    // field really is focused. `typed` is how far through ZELTO_KBD_TYPE we are.
+    int typed;
+    bool typing;
 } KbdState;
+
+// Commit the next character of ZELTO_KBD_TYPE, then re-arm until the string is
+// done. See the note over the arming code in on_show().
+static void type_tick(ZApp *app, void *ud);
 
 // --- input-method show/hide (driven by the compositor) ---------------------
 static void on_show(ZApp *app, void *ud) {
     KbdState *s = ud;
     s->visible = true;
     z_animated_spring(s->anim, 1.0f);
+    // THE COORDINATE-FREE TYPING HOOK (P45). ZELTO_KBD_TYPE=<text> commits that
+    // text through input-method-v2 exactly as a tapped key cap does, one
+    // character at a time.
+    //
+    // It is armed HERE, off the real show handshake, not at startup: the
+    // compositor raises the input method only when an app has actually focused a
+    // text field, so committing before that would send the string into nothing.
+    // That also makes the hook a stronger test than tapping key caps ever was —
+    // it drives the genuine text-input-v3 <-> input-method-v2 relay, end to end,
+    // with no key-cap coordinates to go stale. (Hardware keys cannot do this at
+    // all: the SDK's kb_key handles Escape/Backspace and Return/space and never
+    // inserts text, so a field is only ever typed into through this path.)
+    const char *want = getenv("ZELTO_KBD_TYPE");
+    if (want && want[0] && !s->typing) {
+        s->typing = true;
+        z_after(app, 400, type_tick, s);
+    }
     z_invalidate(app);
+}
+
+static void type_tick(ZApp *app, void *ud) {
+    KbdState *s = ud;
+    const char *want = getenv("ZELTO_KBD_TYPE");
+    if (!want || s->typed >= (int)strlen(want)) {
+        return;
+    }
+    char one[2] = {want[s->typed], '\0'};
+    s->typed++;
+    z_im_commit_text(app, one);
+    fprintf(stderr, "[keyboard] committed '%s' (%d/%d)\n", one, s->typed,
+            (int)strlen(want));
+    fflush(stderr);
+    if (s->typed < (int)strlen(want)) {
+        z_after(app, 300, type_tick, s);
+    }
 }
 static void on_hide(ZApp *app, void *ud) {
     KbdState *s = ud;
