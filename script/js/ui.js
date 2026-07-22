@@ -96,6 +96,16 @@ export function WrapText(value, width, size) {
   return new View(N.wrapText(String(value), width, size));
 }
 
+// One line, cut to fit, ending in a real ellipsis. The counterpart to WrapText,
+// and the difference is who wrote the string: prose YOU wrote wraps; a filename,
+// an app id or a name that arrived from somewhere else goes in a row of fixed
+// height, and wrapping it makes the row grow by however many lines the data
+// happens to need. Script apps display borrowed strings more than anything else,
+// which is why this being missing (P46 added wrapText and stopped) mattered.
+export function EllipsizeText(value, width, size) {
+  return new View(N.ellipsizeText(String(value), width, size));
+}
+
 export function Rect(opts = {}) {
   return new View(N.rect(opts));
 }

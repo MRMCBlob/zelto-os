@@ -149,6 +149,17 @@ static void on_show(ZApp *app, void *ud) {
     // with no key-cap coordinates to go stale. (Hardware keys cannot do this at
     // all: the SDK's kb_key handles Escape/Backspace and Return/space and never
     // inserts text, so a field is only ever typed into through this path.)
+    //
+    // AND IT IS NOT SUBSUMED BY ZELTO_KBD_TAP (P46), which was the open question.
+    // KBD_TAP presses caps, so everything it produces has been through the
+    // layout, the hit walk and — since P47 — the CLASSIFIER. That is the point of
+    // it and it is also why it cannot replace this: when a test asks for exactly
+    // the characters "hello" and gets "heklp", KBD_TAP cannot tell you whether the
+    // relay is broken or the classifier is, because it exercises both. KBD_TYPE
+    // exercises exactly one of them. It is the isolating half of a pair, kept
+    // deliberately, and the QEMU KBD harness uses it for that reason: a typed note
+    // surviving a reboot is a claim about persistence, and nothing about geometry
+    // should be able to fail it.
     const char *want = getenv("ZELTO_KBD_TYPE");
     if (want && want[0] && !s->typing) {
         s->typing = true;
@@ -164,7 +175,12 @@ static void on_show(ZApp *app, void *ud) {
     }
     if (taps && taps[0] && !s->tapping) {
         s->tapping = true;
-        z_after(app, 400, tap_tick, s);
+        // 50ms, not 400 (P47). The old delay was long enough for the show spring
+        // to have finished, which meant the slide-settled gate in tap_tick was
+        // never reached — P46 removed the gate and no test failed. Arming almost
+        // immediately makes the gate the thing that waits, so it runs on every
+        // boot of every keyboard test instead of being a guard nobody exercises.
+        z_after(app, 50, tap_tick, s);
     }
     z_invalidate(app);
 }
@@ -952,11 +968,17 @@ static void hold_release(ZApp *app, void *ud) {
 // resolve a frame that is about to move and, worse, might still be off the bottom
 // of the surface where the hit walk's own surface clip refuses it.
 //
-// It is a GUARD, not a tested behaviour, and the difference is worth writing
-// down: removing this check did not make test_keyboard_caps_sim fail, because
-// the first press is armed 400ms after the show handshake and the spring has
-// already arrived by then. It earns its place on the runs where that is not
-// true — reduce-motion, a loaded machine, a longer sequence — not on this one.
+// IT WAS A GUARD NOTHING EXERCISED, AND NOW IT IS THE MECHANISM (P47). P46 wrote
+// this down honestly: removing the check made no test fail, because the first
+// press was armed 400ms after the show handshake and the spring had already
+// arrived — the wait was being done by the arming delay, and this was dead code
+// that happened to be correct. The arming delay is 50ms now (on_show), so the
+// gate is what waits, on every boot of every keyboard test. The alternative was
+// to delete it, and that would have meant the arming delay stayed a magic number
+// tuned against a spring nobody re-measures.
+//
+// It also does double duty on the first call, when app->root may not exist yet:
+// the spring reads 0 then, so the retry below covers both.
 static void tap_tick(ZApp *app, void *ud) {
     KbdState *s = ud;
     if (z_animated_get(s->anim) < 0.999f) {

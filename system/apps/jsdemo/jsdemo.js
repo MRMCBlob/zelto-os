@@ -14,7 +14,8 @@ import {
   appSize,
 } from "zelto";
 import {
-  VStack, HStack, Text, WrapText, Button, Rect, Spacer, Scroll, TextField,
+  VStack, HStack, Text, WrapText, EllipsizeText, Button, Rect, Spacer, Scroll,
+  TextField,
   Navigator, Color, Font, Weight, Align, Elevation, Spring, Pan,
 } from "zelto/ui";
 import * as storage from "zelto/storage";
@@ -208,6 +209,17 @@ function HomeScreen() {
         "TEXT INPUT (on-screen keyboard)",
         VStack({ spacing: 8 }, [
           TextField(note, "Tap to type a note…"),
+          // The counterpart to WrapText, on the string this app is LEAST in
+          // control of: whatever was typed or shared into the field. Prose you
+          // wrote wraps; a borrowed string in a fixed row has to be cut, or the
+          // row grows by however many lines the data happens to need. A script
+          // app got wrapText in P46 and could still not truncate at all, which
+          // is backwards — almost everything a script app shows came from
+          // somewhere else. Untouched when it fits, so the common case renders
+          // exactly as a plain Text would.
+          EllipsizeText(note.text ? `saved: ${note.text}` : "saved: (nothing yet)",
+                        cardTextW(), Font.caption)
+            .color(Color.textFaint),
           Text("Saved as you type; shared text lands here too.")
             .font(Font.caption)
             .color(Color.textFaint),

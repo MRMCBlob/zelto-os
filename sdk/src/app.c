@@ -952,23 +952,36 @@ void z_probe_taps(ZApp *app, ZProbeVisitor fn, void *ud) {
     probe_walk(app->root, fn, ud);
 }
 
-// The first Text anywhere under a node — the only human-readable name a generic
-// dump can give a control. A disc with a mark in it and a label under it answers
-// with its label; a bare icon answers with nothing, and prints as "-".
+// The name a generic dump gives a control: the LONGEST text anywhere under it.
+//
+// ONE RULE, TWO USES, and until P47 they disagreed. A control is named by the
+// words under it — that is what tap-by-label searches (label_under, below, takes
+// any descendant) and what a dump has to print. But the dump printed the FIRST
+// such text, which is a different answer whenever a control has more than one:
+// a home tile whose icon failed to load draws a placeholder with the app's
+// INITIAL in it, so the newly-installed Greeter's tile printed as 'G' while
+// answering perfectly well to 'Greeter'. The dump was naming controls by a
+// string nobody would think to type.
+//
+// The longest is the specific one — 'Greeter' over 'G', a card's title over the
+// chevron beside it — so the name that gets printed is now always the name a
+// reader would use. Matching stays permissive (any of the words), which costs
+// nothing and means the printed name is guaranteed to work.
 static const char *probe_label(ZView n) {
     if (!n) {
         return NULL;
     }
+    const char *best = NULL;
     if (n->kind == Z_K_TEXT && n->text && n->text[0]) {
-        return n->text;
+        best = n->text;
     }
     for (int i = 0; i < n->n_children; i++) {
         const char *t = probe_label(n->children[i]);
-        if (t) {
-            return t;
+        if (t && (!best || strlen(t) > strlen(best))) {
+            best = t;
         }
     }
-    return NULL;
+    return best;
 }
 
 // Text that leaves the surface. The generic form of the bug the share sheet had
@@ -995,9 +1008,17 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
     }
     if (n->on_tap || n->on_tap_data) {
         const char *lbl = probe_label(n);
+        // BY PROCESS, and tagged when it is not on the surface at all — the same
+        // two facts P46 added to the text lines and left off these (P47). Without
+        // them a reader of a shot's log cannot answer "where is the home screen's
+        // Notepad tile", because the whole System UI writes to one file: the
+        // keyboard's 31 caps are in there, and the App Library builds a SECOND
+        // 'Notepad' that is legitimately off the right edge. Both of those
+        // answered to a search for a control by label, and the first match won.
         fprintf(stderr,
-                "zelto: probe tap '%s' x=%.0f y=%.0f w=%.0f h=%.0f\n",
-                lbl ? lbl : "-", n->x, n->y, n->w, n->h);
+                "zelto: probe tap [%s] '%s' x=%.0f y=%.0f w=%.0f h=%.0f%s\n",
+                program_invocation_short_name, lbl ? lbl : "-", n->x, n->y, n->w,
+                n->h, probe_off_surface(root, n) ? " offscreen" : "");
         c->taps++;
     }
     if (n->kind == Z_K_TEXT && n->text && n->text[0]) {

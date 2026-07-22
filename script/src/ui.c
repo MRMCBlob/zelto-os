@@ -317,6 +317,33 @@ static JSValue js_wrap_text(JSContext *ctx, JSValueConst this_val, int argc,
     return v;
 }
 
+// ellipsizeText(string, width [, size]) — an identifier cut to fit one line.
+//
+// The other half of P46's finding, left undone: a script app got wrapText and
+// still could not TRUNCATE. The two are not interchangeable and the difference is
+// about who wrote the string. Prose you wrote wraps; a filename, an app id or a
+// contact's name — a string the app did not choose, in a row whose height is
+// fixed — has to be cut, because wrapping it makes the row grow by however many
+// lines the data happens to need. That is the case a script app is MOST likely to
+// hit, since almost everything a script app displays came from somewhere else.
+static JSValue js_ellipsize_text(JSContext *ctx, JSValueConst this_val, int argc,
+                                 JSValueConst *argv) {
+    (void)this_val;
+    if (!require_render(ctx)) { return JS_EXCEPTION; }
+    if (argc < 2) {
+        return JS_ThrowTypeError(ctx, "ellipsizeText(string, width [, size])");
+    }
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (!s) { return JS_EXCEPTION; }
+    float w = arg_f(ctx, argv[1], 0.0f);
+    ZFont size = (ZFont)arg_i(ctx, argv[2], Z_FONT_BODY);
+    JSValue v = zs_view_new(ctx,
+        z_text_ellipsize(zs_current()->app, s,
+                         &(ZEllipsizeOpts){.width = w, .size = size}));
+    JS_FreeCString(ctx, s);
+    return v;
+}
+
 ZS_MODIFIER(js_text_shadow,  TextShadow(v);)
 ZS_MODIFIER(js_frame,        Frame(arg_f(ctx, argv[1], 0.0f),
                                    arg_f(ctx, argv[2], 0.0f), v);)
@@ -863,6 +890,7 @@ static const JSCFunctionListEntry zs_native_funcs[] = {
     JS_CFUNC_DEF("spacer", 0, js_spacer),
     JS_CFUNC_DEF("text", 1, js_text),
     JS_CFUNC_DEF("wrapText", 2, js_wrap_text),
+    JS_CFUNC_DEF("ellipsizeText", 2, js_ellipsize_text),
     JS_CFUNC_DEF("rect", 1, js_rect),
     JS_CFUNC_DEF("image", 1, js_image),
     JS_CFUNC_DEF("imageLoads", 1, js_image_loads),
