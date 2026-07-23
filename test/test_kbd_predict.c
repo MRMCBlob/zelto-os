@@ -612,6 +612,35 @@ int main(void) {
               "\"fixing\" was rejected — 'x' never doubles", "not a word");
         CHECK(z_lm_is_word("buying"),
               "\"buying\" was rejected — 'y' never doubles", "not a word");
+
+        // P50 CLOSES THE FOUR-LETTER GAP. P49 approximated "single syllable" as
+        // "exactly three letters" and wrote the residual down: "stoping" strips
+        // to "stop" and was read as a word. A base with exactly ONE VOWEL is one
+        // syllable however many consonants surround it, which is the same claim
+        // without the length limit.
+        CHECK(z_lm_is_word("stopping"),
+              "\"stopping\" is not a word", "not a word");
+        CHECK(!z_lm_is_word("stoping"),
+              "\"stoping\" reads as a word — \"stop\" is one syllable and "
+              "doubles its final consonant, which is the P49 residual P50 was "
+              "meant to close", "is a word");
+        CHECK(!z_lm_is_word("shoping"),
+              "\"shoping\" reads as a word — same rule, another one-syllable "
+              "four-letter base", "is a word");
+        // AND IT MUST NOT OVER-FIRE. These end C-V-C too, and do NOT double,
+        // because they have two vowels and therefore two syllables. Without the
+        // vowel count the generalisation would take ordinary words out of
+        // autocorrect's reach, which is worse than the gap it closes — so this is
+        // the positive control for the change above, not a nice-to-have.
+        CHECK(z_lm_is_word("opening"),
+              "\"opening\" was rejected — \"open\" is two syllables and does "
+              "not double", "not a word");
+        CHECK(z_lm_is_word("opened"),
+              "\"opened\" was rejected — same base, the -ed arm of the same rule",
+              "not a word");
+        CHECK(z_lm_is_word("visiting"),
+              "\"visiting\" was rejected — \"visit\" is two syllables",
+              "not a word");
     }
 
     // --- I. THE SUBSTITUTION COST IS ASKED 26x26 TIMES, NOT 200,000 ----------

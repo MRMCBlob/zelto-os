@@ -484,29 +484,68 @@ static bool exact_word(const char *w) {
 // WHAT IT DELIBERATELY DOES NOT DO. It never invents a base: every candidate
 // below is accepted only if the STRIPPED FORM IS ITSELF IN THE TRIE, so a typo
 // cannot become a word by ending in "s". It over-generates in one direction —
-// "thes" strips to "the" and would be accepted — and that is the cheap side of
-// the trade: the cost is one non-word autocorrect declines to fix, against 49
-// real words in 60 it stops destroying.
+// "thes" strips to "the" and is accepted — and P50 CONFIRMS that as closed rather
+// than fixing it. The rule that would close it is "function words do not
+// inflect", and there is no way to know which words those are without
+// part-of-speech data: it would have to be a hand-written list of articles,
+// prepositions, conjunctions and pronouns, i.e. a SECOND lexicon sitting beside
+// words_en.h with its own way of going stale, to stop autocorrect fixing a
+// handful of strings nobody types. The cost of the trade is one non-word
+// autocorrect declines to repair; the benefit is 49 real words in 60 it stops
+// destroying. (The OTHER stated residual, "stoping", is now closed — see
+// needs_doubling.)
 // Would this base DOUBLE its final consonant before -ing / -ed? A single-syllable
 // consonant-vowel-consonant base always does in English — run/running,
 // sit/sitting, get/getting — so "runing" is a typo and not an inflection, and
 // accepting it would be the rule taking a word out of autocorrect's reach.
 //
-// ONLY THREE-LETTER BASES, deliberately. Doubling is really about the STRESSED
-// final syllable, which nothing here can see: "open" is C-V-C at the end and does
-// NOT double (opened, opening) because the stress is on the first syllable. At
-// three letters the word is single-syllable and the rule is exact. Four-letter
-// bases are left alone, so "stoping" is still read as a word — a residual, stated
-// rather than hidden.
+// Doubling is really about the STRESSED FINAL SYLLABLE, which nothing here can
+// see directly: "open" ends C-V-C and does NOT double (opened, opening) because
+// the stress is on the first syllable.
+//
+// P49 approximated that with "exactly three letters", which is single-syllable by
+// construction and therefore exact — and stated the residual honestly: a
+// four-letter base was left alone, so "stoping" was read as a word. P50 CLOSES
+// that, because the syllable count is available after all: a base with exactly
+// ONE VOWEL is one syllable however many consonants surround it. "stop", "shop",
+// "plan", "chat", "grab", "trip", "swim" all double; "open", "enter", "offer",
+// "visit" have two vowels and do not. The old rule is the new rule's three-letter
+// case, so nothing that worked stops working.
+//
+// THE RESIDUAL MOVES RATHER THAN VANISHING, and it is worth naming precisely: a
+// POLYSYLLABLE STRESSED ON ITS LAST SYLLABLE also doubles ("begin" ->
+// "beginning", "admit" -> "admitting", "refer" -> "referring"), and two vowels is
+// exactly what excludes it. So "begining" is still read as a word. That is a
+// handful of verbs against every one-syllable verb in English, and closing it
+// needs stress data this model does not have — which is a different thing from
+// the four-letter gap, which needed only counting.
 //
 // 'w', 'x' and 'y' never double (fix/fixing, box/boxing, buy/buying, pay/paying),
-// and are treated as vowels here for exactly that reason.
+// and are treated as vowels in the C-V-C test for exactly that reason. They are
+// NOT counted as vowels for the syllable count, where they are not one.
 static bool vowelish(char c) {
     return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u' ||
            c == 'y' || c == 'w' || c == 'x';
 }
+static bool is_vowel(char c) {
+    return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u';
+}
 static bool needs_doubling(const char *w, int len) {
-    return len == 3 && !vowelish(w[0]) && vowelish(w[1]) && !vowelish(w[2]);
+    if (len < 3) {
+        return false;
+    }
+    // The last three letters are consonant-vowel-consonant...
+    if (vowelish(w[len - 3]) || !vowelish(w[len - 2]) || vowelish(w[len - 1])) {
+        return false;
+    }
+    // ...and the whole base is one syllable.
+    int vowels = 0;
+    for (int i = 0; i < len; i++) {
+        if (is_vowel(w[i])) {
+            vowels++;
+        }
+    }
+    return vowels == 1;
 }
 
 static bool inflected_word(const char *w) {

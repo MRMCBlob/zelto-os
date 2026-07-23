@@ -1036,7 +1036,23 @@ static struct {
 } g_cand;
 static int kbd_hits, kbd_misses;   // reported by the caps audit
 
+// THE LENGTH FLOOR, AND WHY IT IS A FLOOR AND NOT A SPEED FIX (P50). The scan is
+// a Damerau-Levenshtein pass over the whole 1620-word list; for a ONE-LETTER word
+// it was running that pass to answer a question with no answer. Every word in the
+// list is within edit distance 1..n of "a", so the ranking degenerates to "the
+// commonest words that are nearly this letter" — which is not a correction, it is
+// the frequency table. P49 memoised the scan; it did not stop it being asked.
+//
+// Two is the floor because it is the shortest prefix that carries any evidence at
+// all, and the memo makes the cost of being wrong about that one scan per
+// keystroke rather than one per frame. A word under it gets an EMPTY candidate
+// list, which the strip already renders as the literal alone.
+#define KBD_MIN_CAND_LEN 2
+
 static int kbd_candidates(ZApp *app, const char *lower, ZLmWord *out) {
+    if ((int)strlen(lower) < KBD_MIN_CAND_LEN) {
+        return 0;
+    }
     if (g_cand.valid && g_cand.gen == z_lm_generation() &&
         strcmp(g_cand.word, lower) == 0) {
         kbd_hits++;
@@ -1358,6 +1374,27 @@ static void dict_load(KbdState *s) {
     dict_publish(s);
 }
 
+// HOW MANY CANDIDATE SLOTS ARE LIVE. The array is always KBD_SEEN_SLOTS; this is
+// how many of them a run uses.
+//
+// It is an env hook for the same reason every other hook here is one: the thing
+// worth testing is WHICH candidate eviction throws away, and with 32 slots that
+// needs 33 distinct made-up words typed three times each — several minutes of
+// simulated taps to exercise four lines of code. With three slots it is a dozen
+// taps, and the rule under test (the LEAST-SEEN entry is the one overwritten) is
+// the same rule at either size. Unset, nothing changes.
+static int seen_slots(void) {
+    const char *e = getenv("ZELTO_KBD_SEEN_SLOTS");
+    if (!e || !e[0]) {
+        return KBD_SEEN_SLOTS;
+    }
+    int n = atoi(e);
+    if (n < 1) {
+        n = 1;
+    }
+    return n > KBD_SEEN_SLOTS ? KBD_SEEN_SLOTS : n;
+}
+
 // Teach the model a word NOW: the explicit path (a revert) and the end of the
 // implicit one (the counter reached the threshold) both land here.
 static bool kbd_learn(ZApp *app, KbdState *s, const char *word) {
@@ -1418,7 +1455,8 @@ static void kbd_learn_seen(ZApp *app, KbdState *s, const char *word) {
         return;   // the dictionary already has it: nothing to learn
     }
     int slot = -1, weakest = 0;
-    for (int i = 0; i < KBD_SEEN_SLOTS; i++) {
+    int nslots = seen_slots();
+    for (int i = 0; i < nslots; i++) {
         if (strcmp(s->seen[i].word, lower) == 0) {
             slot = i;
             break;
@@ -2515,7 +2553,7 @@ Z_LAYER_APP(KbdState, kbd_body,
             .keyboard = false,
             // A cap's letter is a label for a FINGER, not something to read, and
             // the cap is sized as a touch target (ZELTO_KEY_H = 42pt). Scaling
-            // the type here grows the letters inside caps built for the shipped
-            // size, and at the largest step 'space' wants 102x49 in a 73x35 cap.
-            // No phone scales its keyboard with Dynamic Type either.
+            // the type here grows the caps and walks the bottom row off the
+            // bottom of the surface — the P48 bug with a new cause. No phone
+            // scales its keyboard with Dynamic Type either.
             .fixed_type = true)
