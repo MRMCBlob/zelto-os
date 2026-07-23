@@ -76,7 +76,7 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->off_s = v;
     } else if (strcmp(key, "sys.passcode") == 0) {
         s->passcode_set = value[0] != '\0';
-    } else if (strcmp(key, "sys.kbd_learned") == 0) {
+    } else if (strcmp(key, ZELTO_KEY_KBD_LEARNED) == 0) {
         s->kbd_learned = v;
     } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
         snprintf(s->wp_current, sizeof(s->wp_current), "%s", value ? value : "");
@@ -105,8 +105,8 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->off_s = z_setting_get_int("sys.idle_off_s", 120);
     s->passcode_set = z_setting_get_str("sys.passcode", "")[0] != '\0';
     s->lock_now = z_setting_get_int("sys.lock_now", 0);
-    s->kbd_learned = z_setting_get_int("sys.kbd_learned", 0);
-    s->kbd_forget_epoch = z_setting_get_int("sys.kbd_forget_learned", 0);
+    s->kbd_learned = z_setting_get_int(ZELTO_KEY_KBD_LEARNED, 0);
+    s->kbd_forget_epoch = z_setting_get_int(ZELTO_KEY_KBD_FORGET, 0);
     // Wallpaper picker: enumerate the directory once and record the active choice.
     s->wp_count = zelto_wallpaper_list(s->wp_paths, ZELTO_WALLPAPER_MAX);
     snprintf(s->wp_current, sizeof(s->wp_current), "%s",
@@ -686,7 +686,7 @@ static void forget_learned(ZApp *app, void *state) {
     // against one it persisted and honours any value it has not seen, so a clear
     // requested now is applied on its next boot if it misses the broadcast.
     s->kbd_forget_epoch++;
-    z_setting_set_int("sys.kbd_forget_learned", s->kbd_forget_epoch);
+    z_setting_set_int(ZELTO_KEY_KBD_FORGET, s->kbd_forget_epoch);
     s->kbd_learned = 0;
     fprintf(stderr, "[settings] clear learned words (epoch %lld)\n",
             (long long)s->kbd_forget_epoch);

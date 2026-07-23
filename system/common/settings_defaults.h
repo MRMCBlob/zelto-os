@@ -20,4 +20,21 @@
 // sys.volume, 0..10.
 #define ZELTO_DEFAULT_VOLUME 5
 
+// --- keys whose NAME two surfaces have to agree on (P49) ---------------------
+// The same rule one line up, applied to the spelling rather than the value. The
+// keyboard's learned dictionary is read from two processes — the keyboard
+// publishes the count and honours the clear, Settings displays the count and
+// requests the clear — so the strings were about to exist as a #define in one
+// file and four raw literals in the other, which is the drift this header was
+// written to stop.
+//
+// sys.kbd_learned: how many words the keyboard has learned. Published by the
+// keyboard, displayed by Settings > Keyboard. Read-only to everyone else.
+#define ZELTO_KEY_KBD_LEARNED "sys.kbd_learned"
+// sys.kbd_forget_learned: an EPOCH, not a command. Settings bumps it; the
+// keyboard compares it against one it persisted and forgets everything when they
+// differ — which is what makes a clear requested while the keyboard is not
+// running still happen on its next boot. See kbd_learn() in system/keyboard.
+#define ZELTO_KEY_KBD_FORGET "sys.kbd_forget_learned"
+
 #endif  // ZELTO_SYSTEM_COMMON_SETTINGS_DEFAULTS_H

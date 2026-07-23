@@ -31,6 +31,7 @@
 #include <zelto/ui.h>
 
 #include "common/safe_areas.h"
+#include "common/settings_defaults.h"
 #include "predict.h"
 
 // How close two shift presses have to be to mean CAPS LOCK. The same window
@@ -76,13 +77,9 @@
 // this one is what bounds the FILE, so the store cannot grow without limit no
 // matter how long the phone is used.
 #define KBD_LEARN_MAX 512
-// The brokered keys the learned dictionary is visible and deletable through.
-// The keyboard publishes the count; Settings bumps the epoch to clear it, and
-// the keyboard honours an epoch it has not seen before — including one bumped
-// while it was not running, which is why the epoch is stored rather than the
-// event being observed.
-#define KBD_KEY_LEARNED_COUNT "sys.kbd_learned"
-#define KBD_KEY_FORGET "sys.kbd_forget_learned"
+// The brokered keys the learned dictionary is visible and deletable through are
+// in common/settings_defaults.h, because Settings reads both of them too and a
+// key two surfaces share must not be spelled in two places.
 
 // Shift is three states, not a bool (P47). A one-shot shift and a caps lock are
 // different keys wearing the same cap, and a phone tells them apart by how you
@@ -1277,7 +1274,7 @@ static void kbd_suggest(ZApp *app, KbdState *s) {
 //    one. If a later phase wants a per-word editor it should decide separately
 //    whether it is worth that.
 static void dict_publish(KbdState *s) {
-    z_setting_set_int(KBD_KEY_LEARNED_COUNT, s->learned_n);
+    z_setting_set_int(ZELTO_KEY_KBD_LEARNED, s->learned_n);
 }
 
 // Write the learned words out. Called after every learn, because the alternative
@@ -1318,7 +1315,7 @@ static void dict_load(KbdState *s) {
     }
     s->dict_loaded = true;
 
-    int64_t want = z_setting_get_int(KBD_KEY_FORGET, 0);
+    int64_t want = z_setting_get_int(ZELTO_KEY_KBD_FORGET, 0);
     s->clear_epoch = z_prefs_get_int("learned.clear_epoch", 0);
     if (want != s->clear_epoch) {
         s->clear_epoch = want;
@@ -1451,7 +1448,7 @@ static void kbd_learn_seen(ZApp *app, KbdState *s, const char *word) {
 // difference is whether the process happened to be alive when it was made.
 static void on_setting(ZApp *app, const char *key, const char *value, void *ud) {
     KbdState *s = ud;
-    if (strcmp(key, KBD_KEY_FORGET) != 0) {
+    if (strcmp(key, ZELTO_KEY_KBD_FORGET) != 0) {
         return;
     }
     int64_t want = atoll(value);
