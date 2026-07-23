@@ -61,7 +61,7 @@
 #define MAX_CARDS 16
 #define CARD_W_FRAC 0.74f    // a card spans most of the screen; neighbours peek in
 #define CARD_H_FRAC 0.62f
-#define CARD_GAP 26.0f       // px between two cards
+#define CARD_GAP ((float)Z_SPACE_L)   // between two cards
 // The icon + name strip above a card. DERIVED from the type it holds, not
 // declared: it was a bare 30 and Subhead's line box is 35 at the default text
 // size — so every card title in the switcher has been painting 5 units through
@@ -73,7 +73,7 @@ static float header_h(ZApp *app) {
     float t = z_line_height(app, Z_FONT_SUBHEAD);
     return t > HEADER_ICON ? t : HEADER_ICON;
 }
-#define HEADER_GAP 10.0f
+#define HEADER_GAP ((float)Z_SPACE_S)
 
 // Flick-up-to-close. THRESH px of lift (or a fast up-fling) commits; DIST is the
 // travel the card fades out over as it leaves.

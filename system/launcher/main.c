@@ -566,11 +566,12 @@ static ZView vgap(float h) {
 // vertical stack of page dots, the dock plate and a home-indicator gap, padded
 // and spaced. Now it says so, so a taller dock icon cannot silently overflow the
 // space reserved for it.
-#define BAR_PAD 14.0f            // the bottom bar's own padding
-#define BAR_GAP 12.0f            // between dots, dock and the indicator gap
+#define BAR_PAD ((float)Z_SPACE_S)   // the bottom bar's own padding
+#define BAR_GAP ((float)Z_SPACE_S)   // between dots, dock and the indicator gap
+#define BADGE_D 30.0f            // the round remove badge on a cell being rearranged
 #define DOTS_H 10.0f             // the tallest page indicator (the Library quad)
-#define DOCK_PAD 14.0f           // the dock plate's inset around its icons
-#define DOCK_GAP 18.0f           // between dock icons
+#define DOCK_PAD ((float)Z_SPACE_S)  // the dock plate's inset around its icons
+#define DOCK_GAP ((float)Z_SPACE_M)  // between dock icons
 // The dock's icon is smaller than a home tile (see the dock section below); it
 // lives up here because BOTTOM_RESERVE is derived from it and a macro is
 // expanded where it is USED, which is above the dock's own code.
@@ -1442,7 +1443,7 @@ static ZView dock_view(void) {
     // Same material + hairline construction as a widget card (see z_widget), so the
     // dock and the widgets are visibly the same kind of object.
     ZView fill = Background(Z_COLOR_MATERIAL_THIN,
-        CornerRadius(Z_RADIUS_SHEET - 1.0f,
+        CornerRadius(Z_RADIUS_NESTED(Z_RADIUS_SHEET, 1.0f),
             z_stack(Z_AXIS_HORIZONTAL, &row)));
     ZView plate = Shadow(Z_ELEV_2,
         Frame(plate_w, plate_h,
@@ -1459,9 +1460,9 @@ static ZView widget_cell_content(ZApp *app, int di) {
 
 // A small round remove badge pinned to a cell's top-left corner.
 static ZView remove_badge(HomeKind k, int ref) {
-    ZView dot = Frame(30.0f, 30.0f,
+    ZView dot = Frame(BADGE_D, BADGE_D,
         Background(Z_COLOR_DANGER,
-            CornerRadius(15.0f,
+            CornerRadius(BADGE_D * 0.5f,
                 ZStack(
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_CALLOUT, Text("\xc3\x97"))),
@@ -2311,7 +2312,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         // the toast dismisses it while drags elsewhere still reach the home gestures.
         ZView box = OnPan(on_toast_pan,
             Background(Z_COLOR_SURFACE_2,
-                CornerRadius(12.0f,
+                CornerRadius(Z_RADIUS_CARD,
                     Padding(Z_SPACE_S,
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_BODY, Text("%s", state->toast)))))));

@@ -246,12 +246,66 @@ bool z_contrast_increased(void);
 // surface, and CARD (16) at ~15% under. Neither has an in-frame anchor the way
 // the widget did, and both would have been changed on a half-remembered spec
 // value — which is the failure mode this comment exists to stop repeating.
+// P52 REVISITED THE TWO STILL-OPEN STEPS AND CHANGED ONE OF THEM.
+//
+// CHIP / CARD / PANEL / WIDGET DO NOT MOVE, and that is a decision rather than an
+// omission. The dossier's iOS readings for them (an inset-list card at ~10pt = 19
+// units, an alert at ~14pt = 26) are marked [unpub] — Apple publishes no control
+// corner radii, so those are community measurements, and both deltas are under 4
+// units. P45 declined exactly these two on exactly these grounds; moving CARD now
+// would additionally move the sheet below (which is derived from it), so one
+// eyeballed nudge would quietly become two.
+//
+// SHEET DID MOVE, and not because a spec sheet said so — because it was the ONLY
+// number the concentric rule left free. iOS 26 made concentric corners
+// first-class (ConcentricRectangle / .containerConcentric) with one rule: a
+// nested radius is the container's LESS the inset between them, so the gap
+// between the two curves stays constant all the way round. The share sheet is the
+// place this OS actually nests — a sheet holding rows — and P52's spacing scale
+// put the sheet's content margin on Apple's 16pt (29 units) like every other
+// container in the OS. With the inset at 29 and the rows at CARD, the sheet's
+// corner is DETERMINED: 16 + 29 = 45. It is not a chosen value.
+//
+// The old 32 also left the ladder non-monotonic: the largest surface in the OS
+// had a SMALLER corner than a home widget (40). A ladder whose biggest step is
+// not its roundest is not a ladder.
 #define Z_RADIUS_CHIP     10.0f   // a small control: a QS chip, a key, a badge
 #define Z_RADIUS_CARD     16.0f   // a card, a list row, a notification
 #define Z_RADIUS_PANEL    22.0f   // an alert / a small raised panel
 #define Z_RADIUS_WIDGET   40.0f   // a home-screen widget card — MUST read rounder
                                   // than the app icons beside it (see above)
-#define Z_RADIUS_SHEET    32.0f   // a big pulled surface: the shade, a modal sheet
+#define Z_RADIUS_SHEET    45.0f   // a big pulled surface: the shade, a modal sheet.
+                                  // = Z_RADIUS_CARD + a 16pt content margin, by
+                                  // the concentric rule; asserted, not chosen.
+
+// THE CONCENTRIC RULE, as an expression. A rounded thing drawn INSIDE another
+// rounded thing takes the container's radius less the inset between them — never
+// a second constant that happens to look right, which is how the share sheet's
+// corner drifted 4 units out of true for three phases before P48 caught it.
+//
+// This is the same standing rule as "a reserve that names its parts must be an
+// expression over them", applied to curvature. Use it for the small cases too:
+// the 1-unit fill inside a material's edge hairline is a nesting, and writing it
+// `Z_RADIUS_NESTED(Z_RADIUS_WIDGET, 1.0f)` says so where `- 1.0f` only said that
+// someone subtracted one.
+//
+// Clamped at zero: a deep inset inside a slightly-rounded container would
+// otherwise go negative and the renderer would read that as a very large radius.
+#define Z_RADIUS_NESTED(outer, inset) \
+    (((outer) - (inset)) > 0.0f ? ((outer) - (inset)) : 0.0f)
+
+// THE CORNER IS A SQUIRCLE AT n = 4, AND STAYS THERE — a written decision, since
+// iOS's continuous corner is a hand-tuned bezier nearer n ~ 5 and "match iOS"
+// would mean chasing a curve Apple ships no closed form for. Two things make the
+// exponent expensive to change and cheap to leave: it is implemented TWICE (the
+// SDK's corner_coverage in sdk/src/render.c and the compositor's CORNER_N in
+// compositor/src/backdrop.c) and the two MUST agree, or a material's blurred
+// backdrop is masked to a different curve than the surface painted over it; and
+// the visible gap between n=4 and n=5 is far smaller than the gap between a
+// circular arc and either of them, which is the jump Zelto already made.
+// An INTEGER, so it can carry a _Static_assert: a float comparison is not an
+// integer constant expression and -Wpedantic -Werror rejects it.
+#define Z_CORNER_N 4
 #define Z_RADIUS_ICON     0.2237f // APP ICONS ONLY: a FRACTION of the icon's width
                                   // (Apple's icon grid: the corner is proportional
                                   // to the tile, so an icon keeps its shape at any

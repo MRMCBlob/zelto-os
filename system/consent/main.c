@@ -20,11 +20,11 @@
 // dialog you scan across) and a fixed size, so the compositor backdrop rect that
 // blurs behind it can be computed without measuring the layout.
 #define ALERT_W 420.0f
-#define ALERT_PAD 22.0f
+#define ALERT_PAD ((float)Z_SPACE_L)
 // The prose column inside the card — the width WrapText needs at build time.
 #define ALERT_TEXT_W (ALERT_W - 2.0f * ALERT_PAD)
 // The gap between the card's stacked children.
-#define ALERT_GAP 10.0f
+#define ALERT_GAP ((float)Z_SPACE_S)
 
 // A BUTTON'S HEIGHT IS ITS LABEL'S, NOT A NUMBER (P50). This was a bare 46 —
 // close to the 44pt touch target and, like every literal this OS has found, a

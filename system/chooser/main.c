@@ -54,25 +54,31 @@
 // sheet with three targets should not be as tall as one with twelve, and a
 // fixed-height sheet with empty material under the last row reads as a panel that
 // failed to load.
-// 16, not 20 (P48). The rows inside the sheet are drawn with Z_RADIUS_CARD (16)
-// and the sheet itself with Z_RADIUS_SHEET (32); concentric corners — the gap
-// between the two curves constant all the way round — need outer = inner + inset,
-// i.e. 32 = 16 + 16. At 20 the sheet's corner was 4 units SQUARER than concentric
-// (test_radius_ladder reported the deficit for two phases). Closing it here, in
-// the share sheet's own inset, rather than by moving Z_RADIUS_SHEET — which four
-// surfaces share and which sits on a deliberately-round ladder (10/16/22/32) that
-// 36 would fall off.
-#define SHEET_PAD 16.0f
+// THE INSET IS THE CONTENT MARGIN; THE ROW'S CORNER FOLLOWS FROM IT.
+//
+// P48 closed the concentric deficit from this side — it pinned SHEET_PAD to 16 so
+// that 16 (row) + 16 (inset) matched the sheet's 32 — which made a layout metric
+// the slave of a radius. That was backwards, and it showed: 16 units is 8.6pt,
+// half the 16pt content margin every other container in the OS uses, so a share
+// sheet's rows sat twice as close to its edge as a Settings row does to its card.
+//
+// P52 turns it the right way round. The inset is Z_SPACE_L, the same content
+// margin as everywhere else, and the ROW's corner is what the concentric rule
+// derives from the sheet it sits in. The sheet's own radius is in turn the sum
+// (Z_RADIUS_SHEET is 45 = 16 + 29) — so the three agree by construction rather
+// than by a comment asking the next person not to nudge one of them.
+#define SHEET_PAD ((float)Z_SPACE_L)
+// The corner of a row INSIDE the sheet. Comes out at Z_RADIUS_CARD today; it is
+// written as the rule rather than as the token so that it stays true if either
+// the sheet or the inset moves.
+#define SHEET_ROW_RADIUS Z_RADIUS_NESTED(Z_RADIUS_SHEET, SHEET_PAD)
 #define SHEET_ROW_H 60.0f
 // The gaps between the sheet's rows, named so that sheet_height() below can be an
 // expression over the SAME constants the rows are built from. They were bare
 // literals written out twice — once in the column and once in the sum — which is
 // the shape of every reserve this project has had to go back and fix.
 #define SHEET_GRAB_H 5.0f          // the drag grabber's bar
-// The sheet's gaps, on the spacing scale (P52). SHEET_PAD above is deliberately
-// NOT on it yet: test_radius_ladder.sh asserts Z_RADIUS_SHEET == Z_RADIUS_CARD +
-// SHEET_PAD (the concentric rule, P48), so the pad and the radius ladder move
-// together in the radius stage rather than separately here.
+// The sheet's gaps, on the spacing scale (P52).
 #define SHEET_PREVIEW_GAP ((float)Z_SPACE_M)   // above and below the preview row
 #define SHEET_RULE_H 1.0f                      // the hairline
 #define SHEET_RULE_GAP ((float)Z_SPACE_M)      // hairline to the target row
@@ -84,8 +90,8 @@
 #define TARGET_CELL 96.0f    // the fixed column a target occupies (icon + name)
 #define TARGET_MAX 6         // targets shown before the row would overflow 720px
 #define PREVIEW_ICON 52.0f
-#define PREVIEW_GAP 14.0f          // the mark to the text column
-#define PREVIEW_LINE_GAP 2.0f      // payload line to MIME line
+#define PREVIEW_GAP ((float)Z_SPACE_S)   // the mark to the text column
+#define PREVIEW_LINE_GAP ((float)Z_SPACE_2XS)  // payload line to MIME line
 // Drag-to-dismiss: a downward drag past DISMISS_THRESH px (or a firm down-fling)
 // cancels, the way a sheet is dismissed everywhere else on the phone.
 #define DISMISS_THRESH 90.0f
@@ -234,7 +240,7 @@ static ZView preview_row(ZApp *app, float sw) {
 static ZView action_row(ZAction act, const char *label) {
     return OnTap(act,
         Background(Z_COLOR_SURFACE,
-            CornerRadius(Z_RADIUS_CARD,
+            CornerRadius(SHEET_ROW_RADIUS,
                 Frame(0.0f, SHEET_ROW_H,
                     ZStack(
                         Weight(Z_WEIGHT_SEMIBOLD,

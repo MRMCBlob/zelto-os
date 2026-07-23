@@ -69,7 +69,7 @@ static ZView camera_section(ZApp *app, CardsState *s) {
     }
     if (s->cam == Z_PERM_GRANTED) {
         opts.children[k++] = Background(Z_COLOR_SUCCESS,
-            CornerRadius(16,
+            CornerRadius(Z_RADIUS_CARD,
                 Frame(220.0f, 64.0f,
                     Foreground(Z_COLOR_TEXT_INV,
                         Font(Z_FONT_CALLOUT, Text("Camera ready"))))));
@@ -97,7 +97,7 @@ static ZView cards_body(ZApp *app, CardsState *state) {
             // a mistake now that it is not. A depth stack centres its children.
             Frame(140.0f, 140.0f,
                 Background(Z_COLOR_PRIMARY,
-                    CornerRadius(24,
+                    CornerRadius(Z_RADIUS_PANEL,
                         ZStack(
                             Foreground(Z_COLOR_ON_PRIMARY,
                                 Font(Z_FONT_LARGE_TITLE,

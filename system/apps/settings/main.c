@@ -698,15 +698,21 @@ static ZView section_block(ZApp *app, const char *header, ZView card,
 // screen's real 1:2 portrait would be a different grid and is not this phase.
 #define WP_COLS 3
 #define WP_GUTTER ((float)Z_SPACE_S)
+#define WP_SEL_RING ((float)Z_SPACE_2XS)   // the selection ring around a picked thumb
 #define WP_THUMB_W ((INSET_TEXT_W - (float)(WP_COLS - 1) * WP_GUTTER) / (float)WP_COLS)
 #define WP_THUMB_H (WP_THUMB_W * 0.6344f)
 
 static ZView wp_thumb(SettingsState *s, int i) {
     bool cur = strcmp(s->wp_paths[i], s->wp_current) == 0;
     ZView preview = Frame(WP_THUMB_W, WP_THUMB_H,
-        CornerRadius(14.0f, Cover(Image(s->wp_paths[i]))));
+        CornerRadius(Z_RADIUS_CARD, Cover(Image(s->wp_paths[i]))));
+    // The selected thumb wears a ring. The ring is a PADDING, so its outer corner
+    // is the concentric partner of the thumb's — outer = inner + inset — and
+    // writing it as the rule is what stops the two drifting the way the share
+    // sheet's did for three phases.
     ZView tile = cur
-        ? Background(Z_COLOR_PRIMARY, CornerRadius(18.0f, Padding(4.0f, preview)))
+        ? Background(Z_COLOR_PRIMARY,
+              CornerRadius(Z_RADIUS_CARD + WP_SEL_RING, Padding(WP_SEL_RING, preview)))
         : preview;
     return OnTapData(pick_wallpaper, s->wp_paths[i], tile);
 }

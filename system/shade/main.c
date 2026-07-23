@@ -116,7 +116,7 @@
 // a panel that failed to load. A short sheet also makes its pull SHORT, which is
 // right — a control you reach for reflexively should not need a full-screen drag.
 // The Notification Center is a list of unknown length, so it does take a fraction.
-#define CC_MARGIN 12.0f
+#define CC_MARGIN ((float)Z_SPACE_S)
 // Two toggle rows (~100 each) + the tall slider pair + the gaps between them.
 // Grown in P42 when brightness and volume became real sliders instead of a round
 // toggle and nothing at all; still CONTENT height, not a fraction of the screen.

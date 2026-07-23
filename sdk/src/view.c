@@ -753,7 +753,7 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     // against the icon's 23.3 it read very slightly squarer. See the ladder note
     // in gfx.h for the measurement.
     ZView fill = Background(Z_COLOR_MATERIAL_REGULAR,
-        CornerRadius(Z_RADIUS_WIDGET - 1.0f,
+        CornerRadius(Z_RADIUS_NESTED(Z_RADIUS_WIDGET, 1.0f),
             Padding(Z_SPACE_S, z_stack(Z_AXIS_VERTICAL, &col))));
     return Shadow(Z_ELEV_2,
         Background(Z_COLOR_MATERIAL_EDGE,

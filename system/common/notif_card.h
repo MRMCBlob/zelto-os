@@ -27,8 +27,8 @@
 #include "common/app_icons.h"
 
 #define ZELTO_NOTIF_ICON 38.0f
-#define ZELTO_NOTIF_PAD 14.0f
-#define ZELTO_NOTIF_GAP 14.0f
+#define ZELTO_NOTIF_PAD ((float)Z_SPACE_L)
+#define ZELTO_NOTIF_GAP ((float)Z_SPACE_S)
 // A trailing action button is given a FIXED width, which is what makes the text
 // column beside it knowable. WrapText has to be told its column when the tree is
 // BUILT, before layout has distributed anything, so a button that sizes to its

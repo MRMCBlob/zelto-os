@@ -145,7 +145,7 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
             // lines it holds plus the padding it holds them in — floored at the
             // 160 it used to be so an ordinary-sized device sees no change.
             Background(panel_bg,
-                CornerRadius(14,
+                CornerRadius(Z_RADIUS_CARD,
                     Frame(col_w, panel_h,
                         VStack(
                             Foreground(Z_COLOR_TEXT_MUTED,

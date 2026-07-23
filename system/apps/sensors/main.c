@@ -12,6 +12,12 @@
 
 #include <zelto/ui.h>
 
+// The tilt level: a dot inside a ring. Both are drawn rounded ALL the way, so
+// their radius is half their own extent rather than a step of the radius ladder —
+// naming the diameters is what lets the two say that.
+#define LEVEL_RING 160.0f
+#define LEVEL_DOT 28.0f
+
 typedef struct SensorsState {
     ZApp *app;            // captured each build so the stream callbacks can repaint
     bool started;         // one-time init guard
@@ -139,7 +145,7 @@ static ZView sensors_body(ZApp *app, SensorsState *st) {
             Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", sub))),
             Spacer(),
             Background(Z_COLOR_SURFACE_2,
-                CornerRadius(18,
+                CornerRadius(Z_RADIUS_CARD,
                     Frame(520.0f, 300.0f,
                         VStack(
                             reading("Accelerometer", accel),
@@ -152,12 +158,16 @@ static ZView sensors_body(ZApp *app, SensorsState *st) {
             Spacer(),
             // The level: a dot inside a ring, nudged by device tilt.
             Background(Z_COLOR_SURFACE,
-                CornerRadius(80,
-                    Frame(160.0f, 160.0f,
+                // Rounded ALL the way: the radius is half the extent, not a step
+                // of the ladder. The renderer switches to a true circle here (a
+                // squircle at r = w/2 reads subtly boxy) — see corner_coverage.
+                CornerRadius(LEVEL_RING * 0.5f,
+                    Frame(LEVEL_RING, LEVEL_RING,
                         ZStack(
                             OffsetXY(dx, dy,
                                 Background(Z_COLOR_PRIMARY,
-                                    CornerRadius(14, Frame(28.0f, 28.0f, Spacer())))),
+                                    CornerRadius(LEVEL_DOT * 0.5f,
+                                        Frame(LEVEL_DOT, LEVEL_DOT, Spacer())))),
                             .align = Z_ALIGN_CENTER)))),
             Spacer(),
             .padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));

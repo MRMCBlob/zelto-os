@@ -151,7 +151,7 @@ static ZView rows_panel(NotepadState *s) {
             Font(Z_FONT_BODY, Text("%s", s->rows[i])));
     }
     return Background(Z_COLOR_SURFACE_2,
-        CornerRadius(14, Frame(520.0f, 0.0f, z_stack(Z_AXIS_VERTICAL, &opts))));
+        CornerRadius(Z_RADIUS_CARD, Frame(520.0f, 0.0f, z_stack(Z_AXIS_VERTICAL, &opts))));
 }
 
 static ZView notepad_body(ZApp *app, NotepadState *state) {
@@ -242,7 +242,7 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     // stack is what centres it.
     col.children[k++] = Frame(140.0f, 72.0f,
         Background(Z_COLOR_PRIMARY,
-            CornerRadius(20,
+            CornerRadius(Z_RADIUS_PANEL,
                 ZStack(
                     Foreground(Z_COLOR_ON_PRIMARY,
                         Font(Z_FONT_TITLE,

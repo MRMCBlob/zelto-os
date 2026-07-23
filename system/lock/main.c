@@ -484,7 +484,7 @@ static void on_digit(ZApp *app, void *state, void *data) {
 // shape that says "one of a set of equivalent targets", where a rounded rectangle
 // says "a row in a list".
 #define KEY_D 92.0f
-#define KEY_GAP 20.0f
+#define KEY_GAP ((float)Z_SPACE_M)
 
 static ZView key_digit(int d) {
     return OnTapData(on_digit, (void *)(intptr_t)d,

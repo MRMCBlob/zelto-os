@@ -79,7 +79,7 @@ static ZView pinger_body(ZApp *app, PingerState *state) {
             Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION, Text("posted %d", state->posts))),
             Background(panel_bg,
-                CornerRadius(14,
+                CornerRadius(Z_RADIUS_CARD,
                     Frame(360.0f, 80.0f,
                         VStack(
                             Foreground(Z_COLOR_TEXT_MUTED,

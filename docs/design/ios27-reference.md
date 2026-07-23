@@ -148,7 +148,7 @@ second is control metrics (see §6).
 | `CARD` | 16 | 8.6 | inset-list card ~10pt = 19u **[unpub]** | −3u | already flagged tight ~15% |
 | `PANEL` | 22 | 11.9 | alert ~14pt = 26u **[unpub]** | −4u | Zelto alert radius under iOS |
 | `WIDGET` | 40 | 21.6 | home widget (no iOS number) | — | keep; anchored to icon corner 23.3u |
-| `SHEET` | 32 | 17.3 | large detent = **device screen radius** | open | not a fixed iOS pt |
+| `SHEET` | **45** (was 32) | 24.3 | large detent = **device screen radius** | derived | see below |
 | `ICON` | 0.2237× | — | **0.2237× width** + 0.6 smoothing | 0 | ratio matches ✓ |
 
 **The math.** iOS continuous corner = a superellipse `|x|^n+|y|^n=r^n` at **n≈5**
@@ -161,6 +161,37 @@ is possible but must be done in BOTH places or the app and its compositor mask d
 Recommend: keep n=4 for now (it is already a squircle, not a circle-arc box; the visible
 gap to n=5 is small) and record the option. The icon ratio (22.37%) and its 0.6 smoothing
 are the one rock-solid radius fact and Zelto already has the ratio.
+
+**STAGE 1b OUTCOME. Four steps did not move; one did, and it was not chosen.**
+
+`CHIP` / `CARD` / `PANEL` / `WIDGET` stay. Their iOS readings above are all **[unpub]**
+(Apple publishes no control corner radii), every delta is under 4 units, and P45 already
+declined exactly these two on exactly these grounds. Moving `CARD` would additionally move
+the sheet, which is derived from it — so one eyeballed nudge would quietly become two.
+
+`SHEET` went **32 → 45**, as the only number the concentric rule left free. Stage 1a put
+the share sheet's content margin on Apple's 16pt (`Z_SPACE_L`, 29u) like every other
+container in the OS; with the inset at 29 and the rows at `CARD`, the sheet's corner is
+determined: **16 + 29 = 45**. Two things the old value was hiding:
+
+- **The rows were inset 8.6pt.** P48 had closed the concentric deficit by pinning
+  `SHEET_PAD` to whatever made the sum work, which made a *layout* metric the slave of a
+  *radius*. A share sheet's rows sat twice as close to its edge as a Settings row does to
+  its card. P52 reverses the dependency — the inset is the content margin, the row's corner
+  is `Z_RADIUS_NESTED(SHEET, PAD)`, and the sheet's own radius is the sum.
+- **The ladder was not monotonic.** At 32 the largest pulled surface in the OS had a
+  *squarer* corner than a home widget (40). `test_radius_ladder.sh` rule 6 now forbids it —
+  nothing in the previous five rules could see it, because each checked a radius against
+  something other than its siblings.
+
+**The exponent decision: n = 4, kept, written down.** It is implemented **twice** — the
+SDK's `corner_coverage` and the compositor's `CORNER_N` — and the two must agree or a
+material's blur is masked to a different curve than the surface painted over it. The SDK
+specialises the arithmetic (`u²·u² + v²·v²`, no `pow()`, per pixel of every corner), so
+`Z_CORNER_N` carries a `_Static_assert` tying the token to that code, and rule 7 asserts
+the two renderers match. Chasing iOS's hand-tuned n≈5 would mean tracking a curve Apple
+ships no closed form for, and the gap between n=4 and n=5 is far smaller than the gap
+between a circular arc and either — which is the jump Zelto already made.
 
 **Concentric corners are now first-class in iOS 26** (`ConcentricRectangle` /
 `.containerConcentric`): **inner radius = outer radius − padding**, computed automatically.

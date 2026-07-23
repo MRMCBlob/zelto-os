@@ -54,7 +54,7 @@ radius_of() {   # the float value of a #define Z_RADIUS_<x>
 # Not because these values are sacred, but because P44 and P45 both spent a phase
 # arguing about them. A change should be a decision, not a drift.
 for pair in "Z_RADIUS_CHIP 10" "Z_RADIUS_CARD 16" "Z_RADIUS_PANEL 22" \
-            "Z_RADIUS_WIDGET 40" "Z_RADIUS_SHEET 32"; do
+            "Z_RADIUS_WIDGET 40" "Z_RADIUS_SHEET 45"; do
     set -- $pair
     got="$(radius_of "$1")"
     if [ -z "$got" ]; then
@@ -129,10 +129,41 @@ fi
 #         sheet's own inset dropped 20 -> 16, so 32 = 16 + 16 exactly — and now
 #         that it is closed it is ASSERTED, so the deficit cannot creep back the
 #         next time someone nudges SHEET_PAD.
+# P52 TURNED THIS RELATIONSHIP THE RIGHT WAY ROUND, and the assertion survives
+# the turn unchanged — which is the point of having written it down.
+#
+# P48 closed the deficit by pinning the sheet's INSET to whatever made the sum
+# work (16, to match a 32 sheet holding 16 rows). That made a layout metric the
+# slave of a radius, and it cost: 16 units is 8.6pt, half the 16pt content margin
+# every other container in this OS uses, so a share sheet's rows sat twice as
+# close to its edge as a Settings row does to its card.
+#
+# P52's spacing scale put the inset on Z_SPACE_L (29) like every other content
+# margin, which leaves the sheet's own corner as the only free number: 16 + 29 =
+# 45. So Z_RADIUS_SHEET is 45 now, and it is DERIVED rather than chosen. The old
+# 32 also made the ladder non-monotonic — the largest surface in the OS had a
+# smaller corner than a home widget (40) — which rule 6 below now forbids.
+#
+# The inset is a macro now, so it has to be resolved rather than read: it names a
+# step of the spacing scale, and the step names its own points.
 sheet="$(radius_of Z_RADIUS_SHEET)"
 card="$(radius_of Z_RADIUS_CARD)"
-sheet_pad="$(sed -n 's/^#define SHEET_PAD[[:space:]]*\([0-9.]*\)f.*/\1/p' \
+UI_H="$REPO_ROOT/sdk/include/zelto/ui.h"
+pad_step="$(sed -n 's/^#define SHEET_PAD[[:space:]]*((float)\(Z_SPACE_[A-Z0-9]*\)).*/\1/p' \
     "$REPO_ROOT/system/chooser/main.c" | head -1)"
+if [ -z "$pad_step" ]; then
+    zt_fail "the share sheet's inset is not a step of the spacing scale, so the concentric rule cannot be resolved" \
+        "SHEET_PAD = ((float)Z_SPACE_*)" "$(grep -E '^#define SHEET_PAD' "$REPO_ROOT/system/chooser/main.c")"
+fi
+pad_pt="$(sed -n "s/^#define ${pad_step}[[:space:]]*Z_PT(\([0-9]*\)).*/\1/p" "$UI_H" | head -1)"
+tnum="$(sed -n 's/^#define Z_TYPE_NUM[[:space:]]*\([0-9]*\).*/\1/p' "$UI_H" | head -1)"
+tden="$(sed -n 's/^#define Z_TYPE_DEN[[:space:]]*\([0-9]*\).*/\1/p' "$UI_H" | head -1)"
+sheet_pad=""
+if [ -n "$pad_pt" ] && [ -n "$tnum" ] && [ -n "$tden" ]; then
+    # Z_PT is integer arithmetic and TRUNCATES; resolve it the same way the
+    # preprocessor does, or this check disagrees with the binary by a unit.
+    sheet_pad="$(( pad_pt * tnum / tden ))"
+fi
 if [ -z "$sheet" ] || [ -z "$card" ] || [ -z "$sheet_pad" ]; then
     zt_fail "could not read the share sheet's nesting (radius/radius/padding)" \
             "three numbers" "sheet='$sheet' card='$card' pad='$sheet_pad'"
@@ -147,6 +178,47 @@ else
                 "Z_RADIUS_SHEET == Z_RADIUS_CARD + SHEET_PAD ($card + $sheet_pad = $want)" "$sheet"
     fi
     echo "note: sheet corner $sheet == rows $card + inset $sheet_pad — concentric"
+fi
+
+# --- 6. THE LADDER ASCENDS --------------------------------------------------
+# A ladder whose biggest surface is not its roundest is not a ladder, and it went
+# unnoticed for seven phases: Z_RADIUS_SHEET was 32 against Z_RADIUS_WIDGET's 40,
+# so the largest pulled surface in the OS had a squarer corner than a small home
+# widget card. Nothing in rules 1-5 could see it, because each of those checks a
+# radius against something OTHER than its siblings.
+prev_name=""
+prev_val=""
+for name in Z_RADIUS_CHIP Z_RADIUS_CARD Z_RADIUS_PANEL Z_RADIUS_WIDGET Z_RADIUS_SHEET; do
+    val="$(radius_of "$name")"
+    if [ -z "$val" ]; then
+        continue
+    fi
+    if [ -n "$prev_val" ] && awk -v a="$prev_val" -v b="$val" 'BEGIN { exit !(b <= a) }'; then
+        zt_fail "the radius ladder does not ascend: a larger surface is drawn squarer than a smaller one" \
+            "$name > $prev_name ($prev_val)" "$val"
+    fi
+    prev_name="$name"
+    prev_val="$val"
+done
+echo "note: ladder ascends — chip $(radius_of Z_RADIUS_CHIP) < card $(radius_of Z_RADIUS_CARD) < panel $(radius_of Z_RADIUS_PANEL) < widget $(radius_of Z_RADIUS_WIDGET) < sheet $(radius_of Z_RADIUS_SHEET)"
+
+# --- 7. THE CORNER EXPONENT IS DEFINED ONCE AND AGREED IN BOTH RENDERERS ----
+# The squircle exponent is implemented TWICE — the SDK paints the surface, the
+# compositor masks the blurred backdrop behind it — and if the two disagree, a
+# material's blur is cut to a different curve than the panel drawn over it. That
+# is a seam no screenshot of a single surface can show.
+BACKDROP="$REPO_ROOT/compositor/src/backdrop.c"
+n_sdk="$(sed -n 's/^#define Z_CORNER_N[[:space:]]*\([0-9.]*\)f\{0,1\}.*/\1/p' "$GFX" | head -1)"
+n_comp="$(sed -n 's/^#define CORNER_N[[:space:]]*\([0-9.]*\)f.*/\1/p' "$BACKDROP" | head -1)"
+if [ -z "$n_sdk" ]; then
+    zt_fail "gfx.h does not state the corner exponent" "#define Z_CORNER_N" "absent"
+elif [ -z "$n_comp" ]; then
+    zt_fail "the compositor does not state its corner exponent" "#define CORNER_N" "absent"
+elif ! awk -v a="$n_sdk" -v b="$n_comp" 'BEGIN { exit !(a + 0 == b + 0) }'; then
+    zt_fail "the SDK and the compositor round corners to DIFFERENT curves, so a material's blur is masked to a different shape than the surface painted on it" \
+        "equal exponents" "sdk=$n_sdk compositor=$n_comp"
+else
+    echo "note: corner exponent n=$n_sdk in both renderers"
 fi
 
 zt_done

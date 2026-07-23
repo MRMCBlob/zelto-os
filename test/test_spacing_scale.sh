@@ -112,6 +112,40 @@ else
     echo "note: no bare gap literals outside the enumerated carve-outs"
 fi
 
+# --- 2b. The same bug wearing a #define ------------------------------------
+#
+# Rule 2 only sees a literal written AT the layout. A gap handed over through a
+# named constant — `#define DOCK_GAP 18.0f`, then `.spacing = gap` — is invisible
+# to it, and that is where the second half of them were hiding: eighteen such
+# constants across the shade, the launcher, the chooser, the consent alert, the
+# lock keypad and the switcher deck. They cannot be found by their VALUE (a
+# `#define` of a bare number is most of this codebase), but they can be found by
+# their NAME: a constant called *_PAD / *_GAP / *_INSET / *_MARGIN / *_SPACING is
+# a gap by its own admission, so it must be a step.
+#
+# CARVE-OUTS here, again enumerated:
+#   Z_DAMAGE_MARGIN     a repaint bounds slop in pixels, not a layout gap.
+#   KBD_REPEAT_WORD_GAP_S  a DURATION in seconds; it ends in _S and means time.
+#   LIB_FIELD_PAD       a deliberate MIRROR of z_text_field's own inset, which is
+#                       a control metric (see the Button/TextField note above) and
+#                       must track that number rather than this scale.
+#   GRID_GAP / GRID_PAD the home grid's cell size is DERIVED from these
+#                       ((w - 2*PAD - 3*GAP) / 4), so moving them resizes every
+#                       icon and widget on the home screen. That is a home-screen
+#                       change, not a spacing regrid, and it belongs to the
+#                       surface pass where it can be shot.
+named="$(grep -rnE '^#define[[:space:]]+[A-Z_]*(PAD|GAP|INSET|MARGIN|SPACING)[A-Z_0-9]*[[:space:]]+[0-9]' \
+        --include='*.c' --include='*.h' $scan_dirs 2>/dev/null \
+    | grep -vE '(Z_DAMAGE_MARGIN|KBD_REPEAT_WORD_GAP_S|LIB_FIELD_PAD|GRID_GAP|GRID_PAD)' \
+    || true)"
+if [ -n "$named" ]; then
+    n="$(printf '%s\n' "$named" | wc -l | tr -d ' ')"
+    zt_fail "a constant that calls itself a gap is a bare number — the same bug wearing a #define" \
+        "a Z_SPACE_* step" "$n: $(printf '%s\n' "$named" | head -3 | tr '\n' ' ')"
+else
+    echo "note: every *_PAD/_GAP/_INSET/_MARGIN constant is a step or a carve-out"
+fi
+
 # --- 3. POSITIVE CONTROL for the scan above -------------------------------
 # Rule 2 asserts an ABSENCE, and an absence is also what a scan that matches
 # nothing reports — a broken regex, a bad path and a clean tree are the same

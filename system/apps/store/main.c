@@ -113,7 +113,7 @@ static ZView store_body(ZApp *app, StoreState *state) {
             Background(Z_COLOR_DANGER,
                 Button(install_tampered, "Install tampered")),
             Background(panel_bg,
-                CornerRadius(14,
+                CornerRadius(Z_RADIUS_CARD,
                     // Height 0, not 96: a wrapped result is however many lines
                     // it needs, and a fixed box would just move the overflow
                     // from the right edge to the bottom one.

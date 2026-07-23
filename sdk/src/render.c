@@ -90,7 +90,13 @@ static float corner_coverage(int x, int y, int rx0, int ry0, int rx1, int ry1,
         e = u2 + v2;                              // circle: 1 on the edge
         g = 2.0f * sqrtf(u2 + v2) / r;            // |grad e|
     } else {
-        e = u2 * u2 + v2 * v2;                    // the superellipse (n = 4)
+        // The superellipse at Z_CORNER_N, written out rather than pow()'d: this
+        // runs per pixel of every rounded corner in the OS. The static assert is
+        // the tie between the token and this arithmetic — change the exponent and
+        // the build stops here instead of silently keeping n=4.
+        _Static_assert(Z_CORNER_N == 4,
+                       "corner_coverage is specialised for n=4; see Z_CORNER_N");
+        e = u2 * u2 + v2 * v2;
         g = 4.0f * sqrtf(u2 * u2 * u2 + v2 * v2 * v2) / r;
     }
     if (g < 1e-6f) {
