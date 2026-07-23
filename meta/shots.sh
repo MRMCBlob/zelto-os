@@ -113,6 +113,67 @@ ZAP=""
 #                 strongest tile at least <min-delta> times the whole-frame mean.
 #                 That is what a press veil IS, stated without saying where — for
 #                 the surfaces where "where" cannot be known (see below)
+#       @ns:NAME  the change must be inside the SCREEN BOX of the layer surface
+#                 whose namespace is NAME, and be the strongest change on the
+#                 frame. This is the real version of what `spot` approximates.
+#
+#     WHERE THE BOX COMES FROM, and why this is now possible (P49). Everything
+#     below about `@Label` is still true — a client is never told where the
+#     compositor put its surface, and the probe's frames are in SURFACE
+#     coordinates. What changed is that P48 made the ONE PROCESS THAT DOES KNOW
+#     say so: ZELTO_SURFACE_LOG=1 (set on every shot's boot, above) makes zcomp
+#     print
+#
+#         [zcomp] surface ns='keyboard' layer=2 screen=0,966 720x474 exclusive=474
+#
+#     for every layer surface it arranges. `@ns:` reads that line out of THIS
+#     SHOT'S OWN LOG — not a number pasted into this file — and hands the box to
+#     pngdiff --expect-box. So the check aims wherever the compositor actually put
+#     the surface on the boot that took the picture, which is the thing P47 wanted
+#     and could not have. It is strictly stronger than `spot`: `spot` says "the
+#     change was concentrated somewhere", this says "the change was concentrated
+#     THERE".
+#
+#     THE NAMESPACE IS THE BODY FUNCTION'S NAME (the SDK passes app->title), so
+#     it is `kbd_body`, `shade_body`, `lock_body` — and `bar_body` is BOTH the
+#     status bar and the home bar, two processes that named their body the same
+#     thing. `@ns:bar_body` would therefore be ambiguous, which is another reason
+#     the status-bar shots keep the NOMARKER + LOGSAYS pair they were given in
+#     P47 rather than being "upgraded" here.
+#
+#     AND IT ONLY WORKS FOR LAYER SURFACES. An ordinary app is an xdg toplevel
+#     and zcomp logs nothing for it — so the launcher, Settings and the apps are
+#     out of reach of this, and 41-press-tile keeps `spot`. That is a smaller gap
+#     than it sounds: a toplevel's box is the usable area, which is the one
+#     geometry a test can already reason about.
+#
+#     THE AUDIT THIS MADE POSSIBLE, and its result: of the sixteen NOMARKER shots,
+#     exactly ONE could stop being a heuristic. That is a real answer rather than
+#     a disappointing one, and the reasons divide cleanly:
+#       - 48-key-press -> `@ns:kbd_body`. Upgraded. The keyboard is a 720x474
+#         strip at the bottom and the veil is inside it, so the box says
+#         something `spot` could not.
+#       - the VOLUME HUD (12, 42, 52, 53, 54), the DIM scrim and the SCREEN-OFF
+#         scrim are layer surfaces whose box is 720x1359 — the whole area under
+#         the status bar. The HUD is a small card drawn inside a full-height
+#         surface, so `@ns:vol_body` would be `all` wearing a box. Their claim is
+#         a POSITION within that surface, which the compositor's line cannot
+#         speak to. They keep what they had.
+#       - the STATUS-BAR shots are `bar_body`, which is ambiguous (above), and
+#         were measured and refused in P47 anyway.
+#       - 03-home-flip and 41-press-tile are the LAUNCHER, an xdg toplevel, which
+#         zcomp does not log at all.
+#     So the mechanism is right and its reach is one shot wide today. It gets
+#     wider the moment a layer surface is sized to the thing it draws.
+#
+#     WHAT IT STILL CANNOT DO, and the keyboard is the example. A surface that
+#     SLIDES or RESIZES has a different box at capture time than at the arrange
+#     that logged it: the keyboard is logged at 966 and at 1071 on the same boot
+#     as the suggestion strip appears, and it is logged again mid-slide. The last
+#     line for a namespace is the box it settled at, which is right for a settled
+#     screen and wrong for a shot taken during a transition — so a transition shot
+#     keeps `spot`. `@ns:` takes the LAST line, and says so here rather than
+#     pretending the ambiguity is not there.
 #
 #     THERE IS NO `@Label` REGION EITHER, and the attempt to build one is why
 #     `spot` exists. The idea was right — take the box from the frame the PROBE
@@ -273,6 +334,7 @@ run_shot() {
             SKIP_BUILD=1 HEADLESS=1 SHOT="$png" SHOT_DELAY="$delay" \
             ZELTO_DATA_DIR="$data" SIM_RUNTIME_DIR="$xdg" \
             ZELTO_PROBE_TAPS=1 ZELTO_PROBE_AT="$(( delay * 1000 - 250 ))" \
+            ZELTO_SURFACE_LOG=1 \
             "$REPO_ROOT/meta/run-sim.sh" >"$dir/log.$attempt" 2>&1 || true
         if [ -s "$png" ]; then break; fi
         [ "$attempt" = 1 ] && echo "    .. no frame; re-booting this shot once"
@@ -362,6 +424,30 @@ run_shot() {
             local args=""
             case "$region" in
                 all|spot) args="" ;;
+                @ns:*)
+                    # THE BOX COMES OUT OF THIS BOOT'S OWN LOG. See the @ns: note
+                    # at the head of this file: zcomp is the only process that
+                    # knows where a layer surface ended up, and ZELTO_SURFACE_LOG
+                    # makes it say so. The LAST line for the namespace is the box
+                    # it settled at.
+                    # THE LAST NON-EMPTY LINE, and "non-empty" is not pedantry:
+                    # zcomp arranges a layer surface before it has a buffer, so
+                    # the log carries `screen=0,966 0x0` lines for the same
+                    # namespace, and a hidden surface's last line is one of them.
+                    # A 0x0 box would make --expect-box pass or fail on nothing.
+                    local ns box
+                    ns="${region#@ns:}"
+                    box="$(sed -n "s/.*\[zcomp\] surface ns='$ns' .*screen=\([0-9]*\),\([0-9]*\) \([1-9][0-9]*\)x\([1-9][0-9]*\).*/\1 \2 \3 \4/p" \
+                           "$dir/log" | tail -1)"
+                    if [ -z "$box" ]; then
+                        echo "    !! $name: no [zcomp] surface line for ns='$ns' in this boot's log"
+                        MARKERLESS+=("$name: no surface box for $ns"); MARKER_FAIL=1
+                        SEED=""; ZAP=""; return 0
+                    fi
+                    echo "    surface '$ns' is at $box (from this boot's zcomp log)"
+                    # shellcheck disable=SC2086
+                    args="--expect-box $box --min-delta $mind"
+                    ;;
                 *)
                     echo "    !! $name: unknown PIXEL region '$region'"
                     MARKERLESS+=("$name: bad PIXEL region"); MARKER_FAIL=1
@@ -716,7 +802,15 @@ run_shot 47-settings-toggle "Settings toggles mid on/off cross-fade (frozen 0.5)
 # the same boot the strip is up (empty field, so the strip is present but blank).
 # The X stays: 'g' is still at 331..389, centre 360.
 EXPECT='zelto-keyboard\|space' \
-PIXEL='13-keyboard spot 20' \
+# UPGRADED FROM `spot` TO A REAL BOX (P49 item 4). `spot` says "the change was
+# small and concentrated SOMEWHERE", which was the honest best a client-side probe
+# could manage — the probe reports surface coordinates and a PNG is the screen.
+# zcomp now prints where it put the surface (ZELTO_SURFACE_LOG, set on every
+# shot's boot), so the check reads the box out of THIS boot's own log and asks
+# whether the change is inside the keyboard. The min-delta is low because it is a
+# mean over the WHOLE 720x474 surface and the veil is one 59x77 cap of it — about
+# 1.3% of the box — so a threshold sized for the peak would never be reached.
+PIXEL='13-keyboard @ns:kbd_body 0.15' \
 run_shot 48-key-press "Keyboard: a key pressed (touch-down highlight veil)" 8 \
     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad \
     ZELTO_PRESS_APP=kbd_body ZELTO_PRESS_X=360 ZELTO_PRESS_Y=246
@@ -947,6 +1041,51 @@ ZAP="$REPO_ROOT/system/apps/greeter/zelto-greeter.app:$REPO_ROOT/system/apps/gre
 EXPECT='zelto-script\|' \
 run_shot 77-script-installed "Script: installed from a signed .zap, running from /var/zelto" 12 \
     ZELTO_TAP_APP=os.zelto.launcher ZELTO_TAP_LABEL=Greeter ZELTO_TAP_AT=6000
+
+# THE SUGGESTION STRIP HAS A FRAME NOW (P49 item 5). It shipped in P48 as new,
+# visible, user-facing UI and the catalogue never photographed it working:
+# 13-keyboard raises the keyboard with ZELTO_KBD_SHOW and no focused field, so
+# there is no word being typed, no suggestions, and the one state of the strip
+# that proves nothing. These two need a real focused field and a PART-TYPED word
+# still under the cursor at capture — SIM_APP=zelto-notepad with a ZELTO_KBD_TAP
+# that stops mid-word.
+#
+# ZELTO_NOTEPAD_ECHO=1 IS WHAT FOCUSES THE FIELD, and it is not optional here.
+# Without a focused field the compositor never activates the input method, the
+# keyboard never gets its show handshake, and ZELTO_KBD_TAP never arms — the shot
+# then comes out as a perfectly ordinary keyboard with a BLANK STRIP, which is
+# exactly the frame 13-keyboard already is and the one these two exist to stop
+# being the only one. (That is how the first run of these shots failed, and the
+# EXPECT is what caught it: the PNG looked fine.) NOAUTOCAP goes with it so the
+# words in the strip are the ones the caption names rather than "Friend".
+#
+# ASSERTED BY EXPECT, not by pixels. Unlike a press veil the strip is made of
+# TEXT, so the strongest claim available is the one that reads the laid-out
+# strings — and the string named is the one in the LAST slot filled, which can
+# only be there if all three were.
+#
+# AND THE WORD NAMED COMES FROM THE BOOT, NOT FROM A DESK CALCULATION. The first
+# version of these two named "fire" and "tea", which is what z_lm_candidates
+# returns with NO substitution callback. The real keyboard supplies one — the
+# LAYOUT's adjacency cost (kbd_subst_cost) — and it reranks the third slot to
+# "from" and "try", because 'r' sits next to 'e' on this grid and a near-miss
+# costs half a substitution. The EXPECT caught that; the PNG looked perfectly
+# healthy, which is the whole reason these declare a marker at all.
+EXPECT='zelto-keyboard\|from' \
+run_shot 78-keyboard-suggest "Keyboard: the suggestion strip mid-word (friend / frien / from)" 10 \
+    SIM_APP=zelto-notepad ZELTO_NOTEPAD_ECHO=1 ZELTO_NOTEPAD_NOAUTOCAP=1 \
+    ZELTO_KBD_TAP="f,r,i,e,n"
+
+# ...and the PENDING AUTOCORRECTION, which is a second state of the same strip
+# and the one that changes what the space bar will do. "teh" is not a word and is
+# not a live prefix of one, so the boundary WOULD correct it — the strip says so
+# by filling and tinting slot 0 (Z_COLOR_PRIMARY on Z_COLOR_SURFACE_4), the way
+# iOS bolds the word it is about to apply. The middle slot is the literal, which
+# is how the correction is rejected.
+EXPECT='zelto-keyboard\|try' \
+run_shot 79-keyboard-suggest-pending "Keyboard: a pending autocorrection (the / teh / try)" 10 \
+    SIM_APP=zelto-notepad ZELTO_NOTEPAD_ECHO=1 ZELTO_NOTEPAD_NOAUTOCAP=1 \
+    ZELTO_KBD_TAP="t,e,h"
 
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)

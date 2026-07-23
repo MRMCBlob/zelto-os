@@ -19,6 +19,19 @@
 #   suggest "wrold" then tap slot 0  -> the field holds "world " (the strip is the
 #                                       manual path AND the undo)
 #
+# AND THE BOUNDARY IS NOT A SPACE (P49 item 3). P48 hung autocorrect off on_space,
+# so a space was the only spelling of a word boundary the keyboard knew:
+#   period  "teh" + "."           -> "the."  (a full stop ends a word)
+#   period-revert  ... + BKSP      -> "teh"   (the undo follows the boundary that
+#                                       fired, not an assumed space)
+#   enter   "teh" + RETURN        -> corrected (the end of a line is one too)
+#   contraction "dont" + space    -> "don't " (the apostrophe put back — a
+#                                       correction like any other, through the
+#                                       same visible, revertible path)
+#   were    "were" + space        -> "were " (the rule that keeps that table
+#                                       safe: only bare forms that are NOT
+#                                       English words may be expanded)
+#
 # NEGATIVE-TESTED, each break made, watched to fail with its own message, restored:
 #   kbd_autocorrect always returns false        -> `typo` keeps "teh "; the
 #       assertion fires naming teh vs the
@@ -145,5 +158,78 @@ if ! grep -q "suggest slot 0 'world' (was 'wrold')" "$LOG"; then
 fi
 zt_expect_eq "world " "$(field_of "$LOG")" \
     "tapping a suggestion must REPLACE the typed word (delete it, commit the slot + a space), not append to it (see $LOG)"
+
+# --- period: a full stop is a word boundary too (P49 item 3) -----------------
+# P48 put autocorrect on the SPACE BAR, and a space is one SPELLING of a word
+# boundary, not the boundary itself: "teh." "teh!" "teh?" and a typo finished with
+# RETURN all committed uncorrected, while the strip that had been showing the
+# pending correction simply vanished. The rule now is the same one kbd_cur_word
+# reads from the other side — a word ends where the letters stop — so a full stop
+# on the symbols layer ends one exactly as the space bar does.
+LOG="$(run_boot period "t,e,h,SYM,.")"
+alive "$LOG"
+if ! grep -q "autocorrect 'teh' -> 'the' at boundary '\.'" "$LOG"; then
+    zt_fail "\"teh.\" did not autocorrect — a word boundary is the END OF A WORD, not a space, and a typo ended with a full stop is the commonest one there is (it is the end of a sentence)" \
+        "autocorrect 'teh' -> 'the' at boundary '.'" "$(grep -m1 autocorrect "$LOG" || echo absent) (see $LOG)"
+fi
+zt_expect_eq "the." "$(field_of "$LOG")" \
+    "the field should hold the corrected word and the full stop that ended it (see $LOG)"
+
+# --- period-revert: the undo follows the boundary that fired -----------------
+# THE BUG THIS EXISTS FOR. The revert reads the field to check the correction is
+# still under the cursor, and P48 could hard-code the tail it looked for as
+# "<word> " because the space bar was the only boundary there was. Generalising
+# the boundary without generalising the revert would have left "teh." corrected
+# and NOT undoable — a correction you cannot take back, which is the one thing
+# that makes autocorrect defensible at all.
+LOG="$(run_boot period-revert "t,e,h,SYM,.,BKSP")"
+alive "$LOG"
+if ! grep -q "autocorrect reverted 'the' -> 'teh'" "$LOG"; then
+    zt_fail "backspace did not undo a correction that fired on a FULL STOP — the revert must follow whichever boundary committed, not assume a space" \
+        "autocorrect reverted 'the' -> 'teh'" "$(grep -m1 'revert' "$LOG" || echo absent) (see $LOG)"
+fi
+zt_expect_eq "teh" "$(field_of "$LOG")" \
+    "the revert must put back what was typed, minus the full stop that ended it (see $LOG)"
+
+# --- return: so is a newline -------------------------------------------------
+# The one typo a phone keyboard never fixed, because a line ends with RETURN and
+# only the space bar knew what a boundary was. Asserted off the log rather than
+# the field echo: the field's content contains a newline, which the echo reader
+# above cannot represent on one line.
+LOG="$(run_boot enter "t,e,h,ENTER")"
+alive "$LOG"
+if ! grep -q "autocorrect 'teh' -> 'the' at boundary '\\\\n'" "$LOG"; then
+    zt_fail "\"teh\" + RETURN did not autocorrect — the end of a line is the end of a word" \
+        "autocorrect 'teh' -> 'the' at boundary '\\n'" "$(grep -m1 autocorrect "$LOG" || echo absent) (see $LOG)"
+fi
+
+# --- contraction: the apostrophe put back (P49 item 3b) ----------------------
+# "dont" IS in the shipped list — it has to be, or edit distance would "correct"
+# it to "dot" — so this cannot come from the dictionary and does not: it is a
+# table of contractions whose BARE FORM IS NOT ITSELF AN ENGLISH WORD, consulted
+# before the is-a-word guard. It ships through kbd_autocorrect like every other
+# correction, which is what makes it visible in the strip and revertible.
+LOG="$(run_boot contraction "d,o,n,t,SPACE")"
+alive "$LOG"
+if ! grep -q "autocorrect 'dont' -> 'don't'" "$LOG"; then
+    zt_fail "\"dont\" did not expand to \"don't\" — the apostrophe is on the symbols layer and nobody reaches for it, which is why the list carries the bare form in the first place" \
+        "autocorrect 'dont' -> 'don't'" "$(grep -m1 autocorrect "$LOG" || echo absent) (see $LOG)"
+fi
+zt_expect_eq "don't " "$(field_of "$LOG")" \
+    "the field should hold the expanded contraction (see $LOG)"
+
+# --- were: the rule that keeps the contraction table safe --------------------
+# The control for the expansion above, and the whole reason that table is thirty
+# entries and not ninety: "were" is a real English word ("they were here"), so it
+# must never become "we're". A table that expanded every bare contraction would be
+# wrong several times a page, which is how autocorrect earns its reputation.
+LOG="$(run_boot were "w,e,r,e,SPACE")"
+alive "$LOG"
+if grep -q "autocorrect '" "$LOG"; then
+    zt_fail "\"were\" was rewritten — it is an ordinary English word, and only contractions whose bare form is NOT a word may be in the expansion table" \
+        "no autocorrect line" "$(grep -m1 autocorrect "$LOG") (see $LOG)"
+fi
+zt_expect_eq "were " "$(field_of "$LOG")" \
+    "an ordinary word must be left exactly as typed (see $LOG)"
 
 zt_done
