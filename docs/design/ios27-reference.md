@@ -35,13 +35,13 @@ mostly lands on iOS; three steps drift.
 
 | Style | Apple pt | Apple u | Zelto u | Zelto pt | delta (u) | note |
 |---|---|---|---|---|---|---|
-| Large Title | 34 | 63 | 74 (`LARGE_TITLE`) | 40 | **+11** | Zelto hero runs +6pt big |
+| Large Title | 34 | 63 | ~~74~~ → **62** | ~~40~~ → **34** | **closed** | hero ran +6pt |
 | Title 1 | 28 | 52 | 51 (`TITLE`) | 28 | −1 | match |
-| Title 2 | 22 | 41 | 44 (`TITLE2`) | 24 | **+3** | +2pt |
-| Title 3 | 20 | 37 | — | — | — | **iOS step Zelto lacks**; `CALLOUT` fills the slot |
+| Title 2 | 22 | 41 | ~~44~~ → **40** | ~~24~~ → **22** | **closed** | ran +2pt |
+| Title 3 | 20 | 37 | — | — | — | iOS step Zelto lacks — **deliberately not added**, see below |
 | Headline | 17 (Semibold) | 31 | 31 (`HEADLINE`+SB) | 17 | 0 | match |
 | Body | 17 | 31 | 31 (`BODY`) | 17 | 0 | match |
-| Callout | 16 | 30 | 37 (`CALLOUT`) | 20 | **+7** | Zelto's Callout is really iOS **Title3** (20pt) |
+| Callout | 16 | 30 | ~~37~~ → **29** | ~~20~~ → **16** | **closed** | ran +4pt; see the note below |
 | Subheadline | 15 | 28 | 27 (`SUBHEAD`) | 15 | −1 | match |
 | Footnote | 13 | 24 | 24 (`FOOTNOTE`) | 13 | 0 | match |
 | Caption 1 | 12 | 22 | 22 (`CAPTION`) | 12 | 0 | match |
@@ -67,10 +67,30 @@ Per-style, in units it rounds to:
 
 Full per-size table (1/1000 em, `tracking_pt = value/1000 × size`): 12pt→0, 13→−6,
 15→−16, 16→−20, 17→−24, 18→−25; going positive below 12pt (11→+6, 10→+12).
-**Verdict for Stage 1:** the Title-level tightening (−1 to −2u) is visible and cheap;
-below ~16pt tracking rounds to 0u and is negligible. Decide in Stage 1 whether to add a
-`.tracking` axis or record it deliberately out of scope — either is defensible, but the
-*absence* must be a written decision, not an oversight.
+**STAGE 1c DECISION — tracking is deliberately NOT modelled.** The whole effect is −2u at
+Large Title, −1u through the Title/Body band, and **zero below ~16pt** where it rounds
+away — invisible on most of this OS and worth about one unit where it is not. Against
+that: a tracking axis must be threaded through **both** measure and paint, and if the two
+disagree the text overflows its box **silently**. That is the exact failure this project
+has already paid for twice (P45's `wrap_measure` truncating at 512 bytes; P51's fixed
+column holding text). One unit of Title tightening does not buy that risk. If it is added
+later, `z_text_measure` and the glyph loop change in the *same* commit, with a test that
+measures a tracked string and asserts the resulting frame.
+
+**STAGE 1c OUTCOME — eight of eleven steps already matched**, which is itself the finding:
+the three that did not were **drift**, not a systematic error. That is a different bug from
+P43, where *every* step was wrong by the same factor, and it takes a different fix — per
+step, not to the converter.
+
+**The Callout correction, and the misreading attached to it.** This dossier first read
+Zelto's 20pt `CALLOUT` as actually being iOS's **Title 3** (20pt), a step the ladder lacks
+— which would have meant renaming it and adding a real 16pt Callout. Checking the **22 call
+sites** says otherwise: every one is a control label (a keyboard function key, a consent
+button, "Done", the remove badge) or emphasised body (a status line, a strapline, "No
+running apps"). **Not one is a compact title.** So the *number* was Title 3 while every
+*use* was a Callout, and the fix is the number. **No `Z_FONT_TITLE3` was added** — a token
+no surface asks for is the step that gets picked by whoever wants "a bit bigger", which is
+how a ladder stops meaning anything.
 
 **Leading:** a reference to VALIDATE against, never a literal. Zelto derives line height
 from the face (`z_line_height`), whose true ratio runs 1.318→1.253 across the scale; the
@@ -323,7 +343,8 @@ rule behind it, not a taste call.
 | Tab bar | 49 (+34 safe) | 90 (+62) | — | — | — | Zelto uses homebar, no tab bar |
 | **Switch — track** | **51×31** | **94×57** | **52×32** | 28×17 | **−42×−25** | ⚠️ **headline finding** |
 | Switch — knob | 27.5 **[unpub]** | 51 | 26 | 14 | **−25** | ⚠️ ~half size |
-| Slider — thumb | ~28 **[unpub]** | ~52 | (check sdk) | — | — | verify Stage 2 |
+| Slider — track | 4 | 7 | 6 (`thickness`) | 3.2 | −1 | ✓ close |
+| Slider — thumb | ~28 **[unpub]** | ~52 | **24** (`t × 4`) | 13 | **−28** | ⚠️ see below |
 | Segmented — height | ~32 **[unpub]** | ~59 | (CC toggles) | — | — | verify Stage 2 |
 | Stepper — intrinsic | ~94×30 **[unpub]** | ~174×55 | ~105×36 | ~57×19 | narrower | Zelto pill 2×52+divider |
 | Chevron / disclosure | ~7×12 **[unpub]** | ~13×22 | 16×16 | 8.6×8.6 | squarer | Zelto chevron squarer, iOS taller+semibold |
@@ -342,6 +363,15 @@ the single most visible metric miss in the OS — a switch appears on Settings r
 Control Center. **Stage 2 fix**, measured: track → ~94×57u, knob → ~51u with a ~3u inset,
 track radius = height/2 (fully rounded). Re-shoot Settings to confirm the row still lays
 out (a taller switch changes `z_row_h`'s floor interaction — verify against the AX audit).
+
+**The slider's thumb is a RATIO, and the ratio is the thing that is wrong.** `sdk/src/slider.c`
+computes `knob = thickness × 4`, so with the default 6-unit track the thumb is 24u = 13pt.
+The track itself is nearly right (6u = 3.2pt against iOS's 4pt), which is what makes this
+worth stating as a ratio rather than a size: **iOS's thumb-to-track ratio is 28/4 = 7×,
+Zelto's is 4×.** Fixing the multiplier alone gets the thumb to 42u; putting both on `Z_PT`
+(track `Z_PT(4)` = 7, thumb `Z_PT(28)` = 51) matches iOS outright. Stage 2 should do the
+latter and keep the relationship as an expression, since a bare `× 7` would be the same
+un-sourced constant one step along.
 
 **A SECOND CONTROL IS UNDER THE TOUCH TARGET, found while regridding the spacing
 (Stage 1a).** `sdk/src/view.c` gives `Button` a 14-unit inset and `ZTextField` a 12-unit

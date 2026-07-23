@@ -222,6 +222,42 @@ float z_row_h(ZApp *app);
 // leans on size AND weight for hierarchy, so Headline is Body-sized + Semibold).
 // The comment after each step is the value in SCREEN UNITS, what the renderer
 // actually gets.
+//
+// P52 RECONCILED THE RAMP AGAINST SF PRO, AND EIGHT OF ELEVEN STEPS ALREADY
+// MATCHED — which is the useful result, because it means the three that did not
+// were drift rather than a systematic error. (Contrast the P43 finding, where
+// EVERY step was wrong by the same factor. A ladder mostly on-spec with a few
+// outliers is a different bug from a ladder uniformly off-spec, and the fix is
+// per-step rather than to the converter.) The three that moved:
+//
+//     LARGE_TITLE  40pt -> 34pt   Apple's Large Title. The hero ran +6pt.
+//     TITLE2       24pt -> 22pt   Apple's Title 2.
+//     CALLOUT      20pt -> 16pt   Apple's Callout. See below — this one had a
+//                                 misreading attached to it worth recording.
+//
+// THE CALLOUT NOTE. The dossier first read Zelto's 20pt "Callout" as actually
+// being iOS's TITLE 3 (20pt) — a step the ladder lacks — which would have meant
+// renaming it and adding a real 16pt Callout. Checking the twenty-two call sites
+// says otherwise: every one of them is a control label (a keyboard function key,
+// a consent button, "Done", the remove badge) or emphasised body (a status line,
+// a strapline, "No running apps"). Not one is a compact title. So the number was
+// Title 3 while every USE was a Callout, and the fix is the number. No
+// Z_FONT_TITLE3 is added: a token no surface asks for is a step that will be
+// picked by whoever wants "a bit bigger", which is how a ladder stops meaning
+// anything.
+//
+// TRACKING (letter-spacing) IS DELIBERATELY NOT MODELLED, and this is the
+// written decision rather than an oversight. iOS auto-tracks: negative on large
+// text, crossing zero around Subheadline, slightly positive below. Converted,
+// the whole effect is -2 units at Large Title, -1 through the Title/Body band,
+// and ZERO below ~16pt where it rounds away — so it is invisible on most of this
+// OS and worth about one unit where it is not. Against that: a tracking axis has
+// to be threaded through BOTH measure and paint, and if the two ever disagree
+// the text overflows its box silently. That is the exact failure this project
+// has already paid for twice (the wrap_measure truncation in P45, the fixed
+// column holding text in P51). One unit of Title tightening does not buy that
+// risk. If it is ever added, it goes in z_text_measure and the glyph loop in the
+// same commit, with a test that measures a tracked string and asserts the frame.
 typedef enum ZFont {
     Z_FONT_CAPTION2 = Z_TYPE(11),      // 20 — smallest: dense metadata
     Z_FONT_CAPTION = Z_TYPE(12),       // 22 — caption / overline
@@ -229,10 +265,10 @@ typedef enum ZFont {
     Z_FONT_SUBHEAD = Z_TYPE(15),       // 27 — subheading / dense body
     Z_FONT_BODY = Z_TYPE(17),          // 31 — primary reading size (HIG body)
     Z_FONT_HEADLINE = Z_TYPE(17),      // 31 — body-sized, meant with Weight(SEMIBOLD)
-    Z_FONT_CALLOUT = Z_TYPE(20),       // 37 — emphasised body / compact title
-    Z_FONT_TITLE2 = Z_TYPE(24),        // 44 — section title
+    Z_FONT_CALLOUT = Z_TYPE(16),       // 29 — emphasised body / a control label
+    Z_FONT_TITLE2 = Z_TYPE(22),        // 40 — section title
     Z_FONT_TITLE = Z_TYPE(28),         // 51 — screen title
-    Z_FONT_LARGE_TITLE = Z_TYPE(40),   // 74 — hero / a screen's opening title
+    Z_FONT_LARGE_TITLE = Z_TYPE(34),   // 62 — hero / a screen's opening title
     // Above the reading ladder entirely: a number that IS the screen. Only the
     // lock screen's clock uses it — that clock is not a title, it is the reason
     // the screen exists, and at Large Title it reads as a heading with nothing
