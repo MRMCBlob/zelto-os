@@ -76,6 +76,49 @@ above it (which is why `headline` is body-sized). Text is shaped with HarfBuzz +
 FreeType; the default family is the Zelto system font (Satoshi, a variable face, so
 weights are real rather than synthesised).
 
+**The table above is the DEFAULT size, not the only one.** The user's text size
+(`sys.text_size`, Settings ▸ Accessibility) shifts the whole ladder, and it does so at a
+single seam — `z_font_units()` — so a surface that names a step gets the user's size
+without knowing one exists. Never cache a step's pixel value; ask for the step.
+
+The ladder shifts by a constant **point offset** per size step, not by a multiplier:
+
+| Step | 0 | 1 | 2 | 3 (default) | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| Offset (pt) | −3 | −2 | −1 | 0 | +2 | +4 | +6 |
+| `font.body` (px) | 26 | 27 | 29 | 31 | 35 | 38 | 42 |
+| `font.largeTitle` (px) | 68 | 70 | 72 | 74 | 77 | 81 | 85 |
+
+An additive rule is a large ratio on a small number and a small one on a large number,
+which is why the small steps grow more (`caption2` ×1.55 at the top of the range against
+`largeTitle` ×1.18) — the same behaviour Apple's Dynamic Type table has, falling out of
+one rule instead of a twelve-row lookup. Two exceptions, both deliberate:
+
+- **`font.display` never scales.** It is the lock clock — a number sized against the
+  screen's height, not a body of prose.
+- **The small end floors at `caption2`'s own size** rather than passing under itself.
+
+**Three surfaces opt out entirely** (`ZLayerOpts.fixed_type`): the **status bar** and the
+**home indicator**, whose heights are exclusive-zone contracts other processes offset by,
+and the **keyboard**, whose caps are touch targets sized in points — a letter on a cap is
+a label for a finger, not something you read, and growing the caps walks the bottom row
+off the surface. Safe areas are physical and do not scale either.
+
+**Bold Text** (`sys.bold_text`) is the same setting's other term: it raises the floor on
+weight (Regular → Semibold) where the shaper is configured, so a measurement and a paint
+can never disagree about it.
+
+**The range is the seven standard sizes.** iOS's five accessibility sizes (body to 53pt)
+are not shipped: at those sizes a label and its control stop fitting on one row, so every
+row in the OS has to reflow to a vertical layout — a different design for the same
+screen, not a taller row.
+
+**A fixed height that holds text is a bug waiting for a large text size.** `Z_ROW_H`
+(44pt) is a touch-target FLOOR, not a row height; use `z_row_h()`, and derive any other
+box that holds a line from `z_line_height()` rather than from a spec sheet.
+`ZELTO_PROBE_TAPS=1` reports every string that needs more room than its box, on both
+axes, which is how the surfaces above were found rather than guessed at.
+
 ### Elevation
 
 `elevation.0` (flat) … `elevation.3` (dialog). Elevation combines a soft shadow with an

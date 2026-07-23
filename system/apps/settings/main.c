@@ -49,6 +49,14 @@ typedef struct SettingsState {
     // keyboard is dead is still honoured on its next boot.
     int64_t kbd_learned;
     int64_t kbd_forget_epoch;
+
+    // P50 Accessibility. text_size is the STEP INDEX (0..6), not a size: the
+    // ladder is the toolkit's business (z_font_units), and a Settings app that
+    // stored point values would be a second opinion about the type scale.
+    int64_t text_size;
+    bool bold_text;
+    bool reduce_motion;
+    ZSlider text_slider;
 } SettingsState;
 
 // A setting changed (here or in the shade): re-read the field it maps to and
@@ -78,6 +86,12 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->passcode_set = value[0] != '\0';
     } else if (strcmp(key, ZELTO_KEY_KBD_LEARNED) == 0) {
         s->kbd_learned = v;
+    } else if (strcmp(key, ZELTO_KEY_TEXT_SIZE) == 0) {
+        s->text_size = v;
+    } else if (strcmp(key, ZELTO_KEY_BOLD_TEXT) == 0) {
+        s->bold_text = v != 0;
+    } else if (strcmp(key, "sys.reduce_motion") == 0) {
+        s->reduce_motion = v != 0;
     } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
         snprintf(s->wp_current, sizeof(s->wp_current), "%s", value ? value : "");
     }
@@ -85,6 +99,7 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
 }
 
 static void bright_slide(ZApp *app, void *state, float v);
+static void text_slide(ZApp *app, void *state, float v);
 
 // First build: read every toggle from the broker (with defaults) and subscribe
 // for live updates, so the first frame reflects the shared state.
@@ -107,6 +122,10 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->lock_now = z_setting_get_int("sys.lock_now", 0);
     s->kbd_learned = z_setting_get_int(ZELTO_KEY_KBD_LEARNED, 0);
     s->kbd_forget_epoch = z_setting_get_int(ZELTO_KEY_KBD_FORGET, 0);
+    s->text_size = z_setting_get_int(ZELTO_KEY_TEXT_SIZE, Z_TEXT_SIZE_DEFAULT);
+    s->bold_text = z_setting_get_int(ZELTO_KEY_BOLD_TEXT, 0) != 0;
+    s->reduce_motion = z_setting_get_int("sys.reduce_motion", 0) != 0;
+    s->text_slider.on_change = text_slide;
     // Wallpaper picker: enumerate the directory once and record the active choice.
     s->wp_count = zelto_wallpaper_list(s->wp_paths, ZELTO_WALLPAPER_MAX);
     snprintf(s->wp_current, sizeof(s->wp_current), "%s",
@@ -171,6 +190,51 @@ static void bright_slide(ZApp *app, void *state, float v) {
     }
     s->brightness = level;
     z_setting_set_int("sys.brightness", s->brightness);
+    z_invalidate(app);
+}
+
+// --- P50 accessibility handlers ---
+// TEXT SIZE IS A SLIDER, for the same reason Brightness became one in P42 and
+// then some. Brightness is a level you hunt for by LOOKING at the result rather
+// than a count you nudge; text size is that argument at its strongest, because
+// the control is made of the thing it changes — the labels on this screen resize
+// under the finger while it moves, so the slider is its own preview.
+//
+// It is a QUANTISED slider (seven steps), not a continuous one, and the two are
+// not the same control wearing different clothes: a continuous size would put
+// the whole system's type on a value no step of the ladder was designed for, and
+// the ladder is the thing that keeps Caption smaller than Body everywhere.
+static int64_t text_from_slider(float v) {
+    int step = (int)(v * (float)(Z_TEXT_SIZE_STEPS - 1) + 0.5f);
+    return step < 0 ? 0 : (step >= Z_TEXT_SIZE_STEPS ? Z_TEXT_SIZE_STEPS - 1
+                                                     : step);
+}
+
+static void text_slide(ZApp *app, void *state, float v) {
+    SettingsState *s = state;
+    int64_t step = text_from_slider(v);
+    if (step == s->text_size) {
+        return;   // same step: don't spam the broker on every pixel of drag
+    }
+    s->text_size = step;
+    z_setting_set_int(ZELTO_KEY_TEXT_SIZE, s->text_size);
+    fprintf(stderr, "[settings] text size -> %lld (%s)\n", (long long)step,
+            z_text_size_name((int)step));
+    fflush(stderr);
+    z_invalidate(app);
+}
+
+static void t_bold(ZApp *app, void *state) {
+    SettingsState *s = state;
+    s->bold_text = !s->bold_text;
+    z_setting_set_int(ZELTO_KEY_BOLD_TEXT, s->bold_text);
+    z_invalidate(app);
+}
+
+static void t_reduce_motion(ZApp *app, void *state) {
+    SettingsState *s = state;
+    s->reduce_motion = !s->reduce_motion;
+    z_setting_set_int("sys.reduce_motion", s->reduce_motion);
     z_invalidate(app);
 }
 
@@ -262,6 +326,26 @@ static void lock_now(ZApp *app, void *state) {
 // nothing was making up any difference: 16 units is 8.6pt where the list it
 // copies uses 16pt, so every label in the app sat half as far from the card's
 // edge as it should.
+// STILL THE FLOOR, NOT z_row_h(), AND THAT IS A MEASURED DECISION (P50).
+// Dynamic Type made every fixed height that holds text suspect, and this is the
+// densest set of them in the OS — six screens of them. The toolkit grew z_row_h()
+// for exactly this: the larger of the 44pt touch target and one Body line plus
+// its breathing room. Settings does not use it, because the audit says it does
+// not need to.
+//
+// The numbers: Body runs 31 units at the default text size and 42 at the largest,
+// and its line box 40 to 53. An 81-unit row holds a 53-unit line with 14 units
+// above and below — tighter than the 20 it has today, and nowhere near clipping.
+// Every Settings screen was booted at the largest size with ZELTO_PROBE_TAPS on
+// (test_text_size_overflow_sim.sh) and reports zero text wider or taller than its
+// box. So across the range this OS ships, the touch-target floor wins every time
+// and z_row_h() would return this same 81.
+//
+// Switching anyway would move every Settings shot in the catalogue to buy a
+// difference of six units of padding at one end of the range. What it WOULD buy
+// is headroom for the accessibility sizes, and those are deliberately not
+// shipped (see <zelto/ui.h>) — the day they are, this line becomes z_row_h(app)
+// and the rows below it take an app pointer.
 #define ROW_H ((float)Z_ROW_H)         // 81 — the row's TOTAL height (Apple's 44pt)
 #define ROW_PAD ((float)Z_PT(16))      // 29 — leading/trailing inset inside a card
 #define SEC_GAP 30.0f     // between one group's footer and the next group's header
@@ -668,6 +752,74 @@ static ZView screen_lock(ZApp *app, void *props) {
     return settings_screen(app, "Lock Screen", blocks, 2);
 }
 
+// ACCESSIBILITY (P50) — the screen the OS had settings for and no door to.
+//
+// Reduce Motion has existed since P31 and has been reachable by nothing but a
+// test env var: sys.reduce_motion was implemented, honoured by every spring in
+// the toolkit, photographed in the shot catalogue, and could not be turned on by
+// a person. Text Size and Bold Text arrive with a screen rather than after one.
+//
+// THE SLIDER IS ITS OWN PREVIEW. Every label on this screen resizes under the
+// finger as it moves — the group header, the footer, the two toggle rows below —
+// because they are drawn by the same seam the slider is writing to. That is why
+// the sample line above the slider is deliberately SHORT: it is not the preview
+// (the screen is), it is a reminder of what the ladder does to a paragraph.
+//
+// The two end caps are the small and the large A, which is the control's own
+// legend and is what every phone puts there. They are drawn at FIXED steps
+// (Caption2 and Title) rather than at the live size, or the legend would resize
+// with the thing it is labelling and stop being a scale.
+#define TEXT_SAMPLE "The quick brown fox."
+
+static ZView text_size_row(ZApp *app, SettingsState *s) {
+    return list_row(HStack(
+        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION2, Text("A"))),
+        Slider(app, &s->text_slider, .length = 380.0f, .thickness = 6.0f),
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("A"))),
+        .spacing = 14, .align = Z_ALIGN_CENTER));
+}
+
+static ZView screen_accessibility(ZApp *app, void *props) {
+    SettingsState *s = props;
+
+    // The sample sits in its own card above the slider, at BODY — the step the
+    // ladder is anchored on, so what it shows is what reading text will look
+    // like. WrapText, not Text: at the largest size this sentence is wider than
+    // the column, and a preview that ran off the card would be demonstrating the
+    // wrong thing rather convincingly.
+    ZView sample = Background(Z_COLOR_SURFACE,
+        CornerRadius(Z_RADIUS_CARD,
+            HStack(
+                Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+                WrapText(app, TEXT_SAMPLE, .width = INSET_TEXT_W,
+                         .size = Z_FONT_BODY, .color = Z_COLOR_TEXT,
+                         .line_gap = 4.0f),
+                Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+                .spacing = 0, .align = Z_ALIGN_CENTER,
+                .padding = 16)));
+
+    ZView size_rows[] = {text_size_row(app, s)};
+    ZView vis_rows[] = {
+        toggle_row(app, 0x5E7107u, "Bold Text", s->bold_text, t_bold),
+        toggle_row(app, 0x5E7108u, "Reduce Motion", s->reduce_motion,
+                   t_reduce_motion),
+    };
+    // The footer names the SETTING'S OWN LIMIT, which is the honest thing for an
+    // accessibility screen to do: the three surfaces that do not follow it are
+    // the ones a person will notice first, and finding that out by squinting at
+    // the keyboard is worse than being told.
+    ZView blocks[] = {
+        section_block(app, "TEXT SIZE", sample, NULL),
+        section_block(app, NULL, group(size_rows, 1),
+            "Apps and system screens use this size. The status bar and the "
+            "keyboard keep theirs."),
+        section_block(app, NULL, group(vis_rows, 2),
+            "Bold Text thickens every weight. Reduce Motion replaces slides and "
+            "springs with instant changes."),
+    };
+    return settings_screen(app, "Accessibility", blocks, 3);
+}
+
 // KEYBOARD — and the only control on it is a DELETE (P49).
 //
 // The keyboard learns words you type that its shipped dictionary does not carry
@@ -744,6 +896,7 @@ static ZView screen_root(ZApp *app, void *props) {
     static const SettingsRoute r_wallpaper = {screen_wallpaper};
     static const SettingsRoute r_lock = {screen_lock};
     static const SettingsRoute r_keyboard = {screen_keyboard};
+    static const SettingsRoute r_access = {screen_accessibility};
 
     char bright[16];
     snprintf(bright, sizeof(bright), "%lld", (long long)s->brightness);
@@ -759,9 +912,14 @@ static ZView screen_root(ZApp *app, void *props) {
         detail_row("Wallpaper", s->wp_count > 0 ? "" : "None", &r_wallpaper),
         detail_row("Lock Screen", s->lock_enabled ? "On" : "Off", &r_lock),
         detail_row("Keyboard", learned, &r_keyboard),
+        // The detail column carries the SIZE'S NAME, not its index: "4 of 7" is
+        // a fact about the implementation, and the root list is meant to read as
+        // a status line.
+        detail_row("Accessibility", z_text_size_name((int)s->text_size),
+                   &r_access),
     };
     ZView blocks[] = {
-        section_block(app, NULL, group(rows, 5),
+        section_block(app, NULL, group(rows, 6),
             "These settings are shared with Control Center. Changes apply live "
             "and persist."),
     };
@@ -809,6 +967,14 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
     if (!state->bright_slider.dragging) {
         state->bright_slider.value = (float)(state->brightness - 1) / 4.0f;
     }
+    // The same for the text-size slider: the broker echoes our own write back,
+    // and a device seeded at another step must open with the knob where the
+    // setting is. Not while dragging, or the finger would be quantised to the
+    // nearest of seven steps and the knob would stick.
+    if (!state->text_slider.dragging) {
+        state->text_slider.value =
+            (float)state->text_size / (float)(Z_TEXT_SIZE_STEPS - 1);
+    }
 
     // Test hook: open straight onto a detail screen, so the shot catalogue can
     // photograph one without injecting a tap. Every other state in the catalogue
@@ -834,6 +1000,10 @@ static ZView settings_body(ZApp *app, SettingsState *state) {
                 s = screen_wallpaper;
             } else if (strcmp(want, "lock") == 0) {
                 s = screen_lock;
+            } else if (strcmp(want, "keyboard") == 0) {
+                s = screen_keyboard;
+            } else if (strcmp(want, "accessibility") == 0) {
+                s = screen_accessibility;
             }
             if (s) {
                 z_nav_push(z_navigation(app), s, state);
