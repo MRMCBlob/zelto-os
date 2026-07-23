@@ -149,3 +149,8 @@ has no log line, add one.
   at shot 48 of 77, silently, **with status 0**. Put the assignment in an `if`.
 - Clock skew: measure the **symptom**, never back-date `meson.build` (under that
   workaround build-system edits are silently ignored).
+- **Cognee writes go to `localhost:8011` unless `.env` is sourced** — and the local
+  server ACCEPTS them and returns `ok: true`, so a successful-looking upload can
+  land nowhere the user can see. `set -a; . ./.env; set +a` first (gitignored;
+  holds `COGNEE_BASE_URL`/`COGNEE_API_KEY`), and confirm the `dataset_id` in the
+  reply is the tenant's, not the local one.

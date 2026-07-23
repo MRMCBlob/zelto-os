@@ -113,10 +113,13 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // two of the four surfaces it is drawn on, and at the smallest text size it is
 // small grey type on a grey card: the two accessibility problems compounding.
 //
-// (Two more the table found and this setting does NOT fix, because they are
-// about the semantic fills rather than the ink: TEXT on WARN is 1.96:1, and
-// ON_PRIMARY on SUCCESS is 3.71:1. Those want the FILL redrawn, not the label
-// brightened, and that is a palette change rather than a preference.)
+// (P51 also listed two semantic failures here and left them, calling them a
+// palette change rather than a preference. That was right about the scope and
+// WRONG about the pairs — see the measured note over Z_COLOR_SUCCESS below.
+// ON_PRIMARY on SUCCESS is not a combination this OS draws; the one it did draw,
+// TEXT_INV on WARN, was 1.99:1, and the green's real failure was in its OTHER
+// role, as ink. P52 closed all of it: the semantic set is iOS's dark trio and
+// the ink on a fill is computed by z_on_fill.)
 //
 // WHAT INCREASE CONTRAST DOES. The three tokens that carry the failures get a
 // second value, chosen as the LEAST brightening that clears AA on the darkest
@@ -150,10 +153,64 @@ ZColor z_hairline(void);
 bool z_contrast_apply(bool increase);
 bool z_contrast_increased(void);
 
-// Semantic (state).
-#define Z_COLOR_SUCCESS    z_rgba(0x1e, 0x7a, 0x4a, 0xff)  // deep enough for white text at AA
-#define Z_COLOR_WARN       z_rgba(0xe0, 0xa5, 0x3a, 0xff)
-#define Z_COLOR_DANGER     z_rgba(0xd9, 0x52, 0x4f, 0xff)
+// --- Semantic (state) — and the ink that goes ON one ----------------------
+//
+// P52 MEASURED THESE IN BOTH THEIR ROLES, WHICH IS THE THING P51 DID NOT DO.
+// P51's table recorded two semantic failures and described them as wanting "the
+// fill redrawn". Measured against what the OS actually DRAWS, that was the wrong
+// diagnosis twice over.
+//
+// FIRST: these tokens are mostly INK, not fills. The charging battery glyph in
+// the status bar, the battery percentage on the home widget, a "Requesting..."
+// line — all `Foreground(Z_COLOR_SUCCESS, ...)`. And in that role the old green
+// was the real failure, one nobody had written down:
+//
+//     SUCCESS #1e7a4a as ink:  BG 3.94  SURFACE 3.19  SURFACE_2 2.61  SURFACE_3 2.13
+//
+// Under even WCAG's 3:1 NON-TEXT minimum that is two surfaces failed. The colour
+// was chosen to be "deep enough for white text at AA" — it was tuned for the
+// role it is rarely used in, at the cost of the role it is usually used in.
+//
+// SECOND: the pair P51 called a failure (ON_PRIMARY on SUCCESS, 3.71) is not a
+// pair this OS draws — ON_PRIMARY is documented for a PRIMARY fill. The pair it
+// DOES draw, and which the header itself prescribed, is TEXT_INV on a semantic
+// fill, and that was far worse than anything P51 listed:
+//
+//     TEXT_INV on WARN #e0a53a = 1.99:1     (essentially invisible)
+//     TEXT_INV on DANGER #d9524f = 3.63:1
+//
+// The header was telling callers to make an unreadable combination.
+//
+// THE FIX IS THE iOS DARK SEMANTIC SET, adopted as one sourced decision rather
+// than three hand-tuned nudges. iOS's dark-mode systemGreen/Orange/Red are BRIGHT
+// — they are designed to be ink on black — and iOS puts DARK text on them when
+// they are fills, which is exactly what the measurement says:
+//
+//     as ink:            BG    SURFACE  SURFACE_2  SURFACE_3     as fill: dark ink
+//     SUCCESS #30d158  10.39     8.42      6.89       5.61                  9.78
+//     WARN    #ff9f0a  10.22     8.28      6.78       5.52                  9.62
+//     DANGER  #ff453a   6.16     4.99      4.09       3.33                  5.81
+//
+// Every ink use now clears 4.5 (body text) except DANGER on SURFACE_3, which
+// clears 3.0; every fill use clears 4.5 with the ink z_on_fill picks.
+//
+// WHERE THIS DELIBERATELY DIVERGES FROM iOS: Apple ships WHITE on systemRed, and
+// that pairing measures 3.11:1 — Apple's own red badge does not clear AA. Zelto
+// picks the ink by measurement, so a DANGER fill gets dark ink and looks slightly
+// unlike iOS. That is the rule doing its job, not a mistake.
+#define Z_COLOR_SUCCESS    z_rgba(0x30, 0xd1, 0x58, 0xff)  // iOS dark systemGreen
+#define Z_COLOR_WARN       z_rgba(0xff, 0x9f, 0x0a, 0xff)  // iOS dark systemOrange
+#define Z_COLOR_DANGER     z_rgba(0xff, 0x45, 0x3a, 0xff)  // iOS dark systemRed
+
+// THE INK TO DRAW ON A FILL — never a fixed token. Returns whichever of the OS's
+// two inks (TEXT_INV, light / ON_PRIMARY, dark) reaches further from `fill` by
+// WCAG contrast. One rule, computed, so retinting a fill moves its ink with it
+// and the two cannot drift apart the way TEXT_INV and WARN did.
+//
+// Use it for any SATURATED fill. The *_DIM panel tints below are dark enough that
+// light ink is right on all of them (11:1 and up) and they may keep using
+// TEXT_INV directly — but going through this costs nothing and cannot be wrong.
+ZColor z_on_fill(ZColor fill);
 
 // Semantic — dim panel fills (a state-tinted surface, not a saturated block).
 #define Z_COLOR_SUCCESS_DIM z_rgba(0x16, 0x3d, 0x2a, 0xff)

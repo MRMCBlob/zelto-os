@@ -68,10 +68,13 @@ static ZView camera_section(ZApp *app, CardsState *s) {
         opts.children[k++] = Button(use_camera, "Use camera");
     }
     if (s->cam == Z_PERM_GRANTED) {
+        // z_on_fill, not TEXT_INV: the semantic fills are the iOS dark set now
+        // (bright, so they read as ink on black), and light text on one of those
+        // is the pair that measured 1.99:1. The ink follows the fill.
         opts.children[k++] = Background(Z_COLOR_SUCCESS,
             CornerRadius(Z_RADIUS_CARD,
                 Frame(220.0f, 64.0f,
-                    Foreground(Z_COLOR_TEXT_INV,
+                    Foreground(z_on_fill(Z_COLOR_SUCCESS),
                         Font(Z_FONT_CALLOUT, Text("Camera ready"))))));
     }
     return z_stack(Z_AXIS_VERTICAL, &opts);

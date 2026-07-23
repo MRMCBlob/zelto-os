@@ -1464,7 +1464,10 @@ static ZView remove_badge(HomeKind k, int ref) {
         Background(Z_COLOR_DANGER,
             CornerRadius(BADGE_D * 0.5f,
                 ZStack(
-                    Foreground(Z_COLOR_TEXT_INV,
+                    // Dark, not light: white on the iOS dark systemRed is 3.11:1
+                    // (Apple's own red badge does not clear AA). z_on_fill picks
+                    // by measurement, so this diverges from iOS deliberately.
+                    Foreground(z_on_fill(Z_COLOR_DANGER),
                         Font(Z_FONT_CALLOUT, Text("\xc3\x97"))),
                     .align = Z_ALIGN_CENTER))));
     return OnTapData(on_remove_entry, pack_id(k, ref), dot);

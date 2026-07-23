@@ -226,24 +226,52 @@ contrast table — opaque is reason-about-able). Reference values:
 | tertiaryLabel | #EBEBF5 @30% | `TEXT_FAINT` #6c6c70 / #a8a8b0 (contrast) | Zelto faint darker |
 | quaternaryLabel | #EBEBF5 @18% | — | Zelto has no 4th tier |
 
-**Separator.** iOS `separator` = **#545458 @60%** (translucent), hairline = 1 physical pixel
-= **0.33pt @3x** (≈ 0.54u on this geometry), never a fixed pt constant. Zelto `BORDER` =
-opaque #38383a at 1u — darker and thicker than iOS. Stage 1 candidate: lift the hairline
-toward #545458 (opaque equivalent) and confirm 1u vs a thinner line reads right on target.
+**Separator — MEASURED IN STAGE 1d, and the delta above was an artefact of the comparison.**
+iOS `separator` is #545458 **at 60% alpha**; Zelto's `BORDER` is opaque. Comparing the raw
+tokens compares different things. Composited over each surface, iOS's separator resolves to:
 
-**The two semantic-fill contrast failures P51 left for P52** (both want the FILL redrawn,
-not the ink — a palette change, which is now in scope):
+| over | iOS resolves to | ratio vs surface | Zelto `BORDER` #38383a | ratio |
+|---|---|---|---|---|
+| `BG` | #323234 | 1.64 | #38383a | 1.79 |
+| `SURFACE` | #3d3d40 | 1.57 | #38383a | 1.45 |
+| `SURFACE_2` | #444447 | 1.44 | #38383a | 1.19 |
 
-| pair | ratio now | AA target | fix direction |
-|---|---|---|---|
-| `TEXT` (#f2f2f7) on `WARN` (#e0a53a) | **1.96:1** | 4.5 (3 large) | WARN is bright-orange → light text can't sit on it. Use **dark ink** on WARN (like iOS orange badges) or darken WARN. |
-| `ON_PRIMARY`… on `SUCCESS` (#1e7a4a) | **3.71:1** | 4.5 | The white-ink/SUCCESS pair; darken `SUCCESS` (deeper green) so white clears AA, or use it only for large text. |
+Zelto's opaque hairline sits **inside iOS's own band**. **No change.** (One real difference:
+iOS's is translucent, so it gets lighter as the surface does, while Zelto's is fixed — on
+`SURFACE_2` Zelto's is the weaker line, 1.19 vs 1.44. The accessibility case is already
+covered by the Increase Contrast value, #6c6c70.) **Width:** iOS's hairline is 1 physical
+pixel; Zelto's logical unit **is** a physical pixel on this 720×1440 geometry, so a 1u
+hairline is correct by construction, not by coincidence.
 
-Stage 1 extends `test_contrast_tokens.c` to cover both, picks the least-invasive fix
-(iOS systemGreen is #30d158 in dark — brighter, but iOS puts *dark* text on it; iOS
-systemOrange #ff9f0a likewise takes dark text). Recommend: **dark ink on WARN**, and
-**darken SUCCESS** to clear white at AA — chosen against the computed table, verified on
-target.
+### The semantic colours — P51's diagnosis was wrong twice, and the real failure was elsewhere
+
+P51 recorded two semantic failures and deferred them as "the fill wants redrawing". Measured
+against what the OS actually **draws** (Stage 1d), both parts of that were wrong:
+
+- **These tokens are mostly INK, not fills.** The charging battery glyph, the home widget's
+  battery percentage, a status line — all `Foreground(Z_COLOR_SUCCESS, …)`. In that role the
+  old green was the real failure, and nobody had written it down:
+  `SUCCESS #1e7a4a` as ink measured **BG 3.94 · SURFACE 3.19 · SURFACE_2 2.61 · SURFACE_3
+  2.13** — two surfaces under even WCAG's 3:1 *non-text* bar. It had been tuned to be "deep
+  enough for white text at AA", i.e. for the role it is rarely used in.
+- **The pair P51 named is not one the OS draws.** `ON_PRIMARY` on `SUCCESS` (3.71) — but
+  `ON_PRIMARY` is documented for a `PRIMARY` fill. The pair that *was* drawn, and that the
+  header itself prescribed, was `TEXT_INV` on a semantic fill: **1.99:1 on WARN**, worse than
+  anything P51 listed. The header was telling callers to make an unreadable combination.
+
+**The fix is iOS's dark semantic set, as one sourced decision rather than three nudges.**
+
+| token | was | now | as ink: BG / SURFACE / SURFACE_2 / SURFACE_3 | as fill, with `z_on_fill` |
+|---|---|---|---|---|
+| `SUCCESS` | #1e7a4a | **#30d158** (iOS dark systemGreen) | 10.39 / 8.42 / 6.89 / 5.61 | 9.78 (dark ink) |
+| `WARN` | #e0a53a | **#ff9f0a** (iOS dark systemOrange) | 10.22 / 8.28 / 6.78 / 5.52 | 9.62 (dark ink) |
+| `DANGER` | #d9524f | **#ff453a** (iOS dark systemRed) | 6.16 / 4.99 / 4.09 / 3.33 | 5.81 (dark ink) |
+
+Every ink use now clears 4.5 except `DANGER` on `SURFACE_3`, which clears 3.0. `z_on_fill(fill)`
+returns whichever ink reaches further by WCAG — one computed rule, so retinting a fill moves
+its ink with it. **Deliberate divergence from iOS:** Apple ships white on systemRed, which
+measures **3.11:1** — Apple's own red badge does not clear AA. Zelto picks by measurement, so
+a `DANGER` fill takes dark ink and looks slightly unlike iOS.
 
 ---
 

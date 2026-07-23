@@ -189,5 +189,75 @@ int main(void) {
     }
     z_contrast_apply(false);
 
+    // --- 5. THE SEMANTIC COLOURS, IN BOTH THE ROLES THEY ARE USED IN -------
+    //
+    // P51 recorded two semantic failures and called them "the fill wants
+    // redrawing". Measured against what the OS actually DRAWS, that was wrong
+    // twice: these tokens are mostly INK (the charging battery glyph, the home
+    // widget's percentage), and the pair the header PRESCRIBED — TEXT_INV on a
+    // semantic fill — was worse than either failure P51 listed (1.99:1 on the
+    // old WARN). So both roles are asserted here, and neither was before.
+    z_contrast_apply(false);
+    struct { const char *n; ZColor c; } sem[] = {
+        {"Z_COLOR_SUCCESS", Z_COLOR_SUCCESS},
+        {"Z_COLOR_WARN", Z_COLOR_WARN},
+        {"Z_COLOR_DANGER", Z_COLOR_DANGER},
+    };
+
+    // 5a. AS A FILL: whatever z_on_fill picks must clear the body-text bar. This
+    // is the assertion that makes the rule trustworthy — a caller that goes
+    // through it can never produce an unreadable pair, whatever the fill becomes.
+    for (int i = 0; i < 3; i++) {
+        char ink[64];
+        snprintf(ink, sizeof(ink), "z_on_fill(%s)", sem[i].n);
+        need(ink, z_on_fill(sem[i].c), sem[i].n, sem[i].c, 4.5,
+             "the body-text minimum on a saturated fill");
+    }
+    // The same for PRIMARY, which is a fill with its own named ink: the rule
+    // must AGREE with the token, or one of the two is wrong.
+    if (lum(z_on_fill(Z_COLOR_PRIMARY)) != lum(Z_COLOR_ON_PRIMARY)) {
+        zt_fail_(__FILE__, __LINE__,
+                 "z_on_fill disagrees with Z_COLOR_ON_PRIMARY about what ink "
+                 "belongs on a PRIMARY fill - the computed rule and the named "
+                 "token must not contradict each other",
+                 "ON_PRIMARY", "the other ink");
+    }
+
+    // 5b. AS INK: a semantic colour is drawn ON the surfaces, and that is the
+    // role the old green failed in — 2.61 on a card and 2.13 on a chip, under
+    // even WCAG's 3:1 non-text bar. These are glyphs and large numerals, so 3:1
+    // is the right bar; the point is that it is now a bar at all.
+    struct { const char *n; ZColor c; } on[] = {
+        {"BG", Z_COLOR_BG}, {"SURFACE", Z_COLOR_SURFACE},
+        {"SURFACE_2", Z_COLOR_SURFACE_2}, {"SURFACE_3", Z_COLOR_SURFACE_3},
+    };
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 4; j++) {
+            need(sem[i].n, sem[i].c, on[j].n, on[j].c, 3.0,
+                 "the non-text minimum for a state glyph");
+        }
+    }
+
+    // 5c. POSITIVE CONTROL for 5a. Rule 5a can only fail if z_on_fill is wrong,
+    // and a z_on_fill that returned the LIGHT ink unconditionally would still
+    // pass on SUCCESS today. So assert the thing that was actually broken: the
+    // light ink on WARN is a failure, and the rule does not pick it.
+    double light_on_warn = ratio(Z_COLOR_TEXT_INV, Z_COLOR_WARN);
+    if (!(light_on_warn < 4.5)) {
+        char got[64];
+        snprintf(got, sizeof(got), "%.2f:1", light_on_warn);
+        zt_fail_(__FILE__, __LINE__,
+                 "positive control: light ink on WARN must still be the failing "
+                 "pair this rule exists to avoid - if it now passes, 5a could be "
+                 "satisfied by a z_on_fill that ignores its argument",
+                 "< 4.5:1", got);
+    }
+    if (lum(z_on_fill(Z_COLOR_WARN)) >= lum(Z_COLOR_TEXT_INV)) {
+        zt_fail_(__FILE__, __LINE__,
+                 "z_on_fill picked the LIGHT ink for WARN, which is the 1.99:1 "
+                 "pair the header used to prescribe",
+                 "the dark ink", "the light ink");
+    }
+
     return zt_result();
 }

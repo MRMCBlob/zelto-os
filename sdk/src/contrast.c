@@ -12,6 +12,7 @@
 // hard to read. A colour swap moves no geometry at all, which is exactly why
 // this one is safe everywhere the other is not.
 
+#include <math.h>
 #include <stdbool.h>
 
 #include <zelto/gfx.h>
@@ -42,4 +43,37 @@ ZColor z_ink_faint(void) {
 ZColor z_hairline(void) {
     return g_increase ? z_rgba(0x6c, 0x6c, 0x70, 0xff)
                       : z_rgba(0x38, 0x38, 0x3a, 0xff);
+}
+
+// --- The ink that goes on a fill -------------------------------------------
+// WCAG 2.1 relative luminance, then pick whichever of the two inks reaches
+// further. See the measured table over Z_COLOR_SUCCESS in <zelto/gfx.h> for why
+// this is a computation rather than a token: the header used to prescribe
+// TEXT_INV on any semantic fill, and TEXT_INV on the old WARN was 1.99:1.
+//
+// The sRGB transfer, not a gamma of 2.2 — the same formula test_contrast_tokens
+// checks with, so the assertion and the implementation cannot disagree about
+// what "contrast" means. (The names are prefixed because that test compiles
+// this file into itself and carries its own copy of the formula — two
+// independent implementations that must agree.)
+static double fill_chan(unsigned v) {
+    double c = (double)v / 255.0;
+    return c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+static double fill_lum(ZColor c) {
+    return 0.2126 * fill_chan(c.r) + 0.7152 * fill_chan(c.g) +
+           0.0722 * fill_chan(c.b);
+}
+
+static double fill_contrast(ZColor a, ZColor b) {
+    double la = fill_lum(a), lb = fill_lum(b);
+    double hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+ZColor z_on_fill(ZColor fill) {
+    ZColor light = Z_COLOR_TEXT_INV, dark = Z_COLOR_ON_PRIMARY;
+    return fill_contrast(dark, fill) >= fill_contrast(light, fill) ? dark
+                                                                  : light;
 }
