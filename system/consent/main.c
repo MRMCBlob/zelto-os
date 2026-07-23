@@ -20,11 +20,50 @@
 // dialog you scan across) and a fixed size, so the compositor backdrop rect that
 // blurs behind it can be computed without measuring the layout.
 #define ALERT_W 420.0f
-#define ALERT_H 226.0f
 #define ALERT_PAD 22.0f
 // The prose column inside the card — the width WrapText needs at build time.
 #define ALERT_TEXT_W (ALERT_W - 2.0f * ALERT_PAD)
-#define ALERT_BTN_H 46.0f
+// The gap between the card's stacked children.
+#define ALERT_GAP 10.0f
+
+// A BUTTON'S HEIGHT IS ITS LABEL'S, NOT A NUMBER (P50). This was a bare 46 —
+// close to the 44pt touch target and, like every literal this OS has found, a
+// spec number holding type it knows nothing about. At the largest text size
+// Callout's line box is 61 units, so the label paints 15 units through a 46-unit
+// cap, top and bottom, in the one dialog where being able to read the two
+// answers is the entire point. Derived from the face, floored at the touch
+// target, exactly like z_row_h().
+static float alert_btn_h(ZApp *app) {
+    float need = z_line_height(app, Z_FONT_CALLOUT) + 2.0f * (float)Z_PT(3);
+    return need > (float)Z_ROW_H ? need : (float)Z_ROW_H;
+}
+
+// THE CARD'S HEIGHT IS AN EXPRESSION OVER ITS PARTS, for the same reason: 226
+// was a measured-once total, and the compositor's backdrop-blur rect is computed
+// from it WITHOUT laying the card out, so a card that outgrew the number blurs
+// the wrong rectangle rather than failing.
+//
+// AND IT HAD ALREADY OUTGROWN IT, by 44 units, since P44. `Frame(w, h, view)`
+// sets fixed_h on the SAME NODE the .padding sits on, and measure() computes
+// h = fixed_h + 2 * padding — so the card declared 226 and laid out at 270,
+// while z_backdrop kept blurring a 226-tall rect behind a 270-tall card. This is
+// the P46 trap verbatim ("a Frame's fixed height is an INNER height when the
+// node also has padding"), and nothing looked wrong because a blur that stops
+// 22 units early under a shadow is not something an eye finds.
+//
+// So alert_h() is the OUTER height — what the backdrop must cover and what the
+// card actually occupies — and the Frame is handed the INNER one.
+#define ALERT_SLACK 24.0f
+static float alert_inner_h(ZApp *app) {
+    return z_line_height(app, Z_FONT_HEADLINE)
+         + z_line_height(app, Z_FONT_SUBHEAD)
+         + ALERT_SLACK
+         + 2.0f * alert_btn_h(app)
+         + 4.0f * ALERT_GAP;
+}
+static float alert_h(ZApp *app) {
+    return alert_inner_h(app) + 2.0f * ALERT_PAD;
+}
 
 // Flick-to-Deny (P33). The modal stays button-driven for Allow, but a DOWNWARD
 // drag on the card past this threshold (or a strong down-fling) resolves to Deny —
@@ -104,12 +143,12 @@ static void on_consent_pan(ZApp *app, void *state, const ZPanEvent *e) {
 // to its label, which is right for a form and wrong here — two stacked buttons of
 // different widths read as two different KINDS of thing, when the whole point of
 // the stack is that they are the same kind of thing and only the answer differs.
-static ZView alert_button(ZAction act, const char *label, ZColor bg, ZColor ink,
-                          bool bold) {
+static ZView alert_button(ZApp *app, ZAction act, const char *label, ZColor bg,
+                          ZColor ink, bool bold) {
     return OnTap(act,
         Background(bg,
             CornerRadius(Z_RADIUS_CHIP,
-                Frame(ALERT_W - 2.0f * ALERT_PAD, ALERT_BTN_H,
+                Frame(ALERT_W - 2.0f * ALERT_PAD, alert_btn_h(app),
                     HStack(Spacer(),
                            Weight(bold ? Z_WEIGHT_SEMIBOLD : Z_WEIGHT_MEDIUM,
                                Foreground(ink,
@@ -170,8 +209,8 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
     float sw = (float)z_app_width(app);
     float sh = (float)z_app_height(app);
     z_backdrop(app, (sw - ALERT_W) * 0.5f,
-               (sh - ALERT_H) * 0.5f + dy + (1.0f - e) * 24.0f,
-               ALERT_W, ALERT_H, Z_RADIUS_PANEL);
+               (sh - alert_h(app)) * 0.5f + dy + (1.0f - e) * 24.0f,
+               ALERT_W, alert_h(app), Z_RADIUS_PANEL);
 
     // The app's own name, not its reverse-DNS id: "os.zelto.pinger" is a database
     // key, and a permission prompt that prints one is asking the user to trust a
@@ -193,7 +232,7 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
 
     ZView card = Shadow(Z_ELEV_3, Background(Z_COLOR_MATERIAL_SHEET,
         CornerRadius(Z_RADIUS_PANEL,
-            Frame(ALERT_W, ALERT_H,
+            Frame(ALERT_W, alert_inner_h(app),
                 VStack(
                     // Both lines WRAP to the card's inner column. Neither is
                     // bounded by anything this file controls: `who` is an app's
@@ -214,11 +253,11 @@ static ZView consent_body(ZApp *app, ConsentState *s) {
                     // the one nearest the thumb, and the safe one is the one you
                     // have to reach past it for — the same bias the flick-to-Deny
                     // gesture has.
-                    alert_button(on_deny, "Don't Allow", Z_COLOR_SURFACE_3,
+                    alert_button(app, on_deny, "Don't Allow", Z_COLOR_SURFACE_3,
                                  Z_COLOR_TEXT, false),
-                    alert_button(on_allow, "Allow", Z_COLOR_PRIMARY,
+                    alert_button(app, on_allow, "Allow", Z_COLOR_PRIMARY,
                                  Z_COLOR_ON_PRIMARY, true),
-                    .padding = ALERT_PAD, .spacing = 10,
+                    .padding = ALERT_PAD, .spacing = ALERT_GAP,
                     .align = Z_ALIGN_CENTER)))));
 
     ZView risen = Opacity(1.0f - dprog,

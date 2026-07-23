@@ -102,6 +102,23 @@ static void open_item(ZApp *app, void *state, void *data) {
     z_nav_push(z_navigation(app), detail_screen, data);  // data = the Item*
 }
 
+// The row's own padding and swatch, named because the List has to be told how
+// tall a row is BEFORE one exists (it virtualises on that number), so the height
+// and the row have to be computed from the same parts or they drift.
+#define ROW_PAD 14.0f
+#define ROW_SWATCH 40.0f
+
+// A row is as tall as the taller of its two contents plus its padding — not 64.
+// The literal was measured once against 17px type; at the largest text size a
+// Body line stands 53 and painted through a row the List had already decided was
+// 64 tall, so the glyphs crossed into the neighbouring row while the scroll
+// still placed rows 64 apart.
+static float item_row_h(ZApp *app) {
+    float t = z_line_height(app, Z_FONT_BODY);
+    float tall = t > ROW_SWATCH ? t : ROW_SWATCH;
+    return tall + 2.0f * ROW_PAD;
+}
+
 static ZView item_row(ZApp *app, const void *item, int index) {
     (void)app;
     (void)index;
@@ -109,11 +126,11 @@ static ZView item_row(ZApp *app, const void *item, int index) {
     return OnTapData(open_item, (void *)it,
         Background(z_rgba(0x1a, 0x20, 0x28, 0xff),
             HStack(
-                Frame(40.0f, 40.0f, Rect(.color = it->color, .radius = 10)),
+                Frame(ROW_SWATCH, ROW_SWATCH, Rect(.color = it->color, .radius = 10)),
                 Foreground(Z_COLOR_TEXT_INV, Text("%s", it->title)),
                 Spacer(),
                 Foreground(z_rgba(0x6b, 0x74, 0x7d, 0xff), Text("#%d", it->id)),
-                .padding = 14, .spacing = 14, .align = Z_ALIGN_CENTER)));
+                .padding = ROW_PAD, .spacing = 14, .align = Z_ALIGN_CENTER)));
 }
 
 // Lifecycle banner: green ACTIVE in the foreground, amber PAUSED when another
@@ -144,7 +161,8 @@ static ZView list_screen(ZApp *app, void *props) {
             Grow(1.0f,
                 List(app,
                     .data = g_items, .stride = sizeof(Item), .count = N_ITEMS,
-                    .row_height = 64.0f, .key = item_key, .row = item_row)),
+                    .row_height = item_row_h(app), .key = item_key,
+                    .row = item_row)),
             .spacing = 0));
 }
 

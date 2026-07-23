@@ -142,7 +142,7 @@ static void on_sheet_pan(ZApp *app, void *state, const ZPanEvent *e) {
 // The cell width is FIXED, not grow-weighted: a grow row redistributes by child
 // count, so a sheet offering two targets would place them at different x's than
 // one offering four and the row would jump between shares of different types.
-static ZView target_cell(const char *app_id, int index) {
+static ZView target_cell(ZApp *app, const char *app_id, int index) {
     char ipath[256];
     const char *icon =
         (zelto_icon_for_app_id(app_id, ipath, sizeof(ipath)) &&
@@ -162,8 +162,14 @@ static ZView target_cell(const char *app_id, int index) {
             OnTapData(on_pick, (void *)(intptr_t)index,
                 Frame(TARGET_ICON, TARGET_ICON,
                     CornerRadius(TARGET_ICON * Z_RADIUS_ICON, Image(icon)))),
-            Foreground(Z_COLOR_TEXT_MUTED,
-                Font(Z_FONT_CAPTION2, Text("%s", who))),
+            // ELLIPSIZED to the cell (P50). The name comes out of the target
+            // app's manifest, and the cell is 96 units wide whatever the type
+            // size — "Notepad" alone measures 117 at the largest, so a bare Text
+            // paints it over its neighbour's icon. Ellipsize, not wrap: a
+            // two-line name would make one cell taller than the rest and break
+            // the row's baseline, and sheet_height() budgets exactly one line.
+            EllipsizeText(app, who, .width = TARGET_CELL,
+                          .size = Z_FONT_CAPTION2, .color = Z_COLOR_TEXT_MUTED),
             .spacing = SHEET_NAME_GAP, .align = Z_ALIGN_CENTER));
 }
 
@@ -326,7 +332,7 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
     // sheet with two targets puts them where the first two of four would be.
     ZStackOpts row = {.spacing = 10.0f, .align = Z_ALIGN_LEADING};
     for (int i = 0; i < n; i++) {
-        row.children[i] = target_cell(s->ids[i], i + 1);
+        row.children[i] = target_cell(app, s->ids[i], i + 1);
     }
     col.children[k++] = z_stack(Z_AXIS_HORIZONTAL, &row);
     if (s->n > n) {

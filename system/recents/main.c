@@ -62,7 +62,17 @@
 #define CARD_W_FRAC 0.74f    // a card spans most of the screen; neighbours peek in
 #define CARD_H_FRAC 0.62f
 #define CARD_GAP 26.0f       // px between two cards
-#define HEADER_H 30.0f       // the icon + name strip above a card
+// The icon + name strip above a card. DERIVED from the type it holds, not
+// declared: it was a bare 30 and Subhead's line box is 35 at the default text
+// size — so every card title in the switcher has been painting 5 units through
+// its own strip since the deck shipped, and 19 units through it at the largest
+// text size. The icon is 22 and never the tallest thing here, so the strip is
+// the line box, floored so a small text size cannot shrink it under the icon.
+#define HEADER_ICON 22.0f
+static float header_h(ZApp *app) {
+    float t = z_line_height(app, Z_FONT_SUBHEAD);
+    return t > HEADER_ICON ? t : HEADER_ICON;
+}
 #define HEADER_GAP 10.0f
 
 // Flick-up-to-close. THRESH px of lift (or a fast up-fling) commits; DIST is the
@@ -237,10 +247,10 @@ static ZView switch_card(ZApp *app, const ZTask *t, float cw, float ch) {
                            ? buf
                            : zelto_placeholder_icon();
 
-    ZView header = Frame(cw, HEADER_H,
+    ZView header = Frame(cw, header_h(app),
         HStack(
-            Frame(22.0f, 22.0f,
-                CornerRadius(22.0f * Z_RADIUS_ICON, Image(icon))),
+            Frame(HEADER_ICON, HEADER_ICON,
+                CornerRadius(HEADER_ICON * Z_RADIUS_ICON, Image(icon))),
             Weight(Z_WEIGHT_MEDIUM,
                 Foreground(Z_COLOR_TEXT, Font(Z_FONT_SUBHEAD,
                     Text("%s", title)))),
@@ -302,7 +312,7 @@ static ZView recents_body(ZApp *app, RecentsState *s) {
     float sh = (float)z_app_height(app);
     float card_w = sw * CARD_W_FRAC;
     float card_h = sh * CARD_H_FRAC;
-    float unit_h = HEADER_H + HEADER_GAP + card_h;
+    float unit_h = header_h(app) + HEADER_GAP + card_h;
     g_pitch = card_w + CARD_GAP;
 
     // Headless test hooks. ZELTO_SWITCHER_SCROLL=<cards> pins the deck at a

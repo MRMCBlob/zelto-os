@@ -18,6 +18,11 @@
 
 #define FETCH_URL "http://10.0.2.2:8080/hello.txt"
 
+// The screen's own margin. Named because the prose below has to wrap to the
+// column it leaves, and a wrap width that repeats a padding literal is a wrap
+// width that goes stale the day the padding moves.
+#define FETCH_PAD 32.0f
+
 typedef struct FetchState {
     ZApp *app;            // captured each build so the net callback can repaint
     int requests;         // how many fetches we've kicked off
@@ -98,8 +103,18 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
             Spacer(),
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_LARGE_TITLE, Text("Fetch"))),
+            // WRAPPED, and it was overflowing BEFORE Dynamic Type existed: this
+            // sentence measures 702 units at the default text size in a 656-unit
+            // column, so ~46 units of it have been painting past the app's own
+            // margin since P43 rescaled the type. Nothing looked broken because
+            // the surface behind it is the same flat background. The P50 audit
+            // found it by booting every surface at the largest size — where it
+            // wants 910 — and the default-size control is what made it a
+            // pre-existing bug rather than a new one.
             Foreground(Z_COLOR_TEXT_MUTED,
-                Font(Z_FONT_CALLOUT, Text("HTTP GET over the network permission"))),
+                WrapText(app, "HTTP GET over the network permission",
+                         .width = (float)z_app_width(app) - 2.0f * FETCH_PAD,
+                         .size = Z_FONT_CALLOUT)),
             Spacer(),
             Background(Z_COLOR_PRIMARY,
                 Button(do_fetch, "Fetch")),
@@ -121,7 +136,7 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
                             .spacing = 8, .align = Z_ALIGN_LEADING,
                             .padding = 18)))),
             Spacer(),
-            .padding = 32, .spacing = 18, .align = Z_ALIGN_CENTER));
+            .padding = FETCH_PAD, .spacing = 18, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(FetchState, fetch_body, "os.zelto.fetch")

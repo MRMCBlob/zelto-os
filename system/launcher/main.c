@@ -1332,16 +1332,26 @@ static ZView app_icon_tile(const AppEntry *e) {
     return app_icon_sized(e, ICON_SIZE);
 }
 
-static ZView app_cell_content(const AppEntry *e) {
+static ZView app_cell_content(ZApp *app, const AppEntry *e) {
     // The caption is 11pt Medium — the smallest step in the scale, because an app
     // label is recognised, not read: the icon is what identifies the app and the
     // word only disambiguates it. A shadow keeps it legible over a bright
     // wallpaper without a plate behind it.
+    //
+    // ELLIPSIZED, as of P50, and the audit is what said so. A grid cell is 158
+    // units wide and an app NAME is not this screen's string to choose — it comes
+    // out of a manifest. At the largest text size "andemu Demo" measures 206 and
+    // a bare Text paints all of it, straight through the cell and across its
+    // neighbour, because Text never wraps and never truncates. This is the
+    // identifier-in-a-fixed-row case EllipsizeText exists for: the head of the
+    // name plus a mark saying there is more, which is what every home screen
+    // does. (Not WrapText: a two-line label would shift every icon below it.)
     return VStack(
         app_icon_tile(e),
         TextShadow(Weight(Z_WEIGHT_MEDIUM,
-            Foreground(Z_COLOR_TEXT,
-                Font(Z_FONT_CAPTION2, Text("%s", e->name))))),
+            EllipsizeText(app, e->name, .width = cell_side(z_app_width(app)),
+                          .size = Z_FONT_CAPTION2, .weight = Z_WEIGHT_MEDIUM,
+                          .color = Z_COLOR_TEXT))),
         .spacing = 7, .align = Z_ALIGN_CENTER);
 }
 
@@ -1451,7 +1461,7 @@ static ZView entry_view(ZApp *app, LauncherState *s, const HomeEntry *e,
                         ZRect r) {
     ZView content = (e->kind == HE_WIDGET)
         ? widget_cell_content(app, e->ref)
-        : app_cell_content(&g_apps[e->ref]);
+        : app_cell_content(app, &g_apps[e->ref]);
 
     if (s->rearrange) {
         // Non-interactive cell + a corner remove badge (pinned top-left).
@@ -1702,7 +1712,7 @@ static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
                 row.children[c] = Frame(cell, 0.0f,
                     OnLongPress(on_library_add, (void *)e,
                         OnTapData(launch_app, (void *)e,
-                            app_cell_content(e))));
+                            app_cell_content(app, e))));
             } else {
                 row.children[c] = Frame(cell, 1.0f,
                     Rect(.color = z_rgba(0, 0, 0, 0)));
@@ -2210,7 +2220,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         // (landing: cx/cy are springing toward the slot; just read them.)
         ZView gc = (held.kind == HE_WIDGET)
             ? widget_cell_content(app, held.ref)
-            : app_cell_content(&g_apps[held.ref]);
+            : app_cell_content(app, &g_apps[held.ref]);
         ZView lifted = Frame(gr.w, gr.h,
             Shadow(Z_ELEV_3, ZStack(
                 Fill(CornerRadius(ICON_RADIUS + 2.0f,
