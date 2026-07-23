@@ -1087,6 +1087,69 @@ run_shot 79-keyboard-suggest-pending "Keyboard: a pending autocorrection (the / 
     SIM_APP=zelto-notepad ZELTO_NOTEPAD_ECHO=1 ZELTO_NOTEPAD_NOAUTOCAP=1 \
     ZELTO_KBD_TAP="t,e,h"
 
+# --- Dynamic Type (P50) ------------------------------------------------------
+# THE CATALOGUE AT THE LARGEST TEXT SIZE, and it is a CHOSEN SUBSET rather than a
+# second pass over all 79. The reasoning, because "we did some of them" is not a
+# decision unless the rule is written down:
+#
+# A second full pass costs ~20 minutes and doubles a run that is already 15, and
+# it would spend nearly all of that photographing surfaces where the answer is
+# structurally known — an app whose whole screen is a Spacer and three centred
+# labels cannot clip, and a shot of a mid-flight spring at a bigger text size is
+# a picture of the same spring. What the largest size can actually break is a
+# FIXED BOX HOLDING TEXT, so the subset is exactly those: every surface the P50
+# overflow audit flagged, plus the grouped inset list (the densest fixed-height
+# rows in the OS), plus the two surfaces that must NOT change.
+#
+# The audit itself is not a screenshot and does not live here: test/
+# test_text_size_overflow_sim.sh boots every surface at the largest size with the
+# probe on and fails on a measured overflow. These shots are the design review of
+# the same states — what the audit cannot say is whether the result looks like a
+# phone.
+TS_BIG='sys.text_size	6
+'
+TS_SMALL='sys.text_size	0
+'
+
+# The new screen, at the default size first: a slider made of the thing it
+# changes, plus the two toggles. Reduce Motion has existed since P31 and this is
+# the first time it has been photographable, because it is the first time it has
+# been reachable.
+EXPECT='zelto-settings\|Accessibility' run_shot 34d-settings-accessibility "Settings: Accessibility (text size slider, Bold Text, Reduce Motion)" 8     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=accessibility
+
+# The grouped inset list at both ends of the range. 44pt rows hold Body, and Body
+# runs 26 units at the smallest step to 42 at the largest — the row is the same
+# 81 either way (the touch-target floor still wins across the shipped range),
+# which is a claim worth being able to LOOK at.
+SEED="$TS_BIG" EXPECT='zelto-settings\|Accessibility' run_shot 80-type-largest-settings "Text Size at the largest step: the grouped list" 8     SIM_APP=zelto-settings
+SEED="$TS_SMALL" EXPECT='zelto-settings\|Accessibility' run_shot 81-type-smallest-settings "Text Size at the smallest step (Caption2 floors)" 8     SIM_APP=zelto-settings
+
+# The two surfaces the audit found CLIPPING, both now derived from the face.
+# 82: the consent alert's buttons were a bare 46 against a 61-unit line box, in
+# the one dialog where reading the two answers is the entire point — and the card
+# itself was 44 units taller than the number the compositor blurred behind it.
+SEED="$TS_BIG" EXPECT='zelto-consent\|Allow' run_shot 82-type-largest-consent "Text Size largest: consent alert (buttons derived from the face)" 7     SIM_CONSENT="os.zelto.pinger notifications"
+# 83: the switcher's card headers were 30 units holding a 35-unit Subhead line,
+# from the day the deck shipped, at every text size.
+SEED="$TS_BIG" EXPECT='zelto-recents\|' run_shot 83-type-largest-switcher "Text Size largest: App Switcher card headers" 9     SIM_APP=zelto-notes SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1
+
+# 84: the home grid, where an app NAME comes out of a manifest into a 158-unit
+# cell. Ellipsized now — "andemu Demo" wants 206 at this size.
+SEED="$TS_BIG" EXPECT='zelto-launcher\|Notepad' run_shot 84-type-largest-home "Text Size largest: home grid (manifest names ellipsized)" 6
+
+# 85 IS THE OPT-OUT SHOT and it is the most important one here, because it is the
+# only one whose subject is something NOT happening. The keyboard is photographed
+# at the largest text size over a Notepad that IS scaling: the caps must be
+# identical to 13-keyboard while the app behind them is not. A keyboard that
+# followed the setting would grow its caps and walk the bottom row off its own
+# surface, which is the P48 bug with a new cause.
+SEED="$TS_BIG" EXPECT='zelto-keyboard\|space' run_shot 85-type-largest-keyboard "Text Size largest: the keyboard does NOT scale (cf. 13)" 8     ZELTO_KBD_SHOW=1 SIM_APP=zelto-notepad
+
+# 86: Bold Text, which is the same seam's other term — a floor on WEIGHT applied
+# where the shaper is set, so measure and paint cannot disagree.
+SEED='sys.bold_text	1
+' EXPECT='zelto-settings\|Accessibility' run_shot 86-type-bold-settings "Bold Text on: every Regular weight raised to Semibold" 8     SIM_APP=zelto-settings
+
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)
 # ===========================================================================
