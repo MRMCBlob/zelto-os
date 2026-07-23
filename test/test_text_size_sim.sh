@@ -100,9 +100,20 @@ compare() {   # <name> <mode> <logA> <logB> <process> <string> <getter>
 }
 
 # --- the two boots -----------------------------------------------------------
-# One unconfigured device and one at the top of the range, same recipe: Settings
-# in front (an app that observes settings), the keyboard raised over it (a layer
-# surface that opted out), and the status bar (the other opt-out) always up.
+# One unconfigured device and one at the top of the STANDARD range, same recipe:
+# Settings in front (an app that observes settings), the keyboard raised over it
+# (a layer surface that opted out), and the status bar (the other opt-out) always
+# up.
+#
+# STEP 6, NOT THE TOP OF THE RANGE, AND THAT IS DELIBERATE AS OF P51. The five
+# accessibility steps above it REFLOW the Settings rows (label over control) and
+# WRAP the screen title, so at step 11 'Accessibility' is two Text nodes
+# ('Accessib' / 'ility') and this test's per-string width compare has nothing to
+# match. Step 6 is the largest size at which every string is still one line, and
+# it proves exactly what sections 1-3 are about: the seam reaches the surfaces
+# and the opt-outs hold. The reflow itself is measured elsewhere
+# (test_text_size_overflow_sim.sh boots to the true top and asserts nothing left
+# the screen). Section 5 does need the true top, and reads it from the header.
 BOOT_ARGS=(SIM_APP=zelto-settings ZELTO_KBD_SHOW=1
            ZELTO_SETTINGS_SCREEN=accessibility)
 LOG_DEF="$(run_boot default "" "${BOOT_ARGS[@]}")"
@@ -184,17 +195,28 @@ fi
 # --- 5. a garbage value is clamped, not obeyed -------------------------------
 # sys.text_size is a brokered string any process can write. A corrupt store must
 # give a legible screen, so the value clamps to the top of the range — which
-# means this boot must match the largest one, NOT the default one.
+# means the junk boot must match a boot AT that top, not the default one.
+#
+# The top of the range is the largest STEP, read from the header so this follows
+# it (P51 grew it from 6 to 11; a literal here would have made the clamp target
+# stale and this the assertion that silently checked the wrong size). At that
+# step the screen reflows, but 'Bold Text' is 390 units in a 582-unit column so
+# it is still one Text node — the one string on this screen whose width the
+# reflow leaves alone, which is why it is the one measured.
+TS_STEPS="$(sed -n 's/^#define Z_TEXT_SIZE_STEPS \([0-9]*\).*/\1/p' \
+    "$REPO_ROOT/sdk/include/zelto/ui.h" | head -1)"
+TS_TOP="$(( TS_STEPS - 1 ))"
+LOG_TOP="$(run_boot atmax "$TS_TOP" "${BOOT_ARGS[@]}")"
 LOG_JUNK="$(run_boot junk 99 "${BOOT_ARGS[@]}")"
 w_junk="$(probe_w "$LOG_JUNK" zelto-settings "Bold Text")"
-w_big="$(probe_w "$LOG_BIG" zelto-settings "Bold Text")"
+w_top="$(probe_w "$LOG_TOP" zelto-settings "Bold Text")"
 w_def="$(probe_w "$LOG_DEF" zelto-settings "Bold Text")"
-if [ -z "$w_junk" ]; then
-    zt_fail "the out-of-range boot did not draw the Accessibility screen, so clamping cannot be checked" \
-        "'Bold Text' on the frame" "absent (see $LOG_JUNK)"
+if [ -z "$w_junk" ] || [ -z "$w_top" ]; then
+    zt_fail "the clamp boot or the top-of-range boot did not draw the Accessibility screen, so clamping cannot be checked" \
+        "'Bold Text' on both frames" "top='${w_top:-absent}' junk='${w_junk:-absent}'"
 else
-    zt_expect_eq "$w_big" "$w_junk" \
-        "sys.text_size=99 must clamp to the largest supported size (it rendered at neither the largest '$w_big' nor, hopefully, the default '$w_def')"
+    zt_expect_eq "$w_top" "$w_junk" \
+        "sys.text_size=99 must clamp to the largest supported size (step $TS_TOP); it rendered at neither the top '$w_top' nor, hopefully, the default '$w_def'"
 fi
 
 zt_done

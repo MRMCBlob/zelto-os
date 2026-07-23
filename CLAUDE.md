@@ -67,6 +67,17 @@ looks broken. Three shipped for 13+ phases.
   told where the compositor put its surface, and it is not only layer surfaces —
   the launcher is 720x1359 on a 720x1440 screen (the status bar's exclusive
   zone). So a probe frame can never become a box on a screenshot.
+- The probe's summary line carries **three** counters and each is read
+  differently: `overflowing` must be **zero**; `clipped (worst N)` and
+  `N sideways` are read as "does it **grow when the text does**" — both have a
+  legitimate non-zero baseline (a face's line box; a scroll's rows below the fold
+  and the home carousel's other pages), so the audit boots each surface at the
+  default size too and compares. `sideways` is the only one that catches a
+  CONTROL walking off the right edge, which is what the accessibility text sizes
+  do to a row.
+- **A row that pairs a label with a control is a layout, not a height.** Past
+  `Z_TEXT_SIZE_REFLOW_FIRST` (AX2, measured) it stacks. Ask
+  `z_text_size_reflows()`; never compare `z_text_size()` to a literal.
 - A shot's pixel check is declared beside its marker: `PIXEL='<control> <region>
   [min]'` (`all` = big change, `spot` = small and concentrated — peak >= N x the
   frame mean, which is what a press veil IS without saying where) and

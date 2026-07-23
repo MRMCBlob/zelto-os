@@ -44,8 +44,9 @@
 // toolkit. Naming them again here would be the exact drift the file exists to
 // stop, so it names where they are instead:
 //
-//   ZELTO_KEY_TEXT_SIZE  "sys.text_size"  — 0..6, default Z_TEXT_SIZE_DEFAULT
+//   ZELTO_KEY_TEXT_SIZE  "sys.text_size"  — 0..11, default Z_TEXT_SIZE_DEFAULT
 //   ZELTO_KEY_BOLD_TEXT  "sys.bold_text"  — 0/1
+//   ZELTO_KEY_INCREASE_CONTRAST  "sys.increase_contrast"  — 0/1 (P51)
 //
 // sys.reduce_motion has no #define anywhere yet: it predates this header (P31)
 // and is read as a literal in four places. Left alone deliberately — moving it

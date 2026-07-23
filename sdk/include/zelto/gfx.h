@@ -7,6 +7,7 @@
 #ifndef ZELTO_GFX_H
 #define ZELTO_GFX_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -78,7 +79,7 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // itself already raised — the character caps on the keyboard's dark material,
 // where SURFACE_3 sits too close to the field of keys to read as a key.
 #define Z_COLOR_SURFACE_4  z_rgba(0x55, 0x55, 0x59, 0xff)  // key cap on a panel
-#define Z_COLOR_BORDER     z_rgba(0x38, 0x38, 0x3a, 0xff)  // hairline / divider
+#define Z_COLOR_BORDER     z_hairline()                    // hairline / divider
 
 // The interactive fill. Not a hue — a light, "lit" surface. Text and glyphs on it
 // use ON_PRIMARY (dark), NOT TEXT_INV.
@@ -86,11 +87,68 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 #define Z_COLOR_ON_PRIMARY z_rgba(0x0a, 0x0a, 0x0c, 0xff)  // ink ON a PRIMARY fill
 #define Z_COLOR_ACCENT     z_rgba(0xff, 0xff, 0xff, 0xff)  // highlight / active glyph
 
-// Text (on the surface tones — all AA).
+// Text. NOT all AA, and the comment that used to say so was the reason nobody
+// looked — see the measured table above z_ink_muted() below.
 #define Z_COLOR_TEXT       z_rgba(0xf2, 0xf2, 0xf7, 0xff)  // primary (soft white)
-#define Z_COLOR_TEXT_MUTED z_rgba(0xa1, 0xa1, 0xa8, 0xff)  // secondary / caption
-#define Z_COLOR_TEXT_FAINT z_rgba(0x6c, 0x6c, 0x70, 0xff)  // de-emphasised / disabled (AA-large)
+#define Z_COLOR_TEXT_MUTED z_ink_muted()                   // secondary / caption
+#define Z_COLOR_TEXT_FAINT z_ink_faint()                   // de-emphasised / disabled
 #define Z_COLOR_TEXT_INV   z_rgba(0xf4, 0xf4, 0xf8, 0xff)  // on a SEMANTIC (coloured) fill
+
+// ---------------------------------------------------------------------------
+// INCREASE CONTRAST (P51) — the three tokens with two values, and the numbers.
+//
+// THE SHIPPED PALETTE, MEASURED rather than eyeballed. WCAG 2.1 relative
+// luminance over every ink/surface pair this OS actually draws (the ratios are
+// computed from the tokens themselves in test_contrast_tokens.c, so this table
+// cannot drift from the values above it):
+//
+//                     BG      SURFACE  SURFACE_2  SURFACE_3
+//     TEXT           18.82    15.25     12.49      10.17     all AA
+//     TEXT_MUTED      8.18     6.63      5.43       4.42     LAST ONE FAILS AA
+//     TEXT_FAINT      4.02     3.25      2.67       2.17     THREE FAIL AA
+//
+// AA is 4.5:1 for body text and 3:1 for large text. TEXT_FAINT — the disclosure
+// chevron on every Settings row, the disabled detail column — is 2.67:1 on a
+// card and 2.17:1 on a chip. It does not reach even the LARGE-text threshold on
+// two of the four surfaces it is drawn on, and at the smallest text size it is
+// small grey type on a grey card: the two accessibility problems compounding.
+//
+// (Two more the table found and this setting does NOT fix, because they are
+// about the semantic fills rather than the ink: TEXT on WARN is 1.96:1, and
+// ON_PRIMARY on SUCCESS is 3.71:1. Those want the FILL redrawn, not the label
+// brightened, and that is a palette change rather than a preference.)
+//
+// WHAT INCREASE CONTRAST DOES. The three tokens that carry the failures get a
+// second value, chosen as the LEAST brightening that clears AA on the darkest
+// surface each is drawn on — not "as light as possible", because the whole job
+// of a muted ink is to be a step below the primary one, and a preference that
+// flattens the hierarchy has substituted one unreadable screen for another:
+//
+//     TEXT_MUTED  #a1a1a8 -> #c7c7cc   (4.42 -> 6.74 on SURFACE_3)
+//     TEXT_FAINT  #6c6c70 -> #a8a8b0   (2.17 -> 4.81 on SURFACE_3)
+//     BORDER      #38383a -> #6c6c70   (1.40 -> 3.25 on SURFACE; a hairline is
+//                                       not text, so its bar is WCAG's 3:1
+//                                       non-text minimum)
+//
+// TEXT (#f2f2f7) and the surfaces themselves do not move. TEXT already passes
+// everywhere, and moving a surface would move every other pair with it.
+//
+// THE SEAM IS THE SAME SHAPE AS z_font_units(). These are macros that already
+// expand to a function call (z_rgba is a static inline), so 121 migrated call
+// sites keep working unchanged and none of them learns a setting exists. This
+// is the runtime z_token_color() the P37 note called Planned, arriving for the
+// one reason that needed it first.
+ZColor z_ink_muted(void);
+ZColor z_ink_faint(void);
+ZColor z_hairline(void);
+
+// On/off for this process, and whether it is on. Applied from the brokered
+// ZELTO_KEY_INCREASE_CONTRAST at startup and on change, exactly like the text
+// size; returns true when the value moved, so the caller knows a repaint is
+// owed. A surface that called z_text_scaling_disable() still honours this — the
+// status bar's height is a contract, its contrast is not.
+bool z_contrast_apply(bool increase);
+bool z_contrast_increased(void);
 
 // Semantic (state).
 #define Z_COLOR_SUCCESS    z_rgba(0x1e, 0x7a, 0x4a, 0xff)  // deep enough for white text at AA

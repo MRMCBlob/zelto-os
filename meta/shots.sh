@@ -1110,6 +1110,14 @@ TS_BIG='sys.text_size	6
 '
 TS_SMALL='sys.text_size	0
 '
+# P51 added five ACCESSIBILITY steps above TS_BIG. TS_AX is the top of the range
+# (AX5) and TS_AX_LAST_FLAT is the last step that does NOT reflow (AX1) — the two
+# exist as a PAIR, because the phase's claim is about a break and a break needs
+# both sides of it in the sheet.
+TS_AX='sys.text_size	11
+'
+TS_AX_LAST_FLAT='sys.text_size	7
+'
 
 # The new screen, at the default size first: a slider made of the thing it
 # changes, plus the two toggles. Reduce Motion has existed since P31 and this is
@@ -1117,10 +1125,10 @@ TS_SMALL='sys.text_size	0
 # been reachable.
 EXPECT='zelto-settings\|Accessibility' run_shot 34d-settings-accessibility "Settings: Accessibility (text size slider, Bold Text, Reduce Motion)" 8     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=accessibility
 
-# The grouped inset list at both ends of the range. 44pt rows hold Body, and Body
-# runs 26 units at the smallest step to 42 at the largest — the row is the same
-# 81 either way (the touch-target floor still wins across the shipped range),
-# which is a claim worth being able to LOOK at.
+# The grouped inset list at both ends of the STANDARD range. 44pt rows hold Body,
+# and Body runs 26 units at the smallest step to 42 at the largest — the row is
+# the same 81 either way (the touch-target floor still wins across the standard
+# range), which is a claim worth being able to LOOK at. Past it, see 87/88.
 SEED="$TS_BIG" EXPECT='zelto-settings\|Accessibility' run_shot 80-type-largest-settings "Text Size at the largest step: the grouped list" 8     SIM_APP=zelto-settings
 SEED="$TS_SMALL" EXPECT='zelto-settings\|Accessibility' run_shot 81-type-smallest-settings "Text Size at the smallest step (Caption2 floors)" 8     SIM_APP=zelto-settings
 
@@ -1149,6 +1157,57 @@ SEED="$TS_BIG" EXPECT='zelto-keyboard\|space' run_shot 85-type-largest-keyboard 
 # where the shaper is set, so measure and paint cannot disagree.
 SEED='sys.bold_text	1
 ' EXPECT='zelto-settings\|Accessibility' run_shot 86-type-bold-settings "Bold Text on: every Regular weight raised to Semibold" 8     SIM_APP=zelto-settings
+
+# ===========================================================================
+# THE ACCESSIBILITY SIZES (P51) — and 87/88 are ONE ARGUMENT IN TWO PICTURES
+# ===========================================================================
+# The five AX steps are not a bigger number of the same kind. Past AX2 a label
+# and its control stop fitting side by side, so a row is no longer a HEIGHT — it
+# is a LAYOUT DECISION, and z_text_size_reflows() is the one predicate that makes
+# it. The break was measured on this exact screen: at AX1 the widest stepper
+# row's '+' key ends at x=671 on a 720 screen, and at AX2 it starts at 701.
+#
+# 88 IS THE CONTROL FOR 87. A reflowed screen on its own only shows that
+# something changed; the pair shows WHERE, and that everything below the break
+# still looks like the list it was. Read them together or neither says anything.
+#
+# The EXPECTs come from the boots themselves, which matters more here than
+# anywhere else in the file: at AX5 'Passcode (1234)' is no longer one string —
+# it wraps, and the probe reports 'Passcode' and '(1234)' as two Texts. An EXPECT
+# written at a desk would have been asserting on a string that no longer exists.
+SEED="$TS_AX" EXPECT='zelto-settings\|Dim After' \
+run_shot 87-ax-settings-reflow "AX5: the row reflows — label wrapped, control beneath it" 8 \
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=lock
+SEED="$TS_AX_LAST_FLAT" EXPECT='zelto-settings\|Screen Off After' \
+run_shot 88-ax-settings-last-flat "AX1: the last step that does NOT reflow (cf. 87)" 8 \
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=lock
+
+# 89: the home grid at AX5. A widget's 2x1 bento cell is 298 units and its
+# weekday measures 371, its '100%' 324, its 'All clear' 379 — none of them prose
+# that could wrap or an identifier that could ellipsize. So a widget takes the
+# whole row (entry_span), which is the same reflow in the only shape a grid has.
+SEED="$TS_AX" EXPECT='zelto-launcher\|Thursday' \
+run_shot 89-ax-home-widgets "AX5: home widgets go full-width (a glance needs the row)" 6
+
+# 90: the screen that SETS the size, at the size it sets. Its slider legend is
+# two 'A's at fixed STEPS — which is not two fixed SIZES: Font() routes through
+# z_font_units() like everything else, so the caps grow and the row grows with
+# them. What a fixed step preserves is the CONTRAST between them, which is the
+# whole information content of a legend.
+SEED="$TS_AX" EXPECT='zelto-settings\|TEXT SIZE' \
+run_shot 90-ax-accessibility "AX5: Accessibility (the legend keeps its ratio, the row gives)" 8 \
+    SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=accessibility
+
+# 91: Increase Contrast, on the surface that motivated it. Z_COLOR_TEXT_FAINT is
+# the chevron on every row here and the disabled detail column, and it measured
+# 2.67:1 on a card where AA wants 4.5. Photographed at the SMALLEST text size,
+# deliberately: small grey type on a grey card is the two accessibility problems
+# compounding, and it is the frame the setting exists for.
+SEED='sys.increase_contrast	1
+sys.text_size	0
+' EXPECT='zelto-settings\|Accessibility' \
+run_shot 91-increase-contrast "Increase Contrast on, at the smallest text size (cf. 81)" 8 \
+    SIM_APP=zelto-settings
 
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)

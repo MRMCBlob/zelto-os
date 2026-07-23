@@ -992,14 +992,44 @@ static const char *probe_label(ZView n) {
 // nearest container on purpose: "off the screen" needs no layout semantics to
 // interpret and cannot be argued with, where "wider than its box" depends on
 // which ancestor you decide the box is.
+static bool probe_off_x(ZView root, ZView n) {
+    return n->x < root->x - 0.5f || n->x + n->w > root->x + root->w + 0.5f;
+}
+static bool probe_off_y(ZView root, ZView n) {
+    return n->y < root->y - 0.5f || n->y + n->h > root->y + root->h + 0.5f;
+}
 static bool probe_off_surface(ZView root, ZView n) {
-    return n->x < root->x - 0.5f || n->y < root->y - 0.5f ||
-           n->x + n->w > root->x + root->w + 0.5f ||
-           n->y + n->h > root->y + root->h + 0.5f;
+    return probe_off_x(root, n) || probe_off_y(root, n);
 }
 
+// THE THIRD COUNTER (P51), and it is on the same line as the other two because a
+// counter nobody reads is worth nothing.
+//
+// P50's detector answered "does a string need more room than its box", on both
+// axes. It could not answer the question the ACCESSIBILITY sizes actually ask,
+// which is not about a string at all: at AX2 the Settings stepper's '+' key was
+// laid out at x=701 on a 720-unit screen. Nothing overflowed anything — the key
+// is a Frame, it got exactly the 52 units it asked for, and its label fits it
+// perfectly. The row simply grew past the screen and took the control with it,
+// and a control 33 units off the edge cannot be pressed, while nothing on the
+// screen says it is there.
+//
+// SIDEWAYS, not "off-surface", and the split is the point. Off-surface is
+// routine and permanently non-zero: a scroll builds the rows below the fold, the
+// home carousel lays every page out side by side and offsets the strip. Both are
+// reachable — one swipe away — which is what makes them not defects. What is
+// never reachable is content that left the screen HORIZONTALLY on a surface that
+// does not scroll sideways, and there is no way to tell those two apart from a
+// static frame.
+//
+// So this number is read the way P50's `worst` is read: not "is it zero" but
+// "does it GROW WHEN THE TEXT DOES". A surface with a carousel reports the same
+// fourteen at every text size; a row whose control walked off the edge reports
+// more than it did at the default. The test boots both ends and compares
+// (test_text_size_overflow_sim.sh).
 typedef struct ProbeCount {
     int taps, texts, over, tall, off;
+    int sideways;       // nodes that left the surface HORIZONTALLY (taps + text)
     float tall_worst;   // the largest vertical shortfall seen, in screen units
 } ProbeCount;
 
@@ -1021,6 +1051,12 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
                 program_invocation_short_name, lbl ? lbl : "-", n->x, n->y, n->w,
                 n->h, probe_off_surface(root, n) ? " offscreen" : "");
         c->taps++;
+        // A TAPPABLE counts here as well as a Text, and it is the case the
+        // counter was added for: the control that walked off the edge carries no
+        // string of its own worth measuring, and it is the one you cannot press.
+        if (probe_off_x(root, n)) {
+            c->sideways++;
+        }
     }
     if (n->kind == Z_K_TEXT && n->text && n->text[0]) {
         c->texts++;
@@ -1098,6 +1134,9 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
         }
         if (out) {
             c->off++;
+        }
+        if (probe_off_x(root, n)) {
+            c->sideways++;
         }
     }
     for (int i = 0; i < n->n_children; i++) {
@@ -1247,10 +1286,10 @@ static void probe_dump_once(ZApp *app, bool from_timer) {
     // reader (or a test) needs both to tell those apart.
     fprintf(stderr,
             "zelto: probe taps: %d in %s (%dx%d), text %d scanned %d "
-            "overflowing %d off-surface %d clipped (worst %.0f)\n",
+            "overflowing %d off-surface %d clipped (worst %.0f) %d sideways\n",
             c.taps, app->app_id ? app->app_id : (app->title ? app->title : "?"),
             app->width, app->height, c.texts, c.over, c.off, c.tall,
-            c.tall_worst);
+            c.tall_worst, c.sideways);
     fflush(stderr);
 }
 
@@ -2940,6 +2979,27 @@ static int app_run(ZApp *app) {
     z_text_size_apply((int)z_setting_get_int(ZELTO_KEY_TEXT_SIZE,
                                              Z_TEXT_SIZE_DEFAULT),
                       z_setting_get_int(ZELTO_KEY_BOLD_TEXT, 0) != 0);
+    // INCREASE CONTRAST (P51) rides the same read, and unlike the two above it
+    // is not gated on the opt-out: a colour swap moves no geometry, so the bar
+    // and the keyboard take it too.
+    z_contrast_apply(z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0);
+
+    // SAYABLE ON THE TARGET (P51). The whole of Dynamic Type verifies in the sim
+    // by the standing instruction, but z_font_units() runs in every process on
+    // the phone too, and the one thing QEMU is for is the image. There is no
+    // probe on the target cmdline, so without a line here a QEMU boot at a seeded
+    // sys.text_size has nothing to grep — the exact shape of the actuations the
+    // ACTUATE harness had to make sayable first. One line, per process, naming
+    // the step, what Body becomes, and whether the process opted out — so a
+    // seeded boot shows the number moved and the bar's line shows it did not.
+    fprintf(stderr, "zelto: type step=%d body=%.0f reflow=%d contrast=%d%s\n",
+            z_text_size(), (double)z_font_units(Z_FONT_BODY),
+            z_text_size_reflows() ? 1 : 0, z_contrast_increased() ? 1 : 0,
+            z_font_units(Z_FONT_BODY) == (float)Z_FONT_BODY &&
+                    z_text_size() != Z_TEXT_SIZE_DEFAULT
+                ? " (opted out)"
+                : "");
+    fflush(stderr);
 
     // SUBSCRIBE UNCONDITIONALLY, which z_settings_observe does not: it only
     // subscribes when the APP asked to observe, and the toolkit now has an
@@ -3945,11 +4005,16 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
         // partial apply (new size, stale weight) is a frame drawn at neither
         // setting.
         if (strcmp(key, ZELTO_KEY_TEXT_SIZE) == 0 ||
-            strcmp(key, ZELTO_KEY_BOLD_TEXT) == 0) {
+            strcmp(key, ZELTO_KEY_BOLD_TEXT) == 0 ||
+            strcmp(key, ZELTO_KEY_INCREASE_CONTRAST) == 0) {
             bool moved = z_text_size_apply(
                 (int)z_setting_get_int(ZELTO_KEY_TEXT_SIZE,
                                        Z_TEXT_SIZE_DEFAULT),
                 z_setting_get_int(ZELTO_KEY_BOLD_TEXT, 0) != 0);
+            // Same re-read-both-keys argument: a frame drawn at the new size and
+            // the old contrast is a frame drawn at neither setting.
+            moved |= z_contrast_apply(
+                z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0);
             if (moved) {
                 // A FULL REPAINT, not an invalidate. A size change is not a
                 // recolour: every string on the surface re-measures, so every

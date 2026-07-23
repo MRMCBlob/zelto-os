@@ -22,6 +22,7 @@
 // column it leaves, and a wrap width that repeats a padding literal is a wrap
 // width that goes stale the day the padding moves.
 #define FETCH_PAD 32.0f
+#define PANEL_PAD 18.0f
 
 typedef struct FetchState {
     ZApp *app;            // captured each build so the net callback can repaint
@@ -97,6 +98,19 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
         state->pending ? "fetching..."
         : state->done  ? (state->error ? "error" : "200 OK")
                        : "idle";
+    char status[96];
+    snprintf(status, sizeof(status), "requests %d   status: %s",
+             state->requests, status_line);
+
+    // The app's text column, and the panel's height as an expression over the
+    // two lines inside it rather than a measured-once total (P50's ALERT_H).
+    float col_w = (float)z_app_width(app) - 2.0f * FETCH_PAD;
+    float panel_h = z_line_height(app, Z_FONT_CAPTION) +
+                    z_line_height(app, Z_FONT_BODY) + 8.0f +
+                    2.0f * PANEL_PAD;
+    if (panel_h < 160.0f) {
+        panel_h = 160.0f;
+    }
 
     return Background(Z_COLOR_BG,
         VStack(
@@ -118,23 +132,37 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
             Spacer(),
             Background(Z_COLOR_PRIMARY,
                 Button(do_fetch, "Fetch")),
+            // The status read-out is one line of two facts, and at the
+            // accessibility sizes it wants 887 units in a 656 column. It is not
+            // an identifier that could be cut short — the interesting half is at
+            // the END — so it wraps.
             Foreground(Z_COLOR_TEXT_MUTED,
-                Font(Z_FONT_CAPTION,
-                     Text("requests %d   status: %s", state->requests,
-                          status_line))),
+                WrapText(app, status, .width = col_w, .size = Z_FONT_CAPTION)),
+            // THE PANEL WAS 560x160, BOTH LITERALS, AND BOTH ARE FIXED BOXES
+            // HOLDING TEXT. Its own caption 'response body' wants 567 units at
+            // AX5, so the box was narrower than the label naming it. The width is
+            // the app's column now, and the height is an expression over the two
+            // lines it holds plus the padding it holds them in — floored at the
+            // 160 it used to be so an ordinary-sized device sees no change.
             Background(panel_bg,
                 CornerRadius(14,
-                    Frame(560.0f, 160.0f,
+                    Frame(col_w, panel_h,
                         VStack(
                             Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("response body"))),
+                            // The BODY is a string off the network in a box this
+                            // app chose: the P46 answer to that is a measured cut,
+                            // not a wrap — a response wrapped over ten lines is a
+                            // panel that has eaten the screen.
                             Foreground(Z_COLOR_TEXT_INV,
-                                Font(Z_FONT_BODY,
-                                    Text("%s", state->done || state->pending
-                                                   ? state->body
-                                                   : "(tap Fetch)"))),
+                                EllipsizeText(app,
+                                    state->done || state->pending
+                                        ? state->body
+                                        : "(tap Fetch)",
+                                    .width = col_w - 2.0f * PANEL_PAD,
+                                    .size = Z_FONT_BODY)),
                             .spacing = 8, .align = Z_ALIGN_LEADING,
-                            .padding = 18)))),
+                            .padding = PANEL_PAD)))),
             Spacer(),
             .padding = FETCH_PAD, .spacing = 18, .align = Z_ALIGN_CENTER));
 }

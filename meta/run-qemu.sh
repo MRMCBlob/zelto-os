@@ -119,6 +119,16 @@ common=(
 
 KCMD="console=ttyAMA0 rdinit=/init loglevel=7"
 
+# SEED=<key:value,key:value> seeds the settings store before zsysd starts, via the
+# zelto.seedsettings= cmdline the initramfs init already parses (the same hook the
+# ACTUATE harness uses). It is plumbed onto the DEFAULT headless boot so an
+# on-target claim about a setting — P51 booted with SEED=sys.text_size:11 to grep
+# the "zelto: type step=..." line off the serial console — needs no bespoke
+# harness. Harmless when unset.
+if [ -n "${SEED:-}" ]; then
+    KCMD="$KCMD zelto.seedsettings=$SEED"
+fi
+
 # EVERY two-boot harness below lives inside the HEADLESS branch, so asking for one
 # without HEADLESS=1 used to boot a plain interactive QEMU, wait, and exit 0 — a
 # green run that tested nothing. P44 found this the direct way: `QSPERSIST=1

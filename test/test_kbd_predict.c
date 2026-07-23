@@ -641,6 +641,38 @@ int main(void) {
         CHECK(z_lm_is_word("visiting"),
               "\"visiting\" was rejected — \"visit\" is two syllables",
               "not a word");
+
+        // P51 CLOSES THE RESIDUAL P50 NAMED. A polysyllable stressed on its LAST
+        // syllable doubles too ("begin" -> "beginning"), and two vowels is
+        // exactly what excluded it, so "begining" read as a word. P50 wrote that
+        // closing it "needs stress data this model does not have"; that is true
+        // of a rule and false of the set, which is closed and small enough to
+        // list (see g_final_stress in lm_trie.c).
+        CHECK(z_lm_is_word("beginning"),
+              "\"beginning\" is not a word", "not a word");
+        CHECK(!z_lm_is_word("begining"),
+              "\"begining\" reads as a word — \"begin\" is stressed on its last "
+              "syllable and doubles, which is the P50 residual P51 closes",
+              "is a word");
+        CHECK(!z_lm_is_word("refering"),
+              "\"refering\" reads as a word — same rule, another final-stressed "
+              "base", "is a word");
+        CHECK(!z_lm_is_word("controling"),
+              "\"controling\" reads as a word — \"control\" is final-stressed "
+              "and its base is six letters, so neither the vowel count nor the "
+              "old three-letter rule reaches it", "is a word");
+        // THE POSITIVE CONTROL, and it is the whole reason this is a table and
+        // not a prefix rule. "offer" (of+fer) and "enter" (en+ter) have the same
+        // shape as "admit" (ad+mit) and the stress in the other place, so the
+        // obvious generalisation — "an unstressed Latin prefix means the stem is
+        // stressed" — would take these two out of autocorrect's reach.
+        CHECK(z_lm_is_word("offering"),
+              "\"offering\" was rejected — \"offer\" is stressed on its FIRST "
+              "syllable and does not double, which is what a prefix rule would "
+              "have got wrong", "not a word");
+        CHECK(z_lm_is_word("entering"),
+              "\"entering\" was rejected — same shape, same first-syllable "
+              "stress", "not a word");
     }
 
     // --- I. THE SUBSTITUTION COST IS ASKED 26x26 TIMES, NOT 200,000 ----------

@@ -512,13 +512,26 @@ static bool exact_word(const char *w) {
 // "visit" have two vowels and do not. The old rule is the new rule's three-letter
 // case, so nothing that worked stops working.
 //
-// THE RESIDUAL MOVES RATHER THAN VANISHING, and it is worth naming precisely: a
-// POLYSYLLABLE STRESSED ON ITS LAST SYLLABLE also doubles ("begin" ->
-// "beginning", "admit" -> "admitting", "refer" -> "referring"), and two vowels is
-// exactly what excludes it. So "begining" is still read as a word. That is a
-// handful of verbs against every one-syllable verb in English, and closing it
-// needs stress data this model does not have — which is a different thing from
-// the four-letter gap, which needed only counting.
+// THE RESIDUAL P50 NAMED, AND WHAT P51 DID WITH IT. A POLYSYLLABLE STRESSED ON
+// ITS LAST SYLLABLE also doubles ("begin" -> "beginning", "admit" ->
+// "admitting", "refer" -> "referring"), and two vowels is exactly what excludes
+// it — so "begining" was read as a word. P50 wrote "closing it needs stress data
+// this model does not have", and that is true of a RULE and false of this set.
+//
+// The set is closed and it is small. English final-stressed C-V-C verbs are
+// almost entirely Latin prefix + monosyllabic stem — be+gin, ad+mit, re+fer,
+// con+trol — and the productive ones a person types fit on the screen below.
+// What is NOT available is a rule that generates them: the obvious one, "an
+// unstressed prefix means the stress is on the stem", destroys "offer" (of+fer),
+// "enter" (en+ter) and "open", which is the same C-V-C shape with the stress in
+// the other place. That is precisely the stress data this model does not have.
+//
+// So it is a TABLE, and the reason a table is honest here rather than a
+// capitulation is the same reason the contractions list is (P49): the rule
+// covers the open class and the table covers the closed one. Fifteen entries
+// against every one-syllable verb in English is the right ratio, and a table
+// that cannot grow silently is easier to keep true than a heuristic that fails
+// on words nobody thought to test.
 //
 // 'w', 'x' and 'y' never double (fix/fixing, box/boxing, buy/buying, pay/paying),
 // and are treated as vowels in the C-V-C test for exactly that reason. They are
@@ -530,6 +543,30 @@ static bool vowelish(char c) {
 static bool is_vowel(char c) {
     return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u';
 }
+
+// The polysyllables whose final syllable carries the stress, so they double like
+// a monosyllable. Bases only — the rule strips the suffix before asking.
+static const char *const g_final_stress[] = {
+    "begin", "admit", "commit", "omit", "permit", "submit", "transmit",
+    "refer", "prefer", "occur", "control", "patrol", "regret", "forget",
+    "compel", "expel", "propel", "rebel", "repel", "equip",
+};
+
+// LENGTH-BOUNDED, and it has to be: needs_doubling() is handed the WHOLE word
+// with the base's length, not a NUL-terminated base — "begining" with len 5. A
+// strcmp here would compare "begining" against "begin" and never match, which is
+// a rule that silently does nothing.
+static bool final_stressed(const char *w, int len) {
+    for (size_t i = 0;
+         i < sizeof(g_final_stress) / sizeof(g_final_stress[0]); i++) {
+        if ((int)strlen(g_final_stress[i]) == len &&
+            strncmp(w, g_final_stress[i], (size_t)len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool needs_doubling(const char *w, int len) {
     if (len < 3) {
         return false;
@@ -538,14 +575,15 @@ static bool needs_doubling(const char *w, int len) {
     if (vowelish(w[len - 3]) || !vowelish(w[len - 2]) || vowelish(w[len - 1])) {
         return false;
     }
-    // ...and the whole base is one syllable.
+    // ...and the whole base is one syllable, or is one of the polysyllables
+    // stressed on its last one.
     int vowels = 0;
     for (int i = 0; i < len; i++) {
         if (is_vowel(w[i])) {
             vowels++;
         }
     }
-    return vowels == 1;
+    return vowels == 1 || final_stressed(w, len);
 }
 
 static bool inflected_word(const char *w) {

@@ -58,8 +58,36 @@
 //     THE REAL REQUIREMENT, now that it has been paid for: a list ranked by what
 //     people TYPE, not by what the web contains. Subtitle corpora (OpenSubtitles
 //     frequency lists) are the closest public-domain proxy and are the thing to
-//     measure next, against this same comparison. Until one wins that comparison
-//     this file stays, and "it is hand-assembled" stops being a reason on its own.
+//     measure next, against this same comparison.
+//
+//     P51 MEASURED IT, AND IT LOSES ON TOKENISATION RATHER THAN ON RANKING.
+//     The candidate was hermitdave/FrequencyWords 2018 en_50k.txt, which is the
+//     OpenSubtitles list P49 named. Its ranking is exactly what was hoped for —
+//     conversational rather than editorial, which is what a phone gets typed
+//     into. Its head is "you i the to a", where the web corpus's head was single
+//     letters and navigation furniture.
+//
+//     And it cannot be used as it stands, because the corpus is tokenised on the
+//     apostrophe. Read verbatim, the first 200 entries contain 's, 't, 'm, 're,
+//     'll, 've and 'd as words, and the bare stems "don", "didn", "won" and
+//     "doesn" as words beside them — eleven of the top two hundred are fragments
+//     of contractions, and the frequency they carry is the frequency of the
+//     WHOLE contraction. Adopting the list would put "didn" and "doesn" into the
+//     trie as very common words, which is precisely what CONTRACTIONS_EN below
+//     exists to prevent: its rule is that only bare forms which are NOT words may
+//     be in it, and this corpus would make several of them words. "won" is the
+//     sharpest case — it is a real word AND a contraction stem, and the rank the
+//     corpus gives it is almost entirely "won't".
+//
+//     So the verdict is a JOIN, not a swap: the corpus's ordering is the right
+//     signal and its tokens are the wrong unit. Using it means re-joining the
+//     stems to their apostrophes before ranking (don + 't -> "dont", not "don"),
+//     which is a corpus-preparation step nobody has written and which this phase
+//     is not. What has changed is that it is now a known, bounded piece of work
+//     against a named file rather than "the thing to measure next".
+//
+//     Until one wins that comparison this file stays, and "it is hand-assembled"
+//     stops being a reason on its own.
 //   - APOSTROPHES — EXPANDED NOW, THROUGH THE VISIBLE PATH (P49). "don't",
 //     "it's", "we're" are among the hundred commonest tokens in English and none
 //     of them can be in a trie over a-z, so they are here as the bare forms

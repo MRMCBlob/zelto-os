@@ -240,31 +240,110 @@ typedef enum ZFont {
 // string that any process can write, and a garbage value must degrade to a
 // legible screen rather than a 2-unit one.
 //
-// WHAT IS NOT SHIPPED AND WHY. iOS's five ACCESSIBILITY sizes (Body up to 53pt,
-// x3.1) are deliberately out of range. They are not a bigger number of the same
-// kind: at AX3 a label and its control no longer fit side by side on one row, so
-// every row in the OS has to REFLOW to a vertical layout — a different design
-// for the same screen, not a taller row. Shipping the standard range means the
-// fixed heights have to grow (which is P50's other half); shipping AX means the
-// grouped-list row has to become two layouts. That is a phase, and pretending
-// otherwise would ship an accessibility feature that breaks at the sizes the
-// people who need it actually use.
-#define Z_TEXT_SIZE_STEPS 7
+// THE FIVE ACCESSIBILITY SIZES (P51), steps 7..11 — AX1..AX5. P50 shipped the
+// seven standard steps and said the five above them were a phase, because they
+// are not a bigger number of the same kind: past a point a label and its control
+// stop fitting side by side, so a row is no longer a HEIGHT, it is a LAYOUT
+// DECISION. See Z_TEXT_SIZE_AX_FIRST / z_text_size_reflows() below — the break is
+// ONE predicate the whole OS asks, not a threshold each surface reimplements.
+//
+// THE OFFSETS ABOVE xxxLarge ARE BODY'S OWN COLUMN, and the additive rule is
+// KEPT while being honest about where it frays. Apple's AX columns are not a
+// constant offset any more; the gain per style spreads:
+//
+//        style        L    AX1  AX2  AX3  AX4  AX5
+//        Caption2     11   20   24   29   34   38     (+9  +13 +18 +23 +27)
+//        Body         17   28   33   40   47   53     (+11 +16 +23 +30 +36)
+//        Title1       28   38   43   50   58   64     (+10 +15 +22 +30 +36)
+//        LargeTitle   34   44   48   52   56   60     (+10 +14 +18 +22 +26)
+//
+// Body, Title1 and Caption2 stay within ~2-3pt of each other all the way to AX5;
+// only LargeTitle peels off, and it peels DOWNWARD (Apple compresses its hero
+// style so it does not eat the screen). Taking Body's column as the offset is
+// therefore exact for the style most of the OS is made of, within 3pt for the
+// rest of the reading ladder, and 10pt generous on the one style that appears
+// once per screen. A second table to shave those 10 points would have to be kept
+// true by hand; the ceiling that actually matters — the hero not eating the
+// screen — is a LAYOUT constraint and is better enforced where the layout is.
+#define Z_TEXT_SIZE_STEPS 12
 #define Z_TEXT_SIZE_DEFAULT 3
+
+// The first ACCESSIBILITY step. Below this is the standard ladder. One name, so
+// the number is not spelled anywhere else.
+#define Z_TEXT_SIZE_AX_FIRST 7
+
+// ---------------------------------------------------------------------------
+// THE REFLOW BREAK — the one predicate, and the measurement that placed it.
+//
+// A row that pairs a label with a control is a HORIZONTAL layout with an
+// assumption baked in: that the label, the detail value and the control all fit
+// on one line of a 640-unit card. Dynamic Type does not break that assumption
+// gradually. It breaks it at a step, and past that step the fix is not a taller
+// row — the label has to WRAP and the control has to move UNDER it, which is a
+// different layout for the same screen.
+//
+// WHERE IT BREAKS, measured rather than assumed. Settings ▸ Lock Screen (the
+// densest rows in the OS: a switch row, three stepper rows, an action row) was
+// booted at every step 3..11 with ZELTO_PROBE_TAPS on, and the widest row —
+// 'Screen Off After', a label plus a tabular value plus a two-key pill — is the
+// one that says where the break is:
+//
+//     step 7 (AX1): the pill's '+' key ends at x=671 on a 720 screen. Fits.
+//     step 8 (AX2): the same key lands at x=701 and ends at 753. GONE.
+//
+// A control 33 units off the edge of the screen cannot be pressed at all, and
+// nothing on the screen says it is there. That is the break: AX2.
+//
+// MEASURED AFTER FIXING THE ROW, WHICH IS WHY IT IS NOT AX3. The stepper's value
+// column was a literal 56 units — a fixed WIDTH holding text, wrong at the
+// default size already ('120s' wants 62) — and a Text that does not fit its box
+// paints straight through it rather than pushing anything. Until the column
+// scaled, the row APPEARED to survive AX2 while the value quietly drew over the
+// label, and the first symptom was the row running out of HEIGHT at AX3. Fixing
+// the width moved the break down a step and made it a single, honest one.
+//
+// The vertical half is gone separately: rows are z_row_h() now, so a row's height
+// follows its line at every step. What is left is purely horizontal, which is
+// what a reflow is for.
+//
+// WHY A STEP AND NOT A FIT TEST. The honest condition is per-row: "does this
+// label plus this control fit this card". The toolkit cannot ask that — layout
+// is one intrinsic-size pass, so a row cannot measure itself and then choose a
+// different shape. A step threshold is the approximation, and it is calibrated
+// on the WIDEST row in the OS at 720 units, so the rows that break first are the
+// ones the number was read off. A surface with a shorter label reflows a step or
+// two earlier than it strictly had to; that costs it a taller row, not a
+// truncated one.
+//
+// WHY ONE PREDICATE. The same argument that made z_font_units() one function: a
+// threshold each surface reimplements is a threshold that drifts, and the drift
+// is invisible because every surface still looks fine at the size its author
+// tested. Ask this; never compare z_text_size() to a literal.
+#define Z_TEXT_SIZE_REFLOW_FIRST 8
+
+// True when rows must lay their controls out UNDER their labels rather than
+// beside them. False for a process that called z_text_scaling_disable(): a
+// surface pinned to the default text size never reflows either.
+bool z_text_size_reflows(void);
 
 // The brokered keys. These live HERE, not in system/common/settings_defaults.h
 // where the other shared key names are, and the layering is the reason: every
 // libzelto process reads them from inside the toolkit, and system/common sits
 // ABOVE the toolkit (it includes this header). settings_defaults.h points at
 // these rather than spelling them again, so there is still one definition.
-#define ZELTO_KEY_TEXT_SIZE "sys.text_size"   // 0..6, default Z_TEXT_SIZE_DEFAULT
+#define ZELTO_KEY_TEXT_SIZE "sys.text_size"   // 0..11, default Z_TEXT_SIZE_DEFAULT
 #define ZELTO_KEY_BOLD_TEXT "sys.bold_text"   // 0/1
+// The third accessibility preference libzelto reads for itself, and it is here
+// beside the other two for the same layering reason. What it does is a palette
+// question, so the numbers and the decision live in <zelto/gfx.h>.
+#define ZELTO_KEY_INCREASE_CONTRAST "sys.increase_contrast"   // 0/1
 
 // The per-step offset in POINTS, indexed by the size step. Down from the default
 // it is one point per step; up it is two, then two, then two — Apple's own
 // spacing, which grows faster above the default because that is the direction
 // somebody is actively asking for.
-#define Z_TEXT_SIZE_OFFSETS { -3, -2, -1, 0, +2, +4, +6 }
+#define Z_TEXT_SIZE_OFFSETS                                                    \
+    { -3, -2, -1, 0, +2, +4, +6, +11, +16, +23, +30, +36 }
 
 // A step's size in SCREEN UNITS at the process's current text size. This is the
 // only conversion from ZFont to a number the renderer sees.

@@ -50,12 +50,13 @@ typedef struct SettingsState {
     int64_t kbd_learned;
     int64_t kbd_forget_epoch;
 
-    // P50 Accessibility. text_size is the STEP INDEX (0..6), not a size: the
+    // P50 Accessibility. text_size is the STEP INDEX (0..11), not a size: the
     // ladder is the toolkit's business (z_font_units), and a Settings app that
     // stored point values would be a second opinion about the type scale.
     int64_t text_size;
     bool bold_text;
     bool reduce_motion;
+    bool increase_contrast;   // P51
     ZSlider text_slider;
 } SettingsState;
 
@@ -92,6 +93,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->bold_text = v != 0;
     } else if (strcmp(key, "sys.reduce_motion") == 0) {
         s->reduce_motion = v != 0;
+    } else if (strcmp(key, ZELTO_KEY_INCREASE_CONTRAST) == 0) {
+        s->increase_contrast = v != 0;
     } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
         snprintf(s->wp_current, sizeof(s->wp_current), "%s", value ? value : "");
     }
@@ -125,6 +128,8 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->text_size = z_setting_get_int(ZELTO_KEY_TEXT_SIZE, Z_TEXT_SIZE_DEFAULT);
     s->bold_text = z_setting_get_int(ZELTO_KEY_BOLD_TEXT, 0) != 0;
     s->reduce_motion = z_setting_get_int("sys.reduce_motion", 0) != 0;
+    s->increase_contrast =
+        z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0;
     s->text_slider.on_change = text_slide;
     // Wallpaper picker: enumerate the directory once and record the active choice.
     s->wp_count = zelto_wallpaper_list(s->wp_paths, ZELTO_WALLPAPER_MAX);
@@ -231,6 +236,13 @@ static void t_bold(ZApp *app, void *state) {
     z_invalidate(app);
 }
 
+static void t_increase_contrast(ZApp *app, void *state) {
+    SettingsState *s = state;
+    s->increase_contrast = !s->increase_contrast;
+    z_setting_set_int(ZELTO_KEY_INCREASE_CONTRAST, s->increase_contrast);
+    z_invalidate(app);
+}
+
 static void t_reduce_motion(ZApp *app, void *state) {
     SettingsState *s = state;
     s->reduce_motion = !s->reduce_motion;
@@ -326,29 +338,19 @@ static void lock_now(ZApp *app, void *state) {
 // nothing was making up any difference: 16 units is 8.6pt where the list it
 // copies uses 16pt, so every label in the app sat half as far from the card's
 // edge as it should.
-// STILL THE FLOOR, NOT z_row_h(), AND THAT IS A MEASURED DECISION (P50).
-// Dynamic Type made every fixed height that holds text suspect, and this is the
-// densest set of them in the OS — six screens of them. The toolkit grew z_row_h()
-// for exactly this: the larger of the 44pt touch target and one Body line plus
-// its breathing room. Settings does not use it, because the audit says it does
-// not need to.
-//
-// The numbers: Body runs 31 units at the default text size and 42 at the largest,
-// and its line box 40 to 53. An 81-unit row holds a 53-unit line with 14 units
-// above and below — tighter than the 20 it has today, and nowhere near clipping.
-// Every Settings screen was booted at the largest size with ZELTO_PROBE_TAPS on
-// (test_text_size_overflow_sim.sh) and reports zero text wider or taller than its
-// box. So across the range this OS ships, the touch-target floor wins every time
-// and z_row_h() would return this same 81.
-//
-// Switching anyway would move every Settings shot in the catalogue to buy a
-// difference of six units of padding at one end of the range. What it WOULD buy
-// is headroom for the accessibility sizes, and those are deliberately not
-// shipped (see <zelto/ui.h>) — the day they are, this line becomes z_row_h(app)
-// and the rows below it take an app pointer.
-#define ROW_H ((float)Z_ROW_H)         // 81 — the row's TOTAL height (Apple's 44pt)
+// P50 measured that the 81-unit floor won across the seven standard steps and
+// left the literal here, with a note saying "the day the accessibility sizes are
+// shipped, this line becomes z_row_h(app) and the rows below it take an app
+// pointer". P51 shipped them, so it did. `ROW_H` is gone: a row's height is
+// z_row_h(app) — the larger of the 44pt touch target and one Body line plus its
+// breathing room — which is still exactly 81 at the default size, so no shot of
+// an unconfigured device moved.
 #define ROW_PAD ((float)Z_PT(16))      // 29 — leading/trailing inset inside a card
 #define SEC_GAP 30.0f     // between one group's footer and the next group's header
+// The gap between a wrapped label and the control that moved under it when the
+// row reflowed. Half the row's own vertical breathing room: the two belong to
+// each other and must read as one row, not as two.
+#define REFLOW_GAP ((float)Z_ROW_VPAD * 0.5f)
 
 // A fixed gap. NOT Frame(w, h, Spacer()) — a Spacer keeps its grow flag through
 // Frame and eats the stack's spare space; an empty transparent Rect does not.
@@ -381,30 +383,93 @@ static ZView inset_text(ZApp *app, const char *s, ZFont size, ZColor ink,
         .spacing = 0, .align = Z_ALIGN_LEADING);
 }
 
-// One list row: a fixed height so every row in every group shares a baseline
-// rhythm (a row that sizes to its control makes a switch row and a stepper row
-// different heights, and the list stops looking like a list).
+// A MINIMUM height — the primitive the toolkit does not have and this file needs
+// three times over once rows stop having a knowable height. A ZStack takes the
+// size of its largest child (and centres children at their own size unless
+// Fill()), so an invisible Frame of the floor height beside the real content IS
+// max(floor, content), with no measuring and no new toolkit node.
+static ZView min_height(float h, ZView content) {
+    return ZStack(Frame(1.0f, h, Rect(.color = z_rgba(0, 0, 0, 0))), content,
+                  .align = Z_ALIGN_CENTER);
+}
+
+// One list row: a height so every row in every group shares a baseline rhythm (a
+// row that sizes to its control makes a switch row and a stepper row different
+// heights, and the list stops looking like a list).
 //
 // The inset is two explicit end gaps rather than Padding, because Padding is BOTH
 // axes: as padding it would add its 29 above and below the fixed height and the
 // row would be 139 tall. The content Grow(1)s between them so the label column
 // still spans the card.
-static ZView list_row(ZView content) {
-    return Frame(0.0f, ROW_H,
-        HStack(Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
-               Grow(1.0f, content),
-               Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
-               .spacing = 0, .align = Z_ALIGN_CENTER));
+//
+// REFLOWED, the height goes away entirely. It has to: the whole reason the row
+// reflowed is that its content no longer has a knowable height — a label that
+// wraps is one line or three depending on the string and the size, and a Frame
+// that pinned it would clip exactly the text somebody asked to be able to read.
+// The vertical rhythm becomes explicit padding instead, so the row still breathes
+// the same amount at both ends.
+static ZView list_row(ZApp *app, ZView content) {
+    ZView inner = HStack(Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+                         Grow(1.0f, content),
+                         Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+                         .spacing = 0, .align = Z_ALIGN_CENTER);
+    if (z_text_size_reflows()) {
+        return VStack(gap((float)Z_ROW_VPAD), inner, gap((float)Z_ROW_VPAD),
+                      .spacing = 0, .align = Z_ALIGN_LEADING);
+    }
+    return Frame(0.0f, z_row_h(app), inner);
 }
 
 // A label on the left, its control on the right. This is the whole grammar of the
 // screen: the left column is scannable prose, the right column is the state.
-static ZView labelled(const char *label, ZView control) {
-    return list_row(HStack(
+//
+// AND AT THE ACCESSIBILITY SIZES IT IS THE WHOLE GRAMMAR OF THE SCREEN TURNED
+// NINETY DEGREES. Past Z_TEXT_SIZE_REFLOW_FIRST the label alone is wider than the
+// card, so:
+//
+//   - the label becomes a WrapText at the card's own text column. Text never
+//     wraps and never truncates — it measures to one line however long and the
+//     glyphs paint straight through their box — so a Text here is not "a label
+//     that overflows a bit", it is a label running off the screen.
+//   - the control moves onto its own line, leading-aligned. NOT trailing: at
+//     these sizes the label's last line ends anywhere, and a control pinned to
+//     the right edge of a card floats away from the words it belongs to. Every
+//     row starting its control at the same x is what keeps the list a list.
+//
+// One function, so a row cannot opt out of the reflow by being written later.
+static ZView labelled(ZApp *app, const char *label, ZView control) {
+    if (z_text_size_reflows()) {
+        return list_row(app, VStack(
+            WrapText(app, label, .width = INSET_TEXT_W, .size = Z_FONT_BODY,
+                     .color = Z_COLOR_TEXT, .line_gap = 4.0f),
+            gap(REFLOW_GAP),
+            HStack(control, Spacer(), .spacing = 0, .align = Z_ALIGN_CENTER),
+            .spacing = 0, .align = Z_ALIGN_LEADING));
+    }
+    return list_row(app, HStack(
         Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
         Spacer(),
         control,
         .spacing = 12, .align = Z_ALIGN_CENTER));
+}
+
+// An ACTION row: a full-width card with a centred label and no control. It does
+// something now rather than holding a state, and centring it is how iOS says so.
+//
+// It never reflows — there is no control to move under anything — but it is a
+// fixed height holding text like every other row, so it takes the derived one;
+// and its label wraps, because "Clear Learned Words" measures over 1000 units at
+// AX5 in a 640-unit card.
+static ZView action_row(ZApp *app, const char *label, ZColor ink) {
+    return Background(Z_COLOR_SURFACE,
+        CornerRadius(Z_RADIUS_CARD,
+            min_height(z_row_h(app),
+                VStack(gap((float)Z_ROW_VPAD),
+                       WrapText(app, label, .width = INSET_TEXT_W,
+                                .size = Z_FONT_BODY, .weight = Z_WEIGHT_SEMIBOLD,
+                                .color = ink, .line_gap = 4.0f),
+                       gap((float)Z_ROW_VPAD),
+                       .spacing = 0, .align = Z_ALIGN_CENTER))));
 }
 
 // One label + On/Off toggle row. The On/Off face CROSS-FADES between off
@@ -448,7 +513,7 @@ static ZView toggle_row(ZApp *app, uint64_t key, const char *label, bool on,
                                      .radius = KNOB * 0.5f)))),
                     .align = Z_ALIGN_CENTER))));
 
-    return labelled(label, OnTap(act, sw));
+    return labelled(app, label, OnTap(act, sw));
 }
 
 // One half of the stepper pill. The press veil is masked to the TAPPED node's own
@@ -471,8 +536,8 @@ static ZView step_key(ZAction act, const char *mark) {
 // sits to the LEFT of the control in muted ink — the iOS "detail" column, where
 // every read-only right-hand value on the screen lives — and is tabular-width so
 // stepping it does not shuffle the row.
-static ZView stepper_row(const char *label, int64_t val, const char *unit,
-                         ZAction dec, ZAction inc) {
+static ZView stepper_row(ZApp *app, const char *label, int64_t val,
+                         const char *unit, ZAction dec, ZAction inc) {
     ZView pill = Background(Z_COLOR_SURFACE_3,
         CornerRadius(Z_RADIUS_CHIP,
             HStack(
@@ -480,17 +545,23 @@ static ZView stepper_row(const char *label, int64_t val, const char *unit,
                 Frame(1.0f, 22.0f, Rect(.color = Z_COLOR_BORDER)),
                 step_key(inc, "+"),
                 .spacing = 0, .align = Z_ALIGN_CENTER)));
-    return list_row(HStack(
-        Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
-        Spacer(),
-        Frame(56.0f, 0.0f,
-            HStack(Spacer(),
-                Foreground(Z_COLOR_TEXT_MUTED,
-                    Font(Z_FONT_BODY,
-                         Text("%lld%s", (long long)val, unit))),
-                .spacing = 0, .align = Z_ALIGN_CENTER)),
-        pill,
-        .spacing = 12, .align = Z_ALIGN_CENTER));
+    // The value's column is TABULAR: stepping 8s to 9s must not shuffle the pill.
+    // It was a literal 56, which is a fixed WIDTH HOLDING TEXT — the same class
+    // of bug as a fixed height holding text, and it was already wrong at the
+    // DEFAULT size: '120s' measures 147 units at Body 73.6 (step 9), so a digit
+    // in this face advances almost exactly half its em, and the four-glyph widest
+    // value wants 2.0 x Body — 62 units where the column gave 56.
+    //
+    // So the column is that expression, at whatever Body is now. This is the
+    // number the reflow break was re-measured against: until the column scaled,
+    // the value silently painted outside it and the row only APPEARED to fit.
+    ZView value = Frame(2.0f * z_font_units(Z_FONT_BODY), 0.0f,
+        HStack(Spacer(),
+            Foreground(Z_COLOR_TEXT_MUTED,
+                Font(Z_FONT_BODY, Text("%lld%s", (long long)val, unit))),
+            .spacing = 0, .align = Z_ALIGN_CENTER));
+    return labelled(app, label,
+        HStack(value, pill, .spacing = 12, .align = Z_ALIGN_CENTER));
 }
 
 // The disclosure chevron: the mark that says "this row is a DOOR, not a
@@ -532,27 +603,27 @@ static void push_screen(ZApp *app, void *state, void *data) {
 // made of, and the value is the point of it — "Brightness  4  >" tells you the
 // state without drilling in, so the root stays a status read-out rather than a
 // bare table of contents.
-static ZView detail_row(const char *label, const char *value,
+static ZView detail_row(ZApp *app, const char *label, const char *value,
                         const SettingsRoute *route) {
     return OnTapData(push_screen, (void *)route,
-        list_row(HStack(
-            Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
-            Spacer(),
-            Foreground(Z_COLOR_TEXT_MUTED,
-                Font(Z_FONT_BODY, Text("%s", value ? value : ""))),
-            chevron(),
-            .spacing = 10, .align = Z_ALIGN_CENTER)));
+        labelled(app, label,
+            HStack(
+                Foreground(Z_COLOR_TEXT_MUTED,
+                    Font(Z_FONT_BODY, Text("%s", value ? value : ""))),
+                chevron(),
+                .spacing = 10, .align = Z_ALIGN_CENTER)));
 }
 
 // A label + slider row. Unlike the stepper this row has NO numeric read-out: the
 // slider's own fill is the value, and a level whose whole point is "how bright
 // does that look" does not gain anything from also being told it is a 4.
 static ZView slider_row(ZApp *app, const char *label, ZSlider *sl) {
-    return list_row(HStack(
-        Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
-        Spacer(),
-        Slider(app, sl, .length = 300.0f, .thickness = 6.0f),
-        .spacing = 12, .align = Z_ALIGN_CENTER));
+    // Reflowed, the slider gets the whole column rather than the 300 units left
+    // over beside a label — the one control on this screen that is BETTER for
+    // having reflowed, because a slider's precision is its length.
+    float len = z_text_size_reflows() ? INSET_TEXT_W : 300.0f;
+    return labelled(app, label,
+        Slider(app, sl, .length = len, .thickness = 6.0f));
 }
 
 // A GROUP: the inset, rounded card that a run of settings rows lives in, with a
@@ -656,10 +727,28 @@ static ZView wp_grid(SettingsState *s) {
 static ZView settings_screen(ZApp *app, const char *title, ZView *blocks, int n) {
     ZStackOpts col = {.spacing = SEC_GAP, .align = Z_ALIGN_LEADING};
     int k = 0;
+    // WRAPPED, as of P51. A Large Title is 74 units at the default size and 141
+    // at AX5, where "Display & Sound" measures 798 on a 720 screen — a screen
+    // title running off its own screen. It is the same Text-never-wraps trap the
+    // footers hit in P44, at the one string on the page nobody thought could be
+    // too long, because at the size it was written it never was.
+    //
+    // AND IT DROPS A STEP WHEN THE ROWS REFLOW. <zelto/gfx.h>'s additive ladder
+    // is exact for Body and 10pt generous for the hero style, because Apple
+    // compresses Large Title at the accessibility sizes and one additive rule
+    // cannot; the note over Z_TEXT_SIZE_OFFSETS says the ceiling belongs in the
+    // LAYOUT rather than in a second table, and this is the layout. Title still
+    // wraps here — no size a person asked to be able to read fits
+    // "Accessibility" on one 582-unit line — but the hero stops being three
+    // times the height of the rows under it.
     col.children[k++] = HStack(
         Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
         Weight(Z_WEIGHT_BOLD,
-            Foreground(Z_COLOR_TEXT, Font(Z_FONT_LARGE_TITLE, Text("%s", title)))),
+            WrapText(app, title, .width = LIST_W - 2.0f * ROW_PAD,
+                     .size = z_text_size_reflows() ? Z_FONT_TITLE
+                                                   : Z_FONT_LARGE_TITLE,
+                     .weight = Z_WEIGHT_BOLD,
+                     .color = Z_COLOR_TEXT, .line_gap = 4.0f)),
         .spacing = 0, .align = Z_ALIGN_CENTER);
     for (int i = 0; i < n && k < Z_MAX_CHILDREN - 2; i++) {
         col.children[k++] = blocks[i];
@@ -714,7 +803,7 @@ static ZView screen_wallpaper(ZApp *app, void *props) {
     ZView card = s->wp_count > 0
         ? Background(Z_COLOR_SURFACE,
               CornerRadius(Z_RADIUS_CARD, Padding(ROW_PAD, wp_grid(s))))
-        : group((ZView[]){labelled("Wallpaper",
+        : group((ZView[]){labelled(app, "Wallpaper",
                     Foreground(Z_COLOR_TEXT_MUTED,
                         Font(Z_FONT_BODY, Text("None found"))))}, 1);
     ZView blocks[] = {
@@ -729,21 +818,11 @@ static ZView screen_lock(ZApp *app, void *props) {
         toggle_row(app, 0x5E7105u, "Lock Screen", s->lock_enabled, t_lock),
         toggle_row(app, 0x5E7106u, "Passcode (1234)", s->passcode_set,
                    t_passcode),
-        stepper_row("Dim After", s->dim_s, "s", dim_dec, dim_inc),
-        stepper_row("Lock After", s->lock_s, "s", lock_dec, lock_inc),
-        stepper_row("Screen Off After", s->off_s, "s", off_dec, off_inc),
+        stepper_row(app, "Dim After", s->dim_s, "s", dim_dec, dim_inc),
+        stepper_row(app, "Lock After", s->lock_s, "s", lock_dec, lock_inc),
+        stepper_row(app, "Screen Off After", s->off_s, "s", off_dec, off_inc),
     };
-    // The one ACTION here. An action row is a full-width card with a centred
-    // label and no control: it does something now rather than holding a state,
-    // and centring it is how iOS says so.
-    ZView act = Background(Z_COLOR_SURFACE,
-        CornerRadius(Z_RADIUS_CARD,
-            Frame(0.0f, ROW_H,
-                ZStack(
-                    Weight(Z_WEIGHT_SEMIBOLD,
-                        Foreground(Z_COLOR_TEXT,
-                            Font(Z_FONT_BODY, Text("Lock Now")))),
-                    .align = Z_ALIGN_CENTER))));
+    ZView act = action_row(app, "Lock Now", Z_COLOR_TEXT);
     ZView blocks[] = {
         section_block(app, NULL, group(rows, 5),
             "Each delay is measured from your last touch."),
@@ -766,17 +845,39 @@ static ZView screen_lock(ZApp *app, void *props) {
 // (the screen is), it is a reminder of what the ladder does to a paragraph.
 //
 // The two end caps are the small and the large A, which is the control's own
-// legend and is what every phone puts there. They are drawn at FIXED steps
-// (Caption2 and Title) rather than at the live size, or the legend would resize
-// with the thing it is labelling and stop being a scale.
+// legend and is what every phone puts there. They are drawn at FIXED STEPS
+// (Caption2 and Title) — and P50 wrote that as "rather than at the live size, or
+// the legend would resize with the thing it is labelling", which was wrong about
+// the mechanism. Font() routes through z_font_units() like everything else, so
+// the caps DO grow: at AX5 the Title 'A' wants a 148-unit line box. What a fixed
+// STEP preserves is not the size, it is the CONTRAST — the small A stays five
+// steps below the large one wherever the ladder sits, and that ratio is the
+// entire information content of a legend. The row it sits in is then the one
+// that has to give (see text_size_row).
 #define TEXT_SAMPLE "The quick brown fox."
 
+// The end caps are drawn at FIXED steps and the row they sit in is not: a
+// Z_FONT_TITLE 'A' wants 148 units of line box at AX5 and Z_ROW_H is 81. The
+// caps are the one thing on this screen that must NOT resize, so the ROW has to
+// be the one that gives — it is the taller of the row height and the taller cap,
+// which is an expression over the two things in it rather than a number.
 static ZView text_size_row(ZApp *app, SettingsState *s) {
-    return list_row(HStack(
-        Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION2, Text("A"))),
-        Slider(app, &s->text_slider, .length = 380.0f, .thickness = 6.0f),
-        Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("A"))),
-        .spacing = 14, .align = Z_ALIGN_CENTER));
+    float caps_h = z_line_height(app, Z_FONT_TITLE) + 2.0f * (float)Z_ROW_VPAD;
+    float row_h = z_row_h(app);
+    float h = caps_h > row_h ? caps_h : row_h;
+    // NOT list_row(): this row is the slider's own legend, it never reflows (the
+    // caps ARE the horizontal scale — stacking them destroys the control), and
+    // its height is the caps', not the body text's.
+    return Frame(0.0f, h,
+        HStack(Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+               Grow(1.0f, HStack(
+                   Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION2, Text("A"))),
+                   Slider(app, &s->text_slider, .length = 380.0f,
+                          .thickness = 6.0f),
+                   Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("A"))),
+                   .spacing = 14, .align = Z_ALIGN_CENTER)),
+               Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
+               .spacing = 0, .align = Z_ALIGN_CENTER));
 }
 
 static ZView screen_accessibility(ZApp *app, void *props) {
@@ -801,6 +902,8 @@ static ZView screen_accessibility(ZApp *app, void *props) {
     ZView size_rows[] = {text_size_row(app, s)};
     ZView vis_rows[] = {
         toggle_row(app, 0x5E7107u, "Bold Text", s->bold_text, t_bold),
+        toggle_row(app, 0x5E7109u, "Increase Contrast", s->increase_contrast,
+                   t_increase_contrast),
         toggle_row(app, 0x5E7108u, "Reduce Motion", s->reduce_motion,
                    t_reduce_motion),
     };
@@ -813,9 +916,10 @@ static ZView screen_accessibility(ZApp *app, void *props) {
         section_block(app, NULL, group(size_rows, 1),
             "Apps and system screens use this size. The status bar and the "
             "keyboard keep theirs."),
-        section_block(app, NULL, group(vis_rows, 2),
-            "Bold Text thickens every weight. Reduce Motion replaces slides and "
-            "springs with instant changes."),
+        section_block(app, NULL, group(vis_rows, 3),
+            "Bold Text thickens every weight. Increase Contrast lightens "
+            "secondary text and the lines between rows. Reduce Motion replaces "
+            "slides and springs with instant changes."),
     };
     return settings_screen(app, "Accessibility", blocks, 3);
 }
@@ -851,20 +955,13 @@ static ZView screen_keyboard(ZApp *app, void *props) {
     char count[32];
     snprintf(count, sizeof(count), "%lld", (long long)s->kbd_learned);
     ZView rows[] = {
-        labelled("Learned Words",
+        labelled(app, "Learned Words",
                  Foreground(Z_COLOR_TEXT_MUTED,
                             Font(Z_FONT_BODY, Text("%s", count)))),
     };
     // The DESTRUCTIVE action row: the same shape as "Lock Now" on the Lock
     // screen, in the danger colour, because it throws data away.
-    ZView act = Background(Z_COLOR_SURFACE,
-        CornerRadius(Z_RADIUS_CARD,
-            Frame(0.0f, ROW_H,
-                ZStack(
-                    Weight(Z_WEIGHT_SEMIBOLD,
-                        Foreground(Z_COLOR_DANGER,
-                            Font(Z_FONT_BODY, Text("Clear Learned Words")))),
-                    .align = Z_ALIGN_CENTER))));
+    ZView act = action_row(app, "Clear Learned Words", Z_COLOR_DANGER);
     ZView blocks[] = {
         section_block(app, NULL, group(rows, 1),
             "The keyboard learns a word after you have typed it a few times "
@@ -905,17 +1002,17 @@ static ZView screen_root(ZApp *app, void *props) {
              (long long)s->kbd_learned);
 
     ZView rows[] = {
-        detail_row("Network",
+        detail_row(app, "Network",
                    s->airplane ? "Airplane" : (s->wifi ? "Wi-Fi" : "Off"),
                    &r_network),
-        detail_row("Display & Sound", bright, &r_display),
-        detail_row("Wallpaper", s->wp_count > 0 ? "" : "None", &r_wallpaper),
-        detail_row("Lock Screen", s->lock_enabled ? "On" : "Off", &r_lock),
-        detail_row("Keyboard", learned, &r_keyboard),
+        detail_row(app, "Display & Sound", bright, &r_display),
+        detail_row(app, "Wallpaper", s->wp_count > 0 ? "" : "None", &r_wallpaper),
+        detail_row(app, "Lock Screen", s->lock_enabled ? "On" : "Off", &r_lock),
+        detail_row(app, "Keyboard", learned, &r_keyboard),
         // The detail column carries the SIZE'S NAME, not its index: "4 of 7" is
         // a fact about the implementation, and the root list is meant to read as
         // a status line.
-        detail_row("Accessibility", z_text_size_name((int)s->text_size),
+        detail_row(app, "Accessibility", z_text_size_name((int)s->text_size),
                    &r_access),
     };
     ZView blocks[] = {

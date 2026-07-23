@@ -27,6 +27,11 @@ static const int g_offset_pt[Z_TEXT_SIZE_STEPS] = Z_TEXT_SIZE_OFFSETS;
 static const char *const g_names[Z_TEXT_SIZE_STEPS] = {
     "Extra Small", "Small", "Medium", "Default", "Large", "Extra Large",
     "Largest",
+    // The five accessibility steps. iOS calls them "Accessibility Medium" and so
+    // on; those names describe the position INSIDE the accessibility range and
+    // read as smaller than "Largest", which they are not. AX1..AX5 is what the
+    // documentation calls them and what the slider's own position says.
+    "AX1", "AX2", "AX3", "AX4", "AX5",
 };
 
 static int g_step = Z_TEXT_SIZE_DEFAULT;
@@ -54,6 +59,18 @@ int z_text_size(void) { return g_enabled ? g_step : Z_TEXT_SIZE_DEFAULT; }
 const char *z_text_size_name(int step) { return g_names[clamp_step(step)]; }
 
 bool z_text_bold(void) { return g_enabled && g_bold; }
+
+// The reflow break. One comparison, in one place — see the long note in
+// <zelto/ui.h> for where the 9 came from (it was measured, on Settings ▸ Lock
+// Screen, at the step where the row runs out of height and the stepper runs off
+// the right edge simultaneously).
+//
+// Gated on g_enabled for the same reason z_font_units() is: a process that
+// called z_text_scaling_disable() draws at the default size, and a surface
+// drawing default-size type must not rearrange itself as though it were not.
+bool z_text_size_reflows(void) {
+    return g_enabled && g_step >= Z_TEXT_SIZE_REFLOW_FIRST;
+}
 
 // Returns true when the value actually moved, so the caller knows whether a
 // rebuild is owed. Called from startup (once) and from the settings fan-out.

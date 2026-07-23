@@ -612,9 +612,24 @@ static int rows_per_page(float sw, float sh) {
     return r;
 }
 
+// A WIDGET GOES FULL WIDTH AT THE ACCESSIBILITY SIZES (P51), and it is the same
+// reflow the Settings rows do, in the only shape a bento grid has.
+//
+// A 2x1 cell is 298 units wide. The clock widget's weekday measures 371 at AX5,
+// the status widget's '100%' 324, the notification widget's 'All clear' 379 —
+// every one of them wider than the card it is drawn in, and none of them is
+// prose that could wrap or an identifier that could ellipsize. 'Thu…' is not a
+// smaller weekday, it is a worse one, and there is no shorter way to write 100%.
+//
+// A widget is a GLANCE: it earns its cell by saying three short things at once,
+// and at these sizes three short things need the whole row. So the span is a
+// function of the text size rather than a constant in the table — the table
+// keeps saying what the widget wants, and the grid answers with what it can have.
+// An app ICON is untouched: it is a picture with a label under it, the label
+// already ellipsizes (P50), and four columns of icons is the home screen.
 static void entry_span(const HomeEntry *e, int *cw, int *ch) {
     if (e->kind == HE_WIDGET) {
-        *cw = g_widget_defs[e->ref].cw;
+        *cw = z_text_size_reflows() ? GRID_COLS : g_widget_defs[e->ref].cw;
         *ch = g_widget_defs[e->ref].ch;
     } else {
         *cw = 1;
