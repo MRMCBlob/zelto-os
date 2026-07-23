@@ -53,6 +53,37 @@
 #define KBD_REPEAT_WORD_S 2.0     // after this, whole words at a time
 #define KBD_REPEAT_WORD_GAP_S 0.25
 
+// --- the learned dictionary, as constants (P49) -----------------------------
+// The policy numbers. The mechanism is z_lm_learn (predict.h); everything about
+// WHEN to ring that doorbell is here, and the reasoning is over kbd_learn().
+//
+// How many times a string the dictionary does not carry has to survive a word
+// boundary uncorrected before it is a word of yours rather than a typo. A word
+// typed ONCE is a typo. Three is the smallest number a slip cannot reach by
+// accident — you would have to make the same misspelling three times — and is
+// reached inside a single message for a word you actually use.
+#define KBD_LEARN_SEEN 3
+// How many candidate words are counted at once. Not a cache of what you typed:
+// it is a fixed table of at most this many strings, and the least-seen entry is
+// overwritten when a new candidate arrives. Small on purpose.
+#define KBD_SEEN_SLOTS 32
+#define KBD_LEARN_WORD_CAP 24
+// The file the learned words live in, in the keyboard's own private directory
+// under /var/zelto (P11). One word per line, exactly the shape of words_en.h,
+// because a store the user cannot read is a log.
+#define KBD_DICT_FILE "learned-words.txt"
+// How many learned words are persisted. The model's own cap is the same order;
+// this one is what bounds the FILE, so the store cannot grow without limit no
+// matter how long the phone is used.
+#define KBD_LEARN_MAX 512
+// The brokered keys the learned dictionary is visible and deletable through.
+// The keyboard publishes the count; Settings bumps the epoch to clear it, and
+// the keyboard honours an epoch it has not seen before — including one bumped
+// while it was not running, which is why the epoch is stored rather than the
+// event being observed.
+#define KBD_KEY_LEARNED_COUNT "sys.kbd_learned"
+#define KBD_KEY_FORGET "sys.kbd_forget_learned"
+
 // Shift is three states, not a bool (P47). A one-shot shift and a caps lock are
 // different keys wearing the same cap, and a phone tells them apart by how you
 // press it: once for the next letter, twice quickly to lock.
@@ -141,6 +172,25 @@ typedef struct KbdState {
     bool revert_armed;
     char revert_from[Z_TEXTFIELD_CAP];   // what autocorrect put in the field
     char revert_to[Z_TEXTFIELD_CAP];     // what the user actually typed
+    // ...and WHICH BOUNDARY followed it. P48 could hard-code a space here because
+    // the space bar was the only boundary there was; now "teh." and a typo ended
+    // with RETURN correct too, and a revert that went looking for "<word> " would
+    // silently decline on both of them.
+    char revert_bnd[8];
+
+    // --- the learned dictionary (P49) ----------------------------------------
+    // The counters that decide whether a word the shipped dictionary does not
+    // carry is a typo or a word of yours. See the privacy note over kbd_learn():
+    // these live in RAM and are NEVER written to disk, because a file of strings
+    // somebody typed once is exactly the log a learned dictionary must not
+    // become. Only a word that reaches the threshold is persisted.
+    struct {
+        char word[KBD_LEARN_WORD_CAP];
+        int seen;
+    } seen[KBD_SEEN_SLOTS];
+    bool dict_loaded;
+    int learned_n;          // how many words are in the model, for the log/UI
+    int64_t clear_epoch;    // the sys.kbd_forget_learned we have already honoured
 } KbdState;
 
 // Commit the next character of ZELTO_KBD_TYPE, then re-arm until the string is
@@ -160,11 +210,25 @@ static void kbd_suggest(ZApp *app, KbdState *s);
 static int kbd_cur_word(ZApp *app, char *out, size_t n);
 // Would autocorrect change `word` on a boundary, and to what? Writes the
 // case-matched replacement to `out` and returns true when it fires. The single
-// source both the strip and the space bar consult, so they cannot disagree.
+// source the strip and EVERY boundary consult, so they cannot disagree — which is
+// the whole of P49 item 3: in P48 the space bar was the only boundary there was.
 static bool kbd_autocorrect(ZApp *app, const char *word, char *out, size_t n);
 // Forget the pending revert. Called by every key that is not the backspace that
 // consumes it, because a revert is offered for exactly one keystroke.
 static void kbd_clear_revert(KbdState *s);
+// A word has ended and `commit` is the text that ended it. THE one boundary —
+// see the note over kbd_boundary().
+static void kbd_boundary(ZApp *app, KbdState *s, const char *commit);
+// Count a word that survived a boundary uncorrected, and learn it once it has
+// survived enough of them. See the privacy note over kbd_learn().
+static void kbd_learn_seen(ZApp *app, KbdState *s, const char *word);
+// Teach the model a word now, persist it, and republish the count.
+static bool kbd_learn(ZApp *app, KbdState *s, const char *word);
+// Read / write / delete the learned-word file. See dict_load().
+static void dict_load(KbdState *s);
+static void dict_save(void);
+// Settings cleared the learned words. See on_setting().
+static void on_setting(ZApp *app, const char *key, const char *value, void *ud);
 
 // --- input-method show/hide (driven by the compositor) ---------------------
 static void on_show(ZApp *app, void *ud) {
@@ -317,19 +381,54 @@ static bool kbd_upper(const KbdState *s) {
     return s->auto_shift && !s->auto_off;
 }
 
+// DOES THIS CHARACTER END A WORD? (P49)
+//
+// The rule is not a list of punctuation, it is the SAME rule kbd_cur_word already
+// applies from the other side: a word is the run of letters before the cursor, so
+// anything that is not a letter is where the word ended. Writing it as a
+// predicate over that fact rather than as a table of ".,?!" is what stops the two
+// from drifting apart — a symbol added to the layer becomes a boundary
+// automatically, and a boundary that kbd_cur_word would not stop at cannot exist.
+//
+// The two exceptions, each of which is a decision:
+//   - A DIGIT does not end a word. kbd_cur_word does stop at one, so "a2" is two
+//     tokens to the model either way; what a digit tells us that a full stop does
+//     not is that this is not prose ("h2", "b12", a part number), and correcting
+//     the letters in front of one is how autocorrect earns its reputation.
+//   - THE APOSTROPHE does not end a word. It is the one punctuation mark that
+//     lives INSIDE English words, and it is the mark the expansion table below
+//     puts back — a keyboard that treated it as a boundary would correct "dont"
+//     the moment you tried to type "don't" by hand.
+static bool boundary_char(char c) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+        return false;
+    }
+    if (c >= '0' && c <= '9') {
+        return false;
+    }
+    return c != '\'';
+}
+
 // --- key handlers -----------------------------------------------------------
 // A character key: commit the (shift-cased) byte, then spend the one-shot shift.
+// A character that ENDS A WORD goes through kbd_boundary instead of straight to
+// the field — which is the whole of P49 item 3: "teh." used to commit
+// uncorrected because only the space bar knew what a boundary was.
 static void on_char(ZApp *app, void *state, void *data) {
     KbdState *s = state;
-    kbd_clear_revert(s);   // any letter ends the one-key window a revert lives in
     int cp = (int)(intptr_t)data;
     char buf[2] = {(char)cp, '\0'};
     if (kbd_upper(s) && cp >= 'a' && cp <= 'z') {
         buf[0] = (char)(cp - 32);
     }
-    z_im_commit_text(app, buf);
-    fprintf(stderr, "[keyboard] commit '%s'\n", buf);
-    fflush(stderr);
+    if (boundary_char(buf[0])) {
+        kbd_boundary(app, s, buf);
+    } else {
+        kbd_clear_revert(s);   // any letter ends the one-key window a revert lives in
+        z_im_commit_text(app, buf);
+        fprintf(stderr, "[keyboard] commit '%s'\n", buf);
+        fflush(stderr);
+    }
     if (s->shift == SHIFT_ONCE) {
         s->shift = SHIFT_OFF;   // spent. A LOCK is not.
         z_invalidate(app);
@@ -371,30 +470,45 @@ static void on_symbols(ZApp *app, void *state) {
     s->shift = SHIFT_OFF;
     z_invalidate(app);
 }
-// SPACE, and the DOUBLE-SPACE PERIOD.
+// A WORD BOUNDARY, WHICHEVER KEY SPELLED IT (P49 item 3).
 //
-// Two spaces in a row become ". " — the rule every phone has had for fifteen
-// years, and the reason nobody reaches for the symbols layer to end a sentence.
-// It is a rule about the TEXT, so it is answered from the field's surrounding
-// text: if what is already there is a word followed by one space, this second
-// space replaces that space with a full stop. The replacement goes back through
-// the same input-method channel as everything else (delete one, commit two), so
-// the field's own undo, selection and caret arithmetic see an ordinary edit.
+// P48 put autocorrect on the SPACE BAR, and a space is not a word boundary — it
+// is one of four spellings of one. "teh." "teh!" "teh?" and a typo finished with
+// RETURN all committed uncorrected, and the strip that had been showing the
+// pending correction just vanished as the word scrolled out from under the
+// cursor. So every key that ends a word arrives HERE with the text it is about
+// to commit, and this function owns what happens in what order.
+//
+// THE ORDER MATTERS, and it is the reason this is one function and not a helper
+// three handlers call:
+//   1. THE DOUBLE-SPACE PERIOD FIRST, because it REWRITES the text a correction
+//      would have read. Two spaces in a row become ". " — the rule every phone
+//      has had for fifteen years, and the reason nobody reaches for the symbols
+//      layer to end a sentence. It is a rule about the TEXT, answered from the
+//      field's surrounding text: if what is there is a word followed by one
+//      space, this second space replaces that space with a full stop. A double
+//      space ends a word that has ALREADY been spaced, so there is no word under
+//      the cursor to correct and this path never reaches step 2.
+//   2. THEN AUTOCORRECT, on the finished word, from the whole of it. The
+//      classifier corrected this word's PRESSES as they were typed, from the
+//      prefix; this is a different mechanism with a different failure mode — it
+//      is visible and it is sometimes wrong, so it does not happen without the
+//      strip that shows it and the backspace that undoes it.
+//   3. THEN LEARNING, on the word that came through uncorrected, because a word
+//      autocorrect just replaced is not evidence of anything.
 //
 // Off in a password field for the same reason prediction is: a password may end
 // in a space, and a keyboard that turned it into a full stop would be unfixable
 // from the app's side.
-static void on_space(ZApp *app, void *state) {
-    KbdState *s = state;
+static void kbd_boundary(ZApp *app, KbdState *s, const char *commit) {
     const char *p = kbd_prefix(app);
     int n = (int)strlen(p);
-    bool period = predict_on(app) && n >= 2 && p[n - 1] == ' ' &&
+    bool period = commit[0] == ' ' && commit[1] == '\0' && predict_on(app) &&
+                  n >= 2 && p[n - 1] == ' ' &&
                   ((p[n - 2] >= 'a' && p[n - 2] <= 'z') ||
                    (p[n - 2] >= 'A' && p[n - 2] <= 'Z') ||
                    (p[n - 2] >= '0' && p[n - 2] <= '9'));
     if (period) {
-        // A double space ends a word that has ALREADY been spaced, so there is no
-        // word under the cursor to correct and the revert window is over.
         kbd_clear_revert(s);
         z_im_backspace(app);
         z_im_commit_text(app, ". ");
@@ -402,33 +516,38 @@ static void on_space(ZApp *app, void *state) {
         fflush(stderr);
         return;
     }
-    // AUTOCORRECT FIRES ON THE BOUNDARY, not before it. The classifier corrected
-    // this word's PRESSES as they were typed, from the prefix; this corrects the
-    // finished WORD, from the whole of it, and it is a different mechanism with a
-    // different failure mode — it is visible and it is sometimes wrong, so it does
-    // not happen without the strip that shows it and the backspace that undoes it.
     char word[Z_TEXTFIELD_CAP], corrected[Z_TEXTFIELD_CAP];
     kbd_clear_revert(s);
-    if (kbd_cur_word(app, word, sizeof(word)) > 0 &&
-        kbd_autocorrect(app, word, corrected, sizeof(corrected))) {
+    int wl = kbd_cur_word(app, word, sizeof(word));
+    if (wl > 0 && kbd_autocorrect(app, word, corrected, sizeof(corrected))) {
         // Replace the typed letters with the correction as ONE delete + commit,
-        // so the field sees a single edit — then the space. The undo is armed on
-        // the corrected word, which is what surrounding text will confirm is
+        // so the field sees a single edit — then the boundary. The undo is armed
+        // on the corrected word, which is what surrounding text will confirm is
         // still there when the next backspace asks to take it back.
-        z_im_delete(app, (int)strlen(word));
+        z_im_delete(app, wl);
         z_im_commit_text(app, corrected);
-        z_im_commit_text(app, " ");
+        z_im_commit_text(app, commit);
         s->revert_armed = true;
         snprintf(s->revert_from, sizeof(s->revert_from), "%s", corrected);
         snprintf(s->revert_to, sizeof(s->revert_to), "%s", word);
-        fprintf(stderr, "[keyboard] autocorrect '%s' -> '%s' (backspace reverts)\n",
-                word, corrected);
+        snprintf(s->revert_bnd, sizeof(s->revert_bnd), "%s", commit);
+        fprintf(stderr,
+                "[keyboard] autocorrect '%s' -> '%s' at boundary '%s' "
+                "(backspace reverts)\n",
+                word, corrected, commit[0] == '\n' ? "\\n" : commit);
         fflush(stderr);
         return;
     }
-    z_im_commit_text(app, " ");
-    fprintf(stderr, "[keyboard] commit ' '\n");
+    z_im_commit_text(app, commit);
+    fprintf(stderr, "[keyboard] commit '%s' (boundary)\n",
+            commit[0] == '\n' ? "\\n" : commit);
     fflush(stderr);
+    if (wl > 0) {
+        kbd_learn_seen(app, s, word);
+    }
+}
+static void on_space(ZApp *app, void *state) {
+    kbd_boundary(app, state, " ");
 }
 // BACKSPACE, and the AUTOCORRECT REVERT.
 //
@@ -448,21 +567,33 @@ static void on_backspace(ZApp *app, void *state) {
         const char *p = kbd_prefix(app);
         int n = (int)strlen(p);
         int fl = (int)strlen(s->revert_from);
-        // The correction committed "<from> " — the word and its trailing space.
-        // Only revert if that is exactly what is still before the cursor.
-        if (n >= fl + 1 && p[n - 1] == ' ' &&
-            strncmp(p + n - fl - 1, s->revert_from, (size_t)fl) == 0) {
-            z_im_delete(app, fl + 1);
+        int bl = (int)strlen(s->revert_bnd);
+        // The correction committed "<from><boundary>" — the word and whichever
+        // character ended it, which is a space, a full stop or a newline. Only
+        // revert if exactly that is still before the cursor.
+        if (bl > 0 && n >= fl + bl &&
+            strncmp(p + n - bl, s->revert_bnd, (size_t)bl) == 0 &&
+            strncmp(p + n - fl - bl, s->revert_from, (size_t)fl) == 0) {
+            z_im_delete(app, fl + bl);
             z_im_commit_text(app, s->revert_to);
             fprintf(stderr, "[keyboard] autocorrect reverted '%s' -> '%s'\n",
                     s->revert_from, s->revert_to);
             fflush(stderr);
+            // A REVERT IS THE STRONGEST SIGNAL THERE IS, so it does not wait for
+            // the counter (P49). Repetition is a guess that a string was not a
+            // typo; a revert is a person saying "no, I meant this" about a word
+            // the dictionary already offered its opinion on. Learning it here is
+            // also what stops the same correction happening again on the next
+            // sentence, which is the behaviour that makes a phone keyboard feel
+            // like it is arguing with you.
+            kbd_learn(app, s, s->revert_to);
             return;
         }
         fprintf(stderr,
-                "[keyboard] revert declined: '%s ' is no longer under the cursor "
-                "(prefix '%s')\n",
-                s->revert_from, p);
+                "[keyboard] revert declined: '%s%s' is no longer under the "
+                "cursor (prefix '%s')\n",
+                s->revert_from,
+                s->revert_bnd[0] == '\n' ? "\\n" : s->revert_bnd, p);
     }
     z_im_backspace(app);
     fprintf(stderr, "[keyboard] backspace\n");
@@ -556,9 +687,10 @@ static void on_accent(ZApp *app, void *state, void *data) {
     }
     z_invalidate(app);
 }
+// RETURN ends a word too, which P48's on_space-only autocorrect did not know: a
+// typo at the end of a line was the one typo a phone keyboard never fixed.
 static void on_enter(ZApp *app, void *state) {
-    kbd_clear_revert(state);
-    z_im_commit_text(app, "\n");
+    kbd_boundary(app, state, "\n");
 }
 
 // --- the key caps, driven as key caps (P46) ---------------------------------
@@ -873,8 +1005,81 @@ static float kbd_subst_cost(void *ud, char want, char got) {
     return dist < 1.6f * cw ? 0.5f : 1.0f;
 }
 
+// THE CANDIDATE SEARCH, MEMOISED ON THE WORD (P49 item 1).
+//
+// WHY THIS EXISTS. kbd_suggest() runs on EVERY BUILD, and during a hold the body
+// rebuilds at 40Hz; kbd_autocorrect() then asked the same question about the same
+// word a second time in the same build. P48 measured the classifier — the thing
+// it was asked to measure — and shipped this in the same phase with no number on
+// it at all.
+//
+// THE NUMBERS, host and TARGET, because a cost measured only on a desktop CPU is
+// the gap this project keeps falling into:
+//   - HOST (meta/kbd-measure.sh, section 1): 929us for one scan before the model
+//     memoised the caller's substitution cost, 79us after. A build paid it TWICE,
+//     so 7.4% of a 40Hz frame, on the machine with the fast CPU.
+//   - TARGET (zelto.kbdcaps=1, the "[keyboard] cost suggest" line in a KBDTAP
+//     run): 3403us for the same scan on the same list. 37x the host, which is
+//     13.6% of a 40Hz frame for ONE call and ~27% for the two a build made.
+// Neither number is a crash and neither shows up as anything looking broken,
+// which is precisely the shape of bug this project keeps finding.
+//
+// The memo is keyed on the word because that is the whole of what the answer
+// depends on — the word cannot change between two builds unless the word changes,
+// and if the word has not changed neither has its candidate list. The second key
+// is the model's GENERATION: a learned word changes what the answer should be
+// without changing the question, and it also invalidates the `word` pointers,
+// which point into the model's own storage.
+static struct {
+    char word[Z_TEXTFIELD_CAP];
+    ZLmWord cand[3];
+    int n;
+    unsigned gen;
+    bool valid;
+} g_cand;
+static int kbd_hits, kbd_misses;   // reported by the caps audit
+
+static int kbd_candidates(ZApp *app, const char *lower, ZLmWord *out) {
+    if (g_cand.valid && g_cand.gen == z_lm_generation() &&
+        strcmp(g_cand.word, lower) == 0) {
+        kbd_hits++;
+        for (int i = 0; i < g_cand.n; i++) {
+            out[i] = g_cand.cand[i];
+        }
+        return g_cand.n;
+    }
+    kbd_misses++;
+    CapSet a;
+    collect_caps(app, &a);
+    int nc = z_lm_candidates(lower, kbd_subst_cost, &a, out, 3);
+    snprintf(g_cand.word, sizeof(g_cand.word), "%s", lower);
+    for (int i = 0; i < nc; i++) {
+        g_cand.cand[i] = out[i];
+    }
+    g_cand.n = nc;
+    g_cand.gen = z_lm_generation();
+    g_cand.valid = true;
+    return nc;
+}
+
+// APOSTROPHES, PUT BACK (P49 item 3b).
+//
+// The words themselves are lexical data about English and live with the rest of
+// it (CONTRACTIONS_EN in words_en.h, behind z_lm_contraction) — including the
+// rule that decides what may be in the table at all: only contractions whose
+// BARE FORM IS NOT ITSELF AN ENGLISH WORD. "were", "its" and "lets" are real
+// words and stay bare forever.
+//
+// What is a KEYBOARD decision, and therefore here, is that an expansion is a
+// CORRECTION LIKE ANY OTHER: it comes out of kbd_autocorrect, so it appears in
+// the suggestion strip before it fires, the middle slot rejects it, and one
+// backspace reverts it. P48 wrote down that expansion "changes a character the
+// user did not type into one they cannot see" and needs the strip to be
+// defensible. The strip exists now; this is the follow-through, and it ships
+// through the visible path rather than as a quiet rewrite.
+
 // Does autocorrect fire on `word`, and to what? The single decision the strip and
-// the space bar share. Fires only when the word is NOT itself in the dictionary
+// every boundary share. Fires only when the word is NOT itself in the dictionary
 // and there is a candidate clearly better than it — an exact hit is returned by
 // z_lm_candidates with a score far above any correction, so "already a word" and
 // "one edit from a word" are told apart by the same list.
@@ -895,16 +1100,26 @@ static bool kbd_autocorrect(ZApp *app, const char *word, char *out, size_t n) {
         }
     }
     lower[wl < (int)sizeof(lower) ? wl : (int)sizeof(lower) - 1] = '\0';
+    // The contraction table is consulted BEFORE the dictionary guards, because
+    // its whole subject is the words that ARE in the dictionary as bare forms —
+    // z_lm_is_word("dont") is true, and it has to be, or "dont" would be
+    // corrected into "dot" by edit distance.
+    const char *full = z_lm_contraction(lower);
+    if (full) {
+        snprintf(out, n, "%s", full);
+        if (word[0] >= 'A' && word[0] <= 'Z' && out[0] >= 'a' && out[0] <= 'z') {
+            out[0] = (char)(out[0] - 32);
+        }
+        return strcmp(out, word) != 0;
+    }
     if (z_lm_is_word(lower)) {
         return false;   // spelled a real word: never "correct" it
     }
     if (z_lm_is_prefix(lower)) {
         return false;   // part-way through a real word ("hel" -> hello): not a typo
     }
-    CapSet a;
-    collect_caps(app, &a);
     ZLmWord cand[3];
-    int nc = z_lm_candidates(lower, kbd_subst_cost, &a, cand, 3);
+    int nc = kbd_candidates(app, lower, cand);
     if (nc == 0) {
         return false;   // nothing close enough: leave it exactly as typed
     }
@@ -971,16 +1186,41 @@ static void kbd_suggest(ZApp *app, KbdState *s) {
         lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
     }
     lower[wl] = '\0';
-    CapSet a;
-    collect_caps(app, &a);
-    ZLmWord cand[3];
-    int nc = z_lm_candidates(lower, kbd_subst_cost, &a, cand, 3);
-    bool cap = word[0] >= 'A' && word[0] <= 'Z';
-    int slots[2] = {0, 2};
+
+    // THE PENDING CORRECTION FILLS SLOT 0 RATHER THAN BEING CHECKED AGAINST IT
+    // (P49). P48 built the slots from the candidate list and then asked
+    // kbd_autocorrect separately whether it agreed with slot 0 — which was one
+    // decision computed twice, and the two could differ silently. Now the
+    // boundary's own answer IS slot 0 whenever it fires, so the strip cannot show
+    // a correction the space bar would not apply, or hide one it would. It is
+    // also the only way the contraction table could ever reach the strip: "don't"
+    // is not a candidate the trie can return.
+    char corr[Z_TEXTFIELD_CAP] = {0};
     int put = 0;
+    int slots[2] = {0, 2};
+    if (kbd_autocorrect(app, word, corr, sizeof(corr))) {
+        snprintf(s->slot[0], sizeof(s->slot[0]), "%s", corr);
+        s->slot_auto = 0;
+        put = 1;
+    }
+    // The correction is CASE-MATCHED to what was typed and a candidate is not, so
+    // the two are compared with the case taken off — otherwise "The" in slot 0 and
+    // "the" from the list read as different words and the strip shows the same
+    // suggestion twice.
+    for (int i = 0; corr[i]; i++) {
+        if (corr[i] >= 'A' && corr[i] <= 'Z') {
+            corr[i] = (char)(corr[i] + 32);
+        }
+    }
+    ZLmWord cand[3];
+    int nc = kbd_candidates(app, lower, cand);
+    bool cap = word[0] >= 'A' && word[0] <= 'Z';
     for (int i = 0; i < nc && put < 2; i++) {
         if (strcmp(cand[i].word, lower) == 0) {
             continue;   // the literal already IS slot 1
+        }
+        if (s->slot_auto == 0 && strcmp(cand[i].word, corr) == 0) {
+            continue;   // already shown as the pending correction
         }
         char *dst = s->slot[slots[put++]];
         snprintf(dst, sizeof(s->slot[0]), "%s", cand[i].word);
@@ -988,13 +1228,250 @@ static void kbd_suggest(ZApp *app, KbdState *s) {
             dst[0] = (char)(dst[0] - 32);
         }
     }
-    // The pending autocorrection: the same yes/no the boundary asks. When it
-    // fires, the best guess sits in slot 0, so that is the slot to highlight.
-    char corr[Z_TEXTFIELD_CAP];
-    if (kbd_autocorrect(app, word, corr, sizeof(corr)) &&
-        strcmp(s->slot[0], corr) == 0) {
-        s->slot_auto = 0;
+}
+
+// --- the learned dictionary (P49 item 2) -------------------------------------
+// THE KEYBOARD KNOWS 1620 WORDS AND NOT ONE OF THEM IS YOURS. That is the whole
+// of what this adds. It is a privacy decision at least as much as a technical
+// one, so the three questions are answered here, next to the code that
+// implements each of them, rather than in a design document nobody reads while
+// changing this file.
+//
+// 1. WHAT IS STORED. A word: lowercase a-z, two characters or more, that the
+//    shipped dictionary does not carry, and that the user has shown was not a
+//    typo. TWO SIGNALS COUNT, and they are deliberately different in kind:
+//      - EXPLICIT (on_backspace): autocorrect changed the word and the user took
+//        it back. That is a person saying "no, I meant this" about a word the
+//        model already gave its opinion on, and it learns on the FIRST one.
+//      - IMPLICIT (kbd_learn_seen): the same string survived KBD_LEARN_SEEN word
+//        boundaries without being corrected. A word typed ONCE is a typo.
+//    THE COUNTS ARE NEVER WRITTEN TO DISK — only words that reached the
+//    threshold are. A file of "strings this person typed once" is exactly the log
+//    a learned dictionary must not become, and the cost of keeping the counters
+//    in RAM is precisely stated: a word typed twice today and once tomorrow
+//    starts again. That is the right way round.
+//
+// 2. WHERE. /var/zelto, through the storage the OS already has (P11) — one
+//    newline-separated file in the keyboard's own private directory, the same
+//    shape as words_en.h, because a store the user cannot read is a log. It
+//    survives a reboot, which is what makes it testable by a second sim boot on
+//    the same ZELTO_DATA_DIR rather than by an emulator.
+//
+// 3. WHAT NEVER GETS IN. The password rule is necessary and it is nowhere near
+//    sufficient, so all of these hold:
+//      - NOTHING FROM A PASSWORD FIELD. predict_on() is false there, so the
+//        counter is not even incremented — the string never enters the table in
+//        RAM, let alone the file. That is the same purpose the compositor has
+//        relayed since P21 and the classifier has honoured since P47.
+//      - NOTHING THAT IS NOT A WORD. kbd_cur_word stops at the first non-letter,
+//        so an email address, an API key, a postcode and a phone number are not
+//        words to any of this. A capital anywhere but the first position is also
+//        out (z_lm_learn takes a-z only), which removes most identifiers.
+//      - NOTHING WITHOUT A WAY OUT. Settings > Keyboard shows how many words have
+//        been learned and offers Clear Learned Words, which forgets them, blanks
+//        the bytes and deletes the file. A store with no way out of it is not a
+//        feature, it is a leak with a nice name.
+//    WHAT IS DELIBERATELY NOT SHOWN: the words themselves. A screen listing what
+//    somebody typed is a shoulder-surfing surface of its own, and the count plus
+//    the delete answers "what do you have, and get rid of it" without building
+//    one. If a later phase wants a per-word editor it should decide separately
+//    whether it is worth that.
+static void dict_publish(KbdState *s) {
+    z_setting_set_int(KBD_KEY_LEARNED_COUNT, s->learned_n);
+}
+
+// Write the learned words out. Called after every learn, because the alternative
+// is deciding when a keyboard is about to be killed.
+static void dict_save(void) {
+    const char *w[KBD_LEARN_MAX];
+    int n = z_lm_learned(w, KBD_LEARN_MAX);
+    char buf[KBD_LEARN_MAX * (KBD_LEARN_WORD_CAP + 1)];
+    size_t len = 0;
+    for (int i = 0; i < n; i++) {
+        size_t wl = strlen(w[i]);
+        if (len + wl + 1 >= sizeof(buf)) {
+            break;
+        }
+        memcpy(buf + len, w[i], wl);
+        len += wl;
+        buf[len++] = '\n';
     }
+    if (!z_file_write(KBD_DICT_FILE, buf, len)) {
+        fprintf(stderr, "[keyboard] learned: could not write %s\n",
+                KBD_DICT_FILE);
+        fflush(stderr);
+    }
+}
+
+// Read them back at startup and hand each one to the model. This is the whole of
+// "it survives a reboot": the model is built from a list, and the learned words
+// join that list before anything asks it a question.
+//
+// IT ALSO HONOURS A CLEAR THAT HAPPENED WHILE WE WERE NOT RUNNING. Settings can
+// be used, and the phone rebooted, without the keyboard process ever seeing the
+// broadcast — so the clear is an EPOCH that is compared, not an event that is
+// observed. The epoch we have honoured lives in our own prefs; if the broker's
+// is different, we forget before we load.
+static void dict_load(KbdState *s) {
+    if (s->dict_loaded) {
+        return;
+    }
+    s->dict_loaded = true;
+
+    int64_t want = z_setting_get_int(KBD_KEY_FORGET, 0);
+    s->clear_epoch = z_prefs_get_int("learned.clear_epoch", 0);
+    if (want != s->clear_epoch) {
+        s->clear_epoch = want;
+        z_prefs_set_int("learned.clear_epoch", want);
+        z_lm_forget_all();
+        z_file_delete(KBD_DICT_FILE);
+        s->learned_n = 0;
+        dict_publish(s);
+        fprintf(stderr, "[keyboard] learned: cleared (epoch %lld)\n",
+                (long long)want);
+        fflush(stderr);
+        return;
+    }
+
+    ZBytes b = z_file_read(KBD_DICT_FILE);
+    if (!b.ok) {
+        dict_publish(s);
+        return;   // nothing learned yet: not an error
+    }
+    char *p = b.data;
+    while (*p && s->learned_n < KBD_LEARN_MAX) {
+        char *q = p;
+        while (*q && *q != '\n') {
+            q++;
+        }
+        char save = *q;
+        *q = '\0';
+        if (z_lm_learn(p)) {
+            s->learned_n++;
+        }
+        if (!save) {
+            break;
+        }
+        p = q + 1;
+    }
+    free(b.data);
+    fprintf(stderr, "[keyboard] learned: %d word(s) restored from %s\n",
+            s->learned_n, KBD_DICT_FILE);
+    fflush(stderr);
+    dict_publish(s);
+}
+
+// Teach the model a word NOW: the explicit path (a revert) and the end of the
+// implicit one (the counter reached the threshold) both land here.
+static bool kbd_learn(ZApp *app, KbdState *s, const char *word) {
+    if (!predict_on(app)) {
+        return false;   // a password field teaches this keyboard nothing
+    }
+    if (s->learned_n >= KBD_LEARN_MAX) {
+        return false;
+    }
+    char lower[KBD_LEARN_WORD_CAP];
+    int wl = (int)strlen(word);
+    if (wl < 2 || wl >= (int)sizeof(lower)) {
+        return false;
+    }
+    for (int i = 0; i < wl; i++) {
+        char c = word[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+        if (lower[i] < 'a' || lower[i] > 'z') {
+            return false;
+        }
+    }
+    lower[wl] = '\0';
+    if (!z_lm_learn(lower)) {
+        return false;   // already known, malformed, or the model is full
+    }
+    s->learned_n++;
+    // The candidate memo is keyed on the model's generation, which z_lm_learn
+    // just bumped — so nothing stale can survive this. Saying so here because the
+    // invalidation is the kind of thing that is obvious until it is missing.
+    dict_save();
+    dict_publish(s);
+    fprintf(stderr, "[keyboard] learned '%s' (%d total)\n", lower, s->learned_n);
+    fflush(stderr);
+    return true;
+}
+
+// Count a word that came through a boundary uncorrected. Returns quietly for
+// everything that is already known, which is nearly every word — the table only
+// ever holds strings the dictionary does not have.
+static void kbd_learn_seen(ZApp *app, KbdState *s, const char *word) {
+    if (!predict_on(app)) {
+        return;
+    }
+    char lower[KBD_LEARN_WORD_CAP];
+    int wl = (int)strlen(word);
+    if (wl < 2 || wl >= (int)sizeof(lower)) {
+        return;
+    }
+    for (int i = 0; i < wl; i++) {
+        char c = word[i];
+        lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+        if (lower[i] < 'a' || lower[i] > 'z') {
+            return;
+        }
+    }
+    lower[wl] = '\0';
+    if (z_lm_is_word(lower)) {
+        return;   // the dictionary already has it: nothing to learn
+    }
+    int slot = -1, weakest = 0;
+    for (int i = 0; i < KBD_SEEN_SLOTS; i++) {
+        if (strcmp(s->seen[i].word, lower) == 0) {
+            slot = i;
+            break;
+        }
+        if (s->seen[i].seen < s->seen[weakest].seen) {
+            weakest = i;
+        }
+    }
+    if (slot < 0) {
+        slot = weakest;   // the least-seen candidate makes room; see the note above
+        snprintf(s->seen[slot].word, sizeof(s->seen[slot].word), "%s", lower);
+        s->seen[slot].seen = 0;
+    }
+    s->seen[slot].seen++;
+    fprintf(stderr, "[keyboard] learn candidate '%s' seen %d/%d\n", lower,
+            s->seen[slot].seen, KBD_LEARN_SEEN);
+    fflush(stderr);
+    if (s->seen[slot].seen >= KBD_LEARN_SEEN) {
+        s->seen[slot].seen = 0;
+        s->seen[slot].word[0] = '\0';
+        kbd_learn(app, s, lower);
+    }
+}
+
+// Settings cleared the learned words while we were running. The same code path
+// dict_load() takes on a cold boot, because it is the same decision — the only
+// difference is whether the process happened to be alive when it was made.
+static void on_setting(ZApp *app, const char *key, const char *value, void *ud) {
+    KbdState *s = ud;
+    if (strcmp(key, KBD_KEY_FORGET) != 0) {
+        return;
+    }
+    int64_t want = atoll(value);
+    if (want == s->clear_epoch) {
+        return;   // our own echo, or a repeat: idempotent, the client never loops
+    }
+    s->clear_epoch = want;
+    z_prefs_set_int("learned.clear_epoch", want);
+    z_lm_forget_all();
+    z_file_delete(KBD_DICT_FILE);
+    for (int i = 0; i < KBD_SEEN_SLOTS; i++) {
+        s->seen[i].word[0] = '\0';   // the pending candidates go too
+        s->seen[i].seen = 0;
+    }
+    s->learned_n = 0;
+    dict_publish(s);
+    fprintf(stderr, "[keyboard] learned: cleared on request (epoch %lld)\n",
+            (long long)want);
+    fflush(stderr);
+    z_invalidate(app);
 }
 
 // --- the live press ---------------------------------------------------------
@@ -1278,6 +1755,48 @@ static void audit_caps(ZApp *app) {
                 sampled, sampled > 0 ? 100.0f * (float)dead / (float)sampled
                                      : 0.0f,
                 cmin, cmax);
+    }
+
+    // WHAT THE SUGGESTION STRIP COSTS, MEASURED (P49 item 1).
+    //
+    // P48 measured the classifier — the thing it was asked to measure — and in
+    // the same phase shipped something an order of magnitude more expensive
+    // without a number on it. z_lm_candidates runs an edit-distance scan over the
+    // whole word list, kbd_suggest() called it from kbd_body() on EVERY BUILD,
+    // and kbd_body rebuilds at 40Hz while a finger is held. Nothing looked
+    // broken, which is the shape of every bug this project keeps finding.
+    //
+    // Measured here rather than in a benchmark because the substitution cost is a
+    // fact about the LAID-OUT CAPS: a synthetic row would time a different
+    // function. Two numbers come out — the raw scan, and the hit rate of the memo
+    // that means a build almost never pays for it (kbd_candidates).
+    {
+        CapSet a;
+        collect_caps(app, &a);
+        static const char *PROBE[] = {"hel", "hello", "wrold", "keyboard"};
+        int np = (int)(sizeof(PROBE) / sizeof(PROBE[0]));
+        ZLmWord cand[3];
+        double worst = 0.0;
+        const char *worst_w = "";
+        for (int i = 0; i < np; i++) {
+            double t = z_now_seconds();
+            for (int r = 0; r < 8; r++) {
+                z_lm_candidates(PROBE[i], kbd_subst_cost, &a, cand, 3);
+            }
+            double per = (z_now_seconds() - t) * 1e6 / 8.0;
+            if (per > worst) {
+                worst = per;
+                worst_w = PROBE[i];
+            }
+        }
+        // The memo counters are a snapshot AT THIS POINT of the boot — the audit
+        // runs on the first build, so on a boot with no typing they are both
+        // zero and the scan number is the whole of what this line says.
+        fprintf(stderr,
+                "[keyboard] cost suggest: %.0fus worst scan (\"%s\") over %d "
+                "words; memo %d hit / %d miss so far; a 40Hz build pays the "
+                "scan only when the word changes\n",
+                worst, worst_w, z_lm_word_count(), kbd_hits, kbd_misses);
     }
     fflush(stderr);
 }
@@ -1834,6 +2353,10 @@ static ZView kbd_body(ZApp *app, KbdState *s) {
         // surface is being created moves that cost to a moment nothing is waiting
         // on, and the number below is what makes "moved it somewhere cheap" a
         // measurement rather than an assertion.
+        // ...and the learned words join the list BEFORE that report, so the
+        // number it prints is the model the keyboard is actually about to use.
+        dict_load(s);
+        z_settings_observe(app, on_setting, s);
         char lm[256];
         z_lm_report(lm, sizeof(lm));
         fprintf(stderr, "[keyboard] lm %s\n", lm);

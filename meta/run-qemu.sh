@@ -1398,7 +1398,7 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         fi
         rm -f "$SERIAL_T"
         qemu-system-aarch64 "${common[@]}" \
-            -append "$KCMD zelto.kbd=40 zelto.kbdtap=$KTAP" \
+            -append "$KCMD zelto.kbd=40 zelto.kbdcaps=1 zelto.kbdtap=$KTAP" \
             -display none \
             -serial "file:$SERIAL_T" &
         QPID=$!
@@ -1410,6 +1410,17 @@ if [ "${HEADLESS:-0}" = "1" ]; then
         echo "==> [kbdtap] what the keyboard did on the real target:"
         grep -E "\[keyboard\] (lm |press |autocorrect|accents open|slide to|backspace repeat|callout)" \
             "$SERIAL_T" | sed 's/^/    /' || true
+
+        # P49 item 1: WHAT IT COSTS, ON THE TARGET. Every cost number in P48 and
+        # P49 was measured on the host, which is a desktop CPU; the target is TCG,
+        # where the same dictionary BUILD is 226x slower. A scan that is a fraction
+        # of a frame on the host is not necessarily one here, and the suggestion
+        # strip is the thing P48 shipped with no number on it at all.
+        # zelto.kbdcaps=1 turns on the keyboard's own audit; these are its lines.
+        echo "==> [kbdtap] what a press and a candidate scan COST on the target:"
+        if ! grep -E "\[keyboard\] cost " "$SERIAL_T" | sed 's/^/    /'; then
+            echo "    (no cost lines — the caps audit did not run)"
+        fi
 
         rc=0
         # Coarse, timing-INDEPENDENT: the dictionary built and named itself.

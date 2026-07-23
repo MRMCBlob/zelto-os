@@ -267,6 +267,19 @@ launch_shell() {
                     echo "[zelto-init] keyboard will tap '$kp'"
                 ;;
         esac
+        # P49: the CAP + COST AUDIT, on the target. The keyboard measures what a
+        # press and a candidate scan cost against its own laid-out caps and prints
+        # the numbers; the sim has always been able to ask for that
+        # (ZELTO_KBD_CAPS=1) and the target had no route to it at all, so every
+        # cost number in P48 and P49 was a HOST number. The host is a desktop CPU
+        # and the target is TCG, where the same dictionary BUILD is 226x slower —
+        # which is exactly the gap a cost measured only on the host cannot see.
+        case " $(cat /proc/cmdline 2>/dev/null) " in
+            *" zelto.kbdcaps="*)
+                export ZELTO_KBD_CAPS=1
+                echo "[zelto-init] keyboard will audit its caps and costs"
+                ;;
+        esac
         # The system-service broker (zsysd): the permission authority. Started
         # before the shell so an app's z_perm_request reaches it; it inherits
         # WAYLAND_DISPLAY + ZELTO_FONT so the consent dialog it spawns on a

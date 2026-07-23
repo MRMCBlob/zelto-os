@@ -40,6 +40,15 @@ typedef struct SettingsState {
     char wp_paths[ZELTO_WALLPAPER_MAX][ZELTO_WALLPAPER_PATH_MAX];
     int wp_count;
     char wp_current[ZELTO_WALLPAPER_PATH_MAX];
+
+    // P49: the keyboard's learned dictionary, as seen from here. The keyboard
+    // publishes how many words it has learned; this app never sees the words
+    // themselves, and deliberately — see the privacy note in system/keyboard/
+    // main.c. Clearing is an EPOCH the keyboard compares against one it stored,
+    // not an event it has to be running to hear, so a clear made while the
+    // keyboard is dead is still honoured on its next boot.
+    int64_t kbd_learned;
+    int64_t kbd_forget_epoch;
 } SettingsState;
 
 // A setting changed (here or in the shade): re-read the field it maps to and
@@ -67,6 +76,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->off_s = v;
     } else if (strcmp(key, "sys.passcode") == 0) {
         s->passcode_set = value[0] != '\0';
+    } else if (strcmp(key, "sys.kbd_learned") == 0) {
+        s->kbd_learned = v;
     } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
         snprintf(s->wp_current, sizeof(s->wp_current), "%s", value ? value : "");
     }
@@ -94,6 +105,8 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->off_s = z_setting_get_int("sys.idle_off_s", 120);
     s->passcode_set = z_setting_get_str("sys.passcode", "")[0] != '\0';
     s->lock_now = z_setting_get_int("sys.lock_now", 0);
+    s->kbd_learned = z_setting_get_int("sys.kbd_learned", 0);
+    s->kbd_forget_epoch = z_setting_get_int("sys.kbd_forget_learned", 0);
     // Wallpaper picker: enumerate the directory once and record the active choice.
     s->wp_count = zelto_wallpaper_list(s->wp_paths, ZELTO_WALLPAPER_MAX);
     snprintf(s->wp_current, sizeof(s->wp_current), "%s",
@@ -655,6 +668,62 @@ static ZView screen_lock(ZApp *app, void *props) {
     return settings_screen(app, "Lock Screen", blocks, 2);
 }
 
+// KEYBOARD — and the only control on it is a DELETE (P49).
+//
+// The keyboard learns words you type that its shipped dictionary does not carry
+// (system/keyboard/main.c has the full decision: what, where, and what never gets
+// in). Two things make shipping that defensible rather than merely convenient,
+// and both are on this screen: the user can see THAT there is a store and how big
+// it is, and the user can empty it. A store with no way out of it is not a
+// feature, it is a leak with a nice name.
+//
+// WHAT IS DELIBERATELY NOT HERE: the words. A screen listing what somebody typed
+// is a shoulder-surfing surface of its own, and it is not needed to answer "what
+// do you have, and get rid of it".
+static void forget_learned(ZApp *app, void *state) {
+    SettingsState *s = state;
+    // An EPOCH, not a command. The keyboard may not be running; it compares this
+    // against one it persisted and honours any value it has not seen, so a clear
+    // requested now is applied on its next boot if it misses the broadcast.
+    s->kbd_forget_epoch++;
+    z_setting_set_int("sys.kbd_forget_learned", s->kbd_forget_epoch);
+    s->kbd_learned = 0;
+    fprintf(stderr, "[settings] clear learned words (epoch %lld)\n",
+            (long long)s->kbd_forget_epoch);
+    fflush(stderr);
+    z_invalidate(app);
+}
+
+static ZView screen_keyboard(ZApp *app, void *props) {
+    SettingsState *s = props;
+    char count[32];
+    snprintf(count, sizeof(count), "%lld", (long long)s->kbd_learned);
+    ZView rows[] = {
+        labelled("Learned Words",
+                 Foreground(Z_COLOR_TEXT_MUTED,
+                            Font(Z_FONT_BODY, Text("%s", count)))),
+    };
+    // The DESTRUCTIVE action row: the same shape as "Lock Now" on the Lock
+    // screen, in the danger colour, because it throws data away.
+    ZView act = Background(Z_COLOR_SURFACE,
+        CornerRadius(Z_RADIUS_CARD,
+            Frame(0.0f, ROW_H,
+                ZStack(
+                    Weight(Z_WEIGHT_SEMIBOLD,
+                        Foreground(Z_COLOR_DANGER,
+                            Font(Z_FONT_BODY, Text("Clear Learned Words")))),
+                    .align = Z_ALIGN_CENTER))));
+    ZView blocks[] = {
+        section_block(app, NULL, group(rows, 1),
+            "The keyboard learns a word after you have typed it a few times "
+            "without correcting it, so it stops correcting it. Nothing typed "
+            "into a password field is ever learned."),
+        section_block(app, NULL, OnTap(forget_learned, act),
+            "Forgets every learned word and deletes them from this device."),
+    };
+    return settings_screen(app, "Keyboard", blocks, 2);
+}
+
 // --- the root ---------------------------------------------------------------
 // A SHORT list of doors, not a long list of switches.
 //
@@ -674,9 +743,13 @@ static ZView screen_root(ZApp *app, void *props) {
     static const SettingsRoute r_display = {screen_display};
     static const SettingsRoute r_wallpaper = {screen_wallpaper};
     static const SettingsRoute r_lock = {screen_lock};
+    static const SettingsRoute r_keyboard = {screen_keyboard};
 
     char bright[16];
     snprintf(bright, sizeof(bright), "%lld", (long long)s->brightness);
+    char learned[32];
+    snprintf(learned, sizeof(learned), "%lld learned",
+             (long long)s->kbd_learned);
 
     ZView rows[] = {
         detail_row("Network",
@@ -685,9 +758,10 @@ static ZView screen_root(ZApp *app, void *props) {
         detail_row("Display & Sound", bright, &r_display),
         detail_row("Wallpaper", s->wp_count > 0 ? "" : "None", &r_wallpaper),
         detail_row("Lock Screen", s->lock_enabled ? "On" : "Off", &r_lock),
+        detail_row("Keyboard", learned, &r_keyboard),
     };
     ZView blocks[] = {
-        section_block(app, NULL, group(rows, 4),
+        section_block(app, NULL, group(rows, 5),
             "These settings are shared with Control Center. Changes apply live "
             "and persist."),
     };
