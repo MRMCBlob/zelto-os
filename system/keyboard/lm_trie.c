@@ -79,12 +79,43 @@
 // 10KB of text. Two arrays of 3 bytes per word do it, and the rank is the index.
 #define LM_MAX_WORDS 4096
 static char *w_text;             // the flattened, NUL-separated copy
-static size_t w_text_len;
+static size_t w_text_len, w_text_cap;
 static uint16_t w_off[LM_MAX_WORDS];
 static uint8_t w_len[LM_MAX_WORDS];
+static uint16_t w_rank[LM_MAX_WORDS];   // the rank its weight comes from
 static int n_words;
+static int n_const;     // how many of them came from the shipped list
 static int n_dups;      // entries dropped as duplicates — a lint, see below
 #define N_BANDS ((int)(sizeof(WORDS_EN) / sizeof(WORDS_EN[0])))
+
+// --- the learned words ------------------------------------------------------
+// WHERE A LEARNED WORD MERGES, which is the question to answer before writing any
+// of this (P49 item 2). It merges INTO THE LIST, before the tree is built — not
+// into a second model consulted alongside the first. A learned word is therefore
+// answered by the same z_lm_p, the same z_lm_is_word, the same z_lm_candidates as
+// a shipped one, and there is no code path anywhere that can tell them apart or
+// let them disagree. The cost of that choice is that learning REBUILDS the tree;
+// see tree_build() and the deferral in trie_build().
+//
+// THE MODEL DOES NOT PERSIST ANYTHING AND MUST NOT. It is linked into a test
+// binary with no storage, no permissions and no app; who is allowed to learn a
+// word, where the list of them is kept, and what the user can do about it are
+// decisions that live where the field's content purpose is visible — the keyboard
+// (see kbd_learn in main.c). This side is a pure data structure with a doorbell.
+//
+// WHAT RANK A LEARNED WORD GETS. Not rank 0: a word the user typed three times is
+// not commoner than "the", and a model that thought so would start correcting
+// English into somebody's surname. Not the tail either, or learning it would
+// change nothing. LEARN_RANK is the weight of a word around the middle of the
+// shipped list — common enough to beat the tail it is competing with in a
+// correction, far short of the function words at the head.
+#define LM_LEARN_RANK 400
+#define LM_MAX_LEARNED 512
+
+static bool list_loaded;
+static bool tree_dirty = true;
+static unsigned lm_gen = 1;
+static int n_rebuilds;
 
 // --- the trie ---------------------------------------------------------------
 // Children are a CONTIGUOUS RUN, sorted by character, not a 26-wide array. The
@@ -101,7 +132,6 @@ typedef struct TNode {
 
 static TNode *nodes;
 static int32_t n_nodes, cap_nodes;
-static bool built;
 static double build_us;
 
 static int32_t alloc_nodes(int32_t k) {
@@ -126,11 +156,22 @@ static int32_t alloc_nodes(int32_t k) {
     return base;
 }
 
+// The memoised walk (see walk() below). Declared here because a rebuild has to
+// invalidate it, and a rebuild is the first thing in the file.
+static char cache_word[LM_MAX_WORD];
+static int32_t cache_node = -2;   // -2 = nothing cached; -1 = a real "off tree"
+
 static const char *word_at(int i) {
     return &w_text[w_off[i]];
 }
+// The weight of entry `i`, from the RANK it carries rather than from where it
+// happens to sit in the array — which is the same number for every shipped word
+// and is not for a learned one (LM_LEARN_RANK).
 static float rank_weight(int rank) {
     return 1.0f / ((float)rank + 1.0f + ZIPF_OFFSET);
+}
+static float entry_weight(int i) {
+    return rank_weight(w_rank[i]);
 }
 
 // The build's sort order. Lexicographic, so that within any range sharing a
@@ -157,7 +198,7 @@ static void build_into(int32_t me, int lo, int hi, int depth) {
     float wsum = 0.0f;
     int i = lo;
     if (w_len[order[lo]] == (uint8_t)depth) {
-        nodes[me].wterm = rank_weight(order[lo]);
+        nodes[me].wterm = entry_weight(order[lo]);
         wsum += nodes[me].wterm;
         i++;
     }
@@ -198,12 +239,14 @@ static double now_us(void) {
     return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec / 1e3;
 }
 
-static void trie_build(void) {
-    if (built) {
+// The shipped list, flattened and scanned. Runs once: it reads .rodata that
+// cannot change, and a learned word is appended to what it produced rather than
+// making it run again.
+static void list_load(void) {
+    if (list_loaded) {
         return;
     }
-    built = true;   // set FIRST: a failed build must not be retried per press
-    double t0 = now_us();
+    list_loaded = true;   // set FIRST: a failed load must not be retried per press
 
     // Flatten the bands into one buffer, then scan it. Anything that is not a-z
     // is dropped rather than trusted — the list is hand-edited, and one stray
@@ -212,9 +255,14 @@ static void trie_build(void) {
     for (int b = 0; b < N_BANDS; b++) {
         total += strlen(WORDS_EN[b]);
     }
-    w_text = malloc(total + 1);
+    // Room for the learned words to be appended IN PLACE. Sized up front rather
+    // than grown, because a learned word arrives during a keystroke and the whole
+    // point of the offsets above is that no caller ever holds a pointer that a
+    // reallocation could move — z_lm_candidates hands out `const char *` into this
+    // buffer and predict.h promises they stay valid.
+    w_text_cap = total + 1 + LM_MAX_LEARNED * (LM_MAX_WORD + 1);
+    w_text = malloc(w_text_cap);
     if (!w_text) {
-        build_us = now_us() - t0;
         return;
     }
     w_text_len = 0;
@@ -242,21 +290,34 @@ static void trie_build(void) {
         if (ok) {
             w_off[n_words] = (uint16_t)p;
             w_len[n_words] = (uint8_t)len;
+            w_rank[n_words] = (uint16_t)n_words;   // the list's order IS its rank
             n_words++;
         }
         p = q + 1;
     }
+    n_const = n_words;
+}
+
+// The tree, from whatever is in the list now. Re-runnable, because a learned
+// word changes the list and the whole point of merging one INTO the list is that
+// there is exactly one tree answering every question afterwards.
+static void tree_build(void) {
+    double t0 = now_us();
+    n_nodes = 0;        // the node array is reused; cap_nodes keeps the memory
+    n_dups = 0;
+    cache_node = -2;    // the memoised walk is about the OLD tree
+    n_rebuilds++;
     if (n_words == 0) {
         build_us = now_us() - t0;
         return;
     }
 
-    order = malloc((size_t)n_words * sizeof(int));
-    if (!order) {
-        n_words = 0;
+    int *o = realloc(order, (size_t)n_words * sizeof(int));
+    if (!o) {
         build_us = now_us() - t0;
         return;
     }
+    order = o;
     for (int i = 0; i < n_words; i++) {
         order[i] = i;
     }
@@ -282,6 +343,21 @@ static void trie_build(void) {
         build_into(root, 0, n_uniq, 0);
     }
     build_us = now_us() - t0;
+}
+
+// The model, ready to answer. Cheap on every call but the first and the ones
+// that follow a learned word — which is deliberate, and is what makes learning
+// affordable: z_lm_learn only marks the tree DIRTY, so the rebuild lands on the
+// next question rather than inside the keystroke that caused it. On the target
+// that is the difference between a 55ms hitch between a press and its character,
+// and 55ms between two frames.
+static void trie_build(void) {
+    list_load();
+    if (!tree_dirty) {
+        return;
+    }
+    tree_dirty = false;   // set FIRST: a failed build must not be retried per press
+    tree_build();
 }
 
 // --- walking ----------------------------------------------------------------
@@ -329,8 +405,6 @@ static int cur_word(const char *prefix, char *out) {
 // The node a word lands on, or -1 if it falls off the tree. MEMOISED on the word
 // itself, because z_lm_p is asked about all 27 symbols for one press and the walk
 // would otherwise be repeated 27 times for an answer that cannot have changed.
-static char cache_word[LM_MAX_WORD];
-static int32_t cache_node = -2;   // -2 = nothing cached; -1 = a real "off tree"
 static int32_t walk(const char *w) {
     if (cache_node != -2 && strcmp(cache_word, w) == 0) {
         return cache_node;
@@ -377,14 +451,125 @@ float z_lm_p(const char *prefix, char next) {
     return (1.0f - LM_MIX) * tp + LM_MIX * bp;
 }
 
+static bool exact_word(const char *w) {
+    int32_t at = walk(w);
+    return at >= 0 && nodes[at].wterm > 0.0f;
+}
+
+// --- regular inflections (P49) ----------------------------------------------
+// THIS IS A BUG FIX, NOT A FEATURE. words_en.h records "no inflections" as a
+// deliberate omission — "walk" is in the list, "walked" is not unless it earned
+// its own rank — and reasoned that a stemmer would multiply the list by four for
+// the same coverage. That reasoning was about COVERAGE and it was answering the
+// wrong question. P49 measured what the omission actually does, on 60 hand-
+// checked inflected forms of common words (meta/kbd-measure.sh, section 2):
+//
+//     REWRITTEN into another word   49 of 60 (82%)
+//     no candidate, left as typed   11 of 60 (18%)
+//     already in the list            0
+//
+// walked -> walk. asked -> ask. hands -> and. dogs -> does. reading -> wedding.
+// taking -> thing. Autocorrect was not failing to help with inflected English,
+// it was actively destroying it, and it had been doing so since P48 shipped —
+// invisible because every test and every example in the phase used uninflected
+// words. That is the exact shape of the bug this project keeps finding.
+//
+// WHY IT IS A RULE AND NOT 4000 MORE WORDS. Four times the list is four times the
+// image, four times the trie and four times the hand-editing, to encode something
+// English generates mechanically. The cost words_en.h was worried about — "the
+// trie answering 'is this a word' in two places" — is avoided by putting the rule
+// INSIDE z_lm_is_word rather than beside it: there is still exactly one function
+// every caller asks, and it is this one.
+//
+// WHAT IT DELIBERATELY DOES NOT DO. It never invents a base: every candidate
+// below is accepted only if the STRIPPED FORM IS ITSELF IN THE TRIE, so a typo
+// cannot become a word by ending in "s". It over-generates in one direction —
+// "thes" strips to "the" and would be accepted — and that is the cheap side of
+// the trade: the cost is one non-word autocorrect declines to fix, against 49
+// real words in 60 it stops destroying.
+// Would this base DOUBLE its final consonant before -ing / -ed? A single-syllable
+// consonant-vowel-consonant base always does in English — run/running,
+// sit/sitting, get/getting — so "runing" is a typo and not an inflection, and
+// accepting it would be the rule taking a word out of autocorrect's reach.
+//
+// ONLY THREE-LETTER BASES, deliberately. Doubling is really about the STRESSED
+// final syllable, which nothing here can see: "open" is C-V-C at the end and does
+// NOT double (opened, opening) because the stress is on the first syllable. At
+// three letters the word is single-syllable and the rule is exact. Four-letter
+// bases are left alone, so "stoping" is still read as a word — a residual, stated
+// rather than hidden.
+//
+// 'w', 'x' and 'y' never double (fix/fixing, box/boxing, buy/buying, pay/paying),
+// and are treated as vowels here for exactly that reason.
+static bool vowelish(char c) {
+    return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u' ||
+           c == 'y' || c == 'w' || c == 'x';
+}
+static bool needs_doubling(const char *w, int len) {
+    return len == 3 && !vowelish(w[0]) && vowelish(w[1]) && !vowelish(w[2]);
+}
+
+static bool inflected_word(const char *w) {
+    int n = (int)strlen(w);
+    char b[LM_MAX_WORD];
+    if (n < 3 || n >= LM_MAX_WORD) {
+        return false;
+    }
+    // Take the first `k` characters of w, optionally appending `add`.
+    #define TRY(k, add)                                                        \
+        do {                                                                   \
+            int k_ = (k);                                                      \
+            if (k_ >= 2 && k_ < LM_MAX_WORD - 1) {                             \
+                memcpy(b, w, (size_t)k_);                                      \
+                b[k_] = (add);                                                 \
+                b[k_ + ((add) ? 1 : 0)] = '\0';                                \
+                if (exact_word(b)) {                                           \
+                    return true;                                               \
+                }                                                              \
+            }                                                                  \
+        } while (0)
+
+    if (w[n - 1] == 's') {
+        TRY(n - 1, 0);                                   // walks -> walk
+        if (n >= 4 && w[n - 2] == 'e') {
+            TRY(n - 2, 0);                               // watches -> watch
+            if (w[n - 3] == 'i') {
+                TRY(n - 3, 'y');                         // carries -> carry
+            }
+        }
+    }
+    if (n >= 4 && w[n - 1] == 'd' && w[n - 2] == 'e') {
+        if (!needs_doubling(w, n - 2)) {
+            TRY(n - 2, 0);                               // walked -> walk
+        }
+        TRY(n - 1, 0);                                   // moved  -> move
+        if (n >= 5 && w[n - 3] == 'i') {
+            TRY(n - 3, 'y');                             // carried -> carry
+        }
+        if (n >= 6 && w[n - 3] == w[n - 4]) {
+            TRY(n - 3, 0);                               // stopped -> stop
+        }
+    }
+    if (n >= 5 && w[n - 1] == 'g' && w[n - 2] == 'n' && w[n - 3] == 'i') {
+        if (!needs_doubling(w, n - 3)) {
+            TRY(n - 3, 0);                               // walking -> walk
+        }
+        TRY(n - 3, 'e');                                 // moving  -> move
+        if (n >= 6 && w[n - 4] == w[n - 5]) {
+            TRY(n - 4, 0);                               // running -> run
+        }
+    }
+    #undef TRY
+    return false;
+}
+
 bool z_lm_is_word(const char *prefix) {
     trie_build();
     char w[LM_MAX_WORD];
     if (cur_word(prefix, w) == 0) {
         return false;
     }
-    int32_t at = walk(w);
-    return at >= 0 && nodes[at].wterm > 0.0f;
+    return exact_word(w) || inflected_word(w);
 }
 
 bool z_lm_is_prefix(const char *prefix) {
@@ -397,6 +582,108 @@ bool z_lm_is_prefix(const char *prefix) {
     // ends at) this string. Length >= 2, the same floor autocorrect uses — every
     // single letter is trivially on the tree and none is worth protecting.
     return (int)strlen(w) >= 2 && walk(w) >= 0;
+}
+
+// --- learning ---------------------------------------------------------------
+// The doorbell. Everything about WHETHER to ring it — how many times a word has
+// to be typed, whether the field was a password, where the list is kept and how
+// the user gets rid of it — is the keyboard's decision and lives in main.c. What
+// happens here is a data-structure edit and a generation bump.
+unsigned z_lm_generation(void) {
+    return lm_gen;
+}
+
+// The contraction whose bare form is `lower`, or NULL. The table and the rule
+// that governs what may be in it are in words_en.h; this is only the lookup, and
+// it is on the MODEL side because a contraction is a fact about English — the
+// same reason the word list is here and the substitution cost is not.
+const char *z_lm_contraction(const char *lower) {
+    if (!lower) {
+        return NULL;
+    }
+    for (int i = 0; i < N_CONTRACTIONS_EN; i++) {
+        if (strcmp(CONTRACTIONS_EN[i].bare, lower) == 0) {
+            return CONTRACTIONS_EN[i].full;
+        }
+    }
+    return NULL;
+}
+
+int z_lm_word_count(void) {
+    list_load();
+    return n_words;
+}
+
+bool z_lm_learn(const char *word) {
+    if (!word) {
+        return false;
+    }
+    int len = (int)strlen(word);
+    if (len < 2 || len >= LM_MAX_WORD) {
+        return false;
+    }
+    for (int i = 0; i < len; i++) {
+        if (word[i] < 'a' || word[i] > 'z') {
+            return false;   // the trie is a-z; anything else is not a word to it
+        }
+    }
+    trie_build();   // the list has to exist before anything can be appended to it
+    if (!w_text || n_words >= LM_MAX_WORDS ||
+        n_words - n_const >= LM_MAX_LEARNED) {
+        return false;
+    }
+    if (z_lm_is_word(word)) {
+        return false;   // already known — shipped or already learned
+    }
+    if (w_text_len + (size_t)len + 1 > w_text_cap ||
+        w_text_len + (size_t)len > UINT16_MAX) {
+        return false;
+    }
+    memcpy(w_text + w_text_len, word, (size_t)len);
+    w_off[n_words] = (uint16_t)w_text_len;
+    w_len[n_words] = (uint8_t)len;
+    w_rank[n_words] = LM_LEARN_RANK;
+    w_text_len += (size_t)len;
+    w_text[w_text_len++] = '\0';
+    n_words++;
+    // DIRTY, NOT REBUILT. The caller is inside a keystroke; the rebuild is 55ms
+    // on the target (P48 measured it) and belongs between two frames, not between
+    // a press and its character.
+    tree_dirty = true;
+    lm_gen++;
+    return true;
+}
+
+int z_lm_learned(const char **out, int max) {
+    list_load();
+    int n = 0;
+    for (int i = n_const; i < n_words && n < max; i++) {
+        out[n++] = word_at(i);
+    }
+    return n;
+}
+
+void z_lm_forget_all(void) {
+    list_load();
+    if (n_words == n_const) {
+        return;
+    }
+    // Truncate the text buffer back to the shipped list as well as the index —
+    // the point of a forget is that the bytes are gone, not that they are
+    // unreferenced. The shipped words all sit before n_const's offsets, so the
+    // end of the last one is where the learned text began.
+    size_t keep = 0;
+    for (int i = 0; i < n_const; i++) {
+        size_t end = (size_t)w_off[i] + w_len[i] + 1;
+        if (end > keep) {
+            keep = end;
+        }
+    }
+    memset(w_text + keep, 0, w_text_len - keep);
+    w_text_len = keep;
+    n_words = n_const;
+    tree_dirty = true;
+    lm_gen++;
 }
 
 // --- whole-word candidates --------------------------------------------------
@@ -424,8 +711,51 @@ bool z_lm_is_prefix(const char *prefix) {
 static float ROW_A[LM_MAX_WORD + 1], ROW_B[LM_MAX_WORD + 1],
     ROW_C[LM_MAX_WORD + 1];
 
+// THE CALLER'S SUBSTITUTION COST, MEMOISED FOR THE LENGTH OF ONE CALL (P49).
+//
+// This is 95% of what a scan used to cost, measured rather than guessed: the same
+// candidate search over the same list runs in 929us with the keyboard's callback
+// and 51us with none (meta/kbd-measure.sh, section 1). The callback is not slow by accident — it
+// is a fact about the LAYOUT, so it scans the laid-out caps for two characters
+// and takes a square root, and the DP asks it once per mismatched cell. Over 1620
+// words that is hundreds of thousands of identical questions, because there are
+// only 26x26 of them.
+//
+// Memoised HERE and not in the caller, because the caller cannot know how many
+// times the DP will ask: the interface promises "a fact about the layout", and a
+// fact does not change between two cells of the same search. Lazy rather than
+// precomputed — a 5-letter word touches at most 5 columns of the table, so
+// filling all 676 entries eagerly would cost more than the search saves.
+#define SUBST_UNKNOWN (-1.0f)
+static ZLmSubstCost memo_fn;
+static void *memo_ud;
+static float subst_memo[26][26];
+
+static void subst_begin(ZLmSubstCost subst, void *ud) {
+    memo_fn = subst;
+    memo_ud = ud;
+    for (int i = 0; i < 26; i++) {
+        for (int j = 0; j < 26; j++) {
+            subst_memo[i][j] = SUBST_UNKNOWN;
+        }
+    }
+}
+static float subst_of(char want, char got) {
+    if (!memo_fn) {
+        return 1.0f;
+    }
+    if (want < 'a' || want > 'z' || got < 'a' || got > 'z') {
+        return memo_fn(memo_ud, want, got);   // outside the table: ask every time
+    }
+    float *slot = &subst_memo[want - 'a'][got - 'a'];
+    if (*slot == SUBST_UNKNOWN) {
+        *slot = memo_fn(memo_ud, want, got);
+    }
+    return *slot;
+}
+
 static float edit_cost(const char *want, int wl, const char *got, int gl,
-                       ZLmSubstCost subst, void *ud, float ceiling) {
+                       float ceiling) {
     // Two rolling rows plus the one before them (the transposition needs d[i-2]).
     float *prev2 = ROW_A, *prev = ROW_B, *cur = ROW_C;
     for (int j = 0; j <= gl; j++) {
@@ -437,7 +767,7 @@ static float edit_cost(const char *want, int wl, const char *got, int gl,
         for (int j = 1; j <= gl; j++) {
             float sc = 0.0f;
             if (want[i - 1] != got[j - 1]) {
-                sc = subst ? subst(ud, want[i - 1], got[j - 1]) : 1.0f;
+                sc = subst_of(want[i - 1], got[j - 1]);
             }
             float v = prev[j - 1] + sc;
             if (prev[j] + 1.0f < v) {
@@ -489,6 +819,7 @@ int z_lm_candidates(const char *typed, ZLmSubstCost subst, void *ud,
     // "cat" proposes "can", "car", "cut", "eat" and "hat" with nothing to choose
     // between them.
     float ceiling = gl <= 4 ? 1.0f : 2.0f;
+    subst_begin(subst, ud);
 
     int n = 0;
     for (int i = 0; i < n_words; i++) {
@@ -500,11 +831,11 @@ int z_lm_candidates(const char *typed, ZLmSubstCost subst, void *ud,
         if ((float)dl > ceiling) {
             continue;   // length alone rules it out, before any DP runs
         }
-        float d = edit_cost(word_at(i), wl, got, gl, subst, ud, ceiling);
+        float d = edit_cost(word_at(i), wl, got, gl, ceiling);
         if (d > ceiling) {
             continue;
         }
-        float score = rank_weight(i) * (d <= 0.0f ? EXACT_BONUS
+        float score = entry_weight(i) * (d <= 0.0f ? EXACT_BONUS
                                                  : powf(EDIT_DECAY, d));
         // Insertion sort into the top-`max`.
         if (n < max) {
@@ -532,11 +863,11 @@ void z_lm_report(char *buf, size_t n) {
     size_t index_bytes = (size_t)n_words * (sizeof(w_off[0]) + sizeof(w_len[0]));
     size_t trie_bytes = (size_t)n_nodes * sizeof(TNode);
     snprintf(buf, n,
-             "%s: %d words (%d dropped as duplicates), %d nodes; "
-             "list %zuB + index %zuB + trie %zuB = %zuB, built in %.0fus "
-             "(a 26-wide child array would make the trie %zuB)",
-             z_lm_name(), n_words - n_dups, n_dups, (int)n_nodes, list_bytes,
-             index_bytes, trie_bytes, list_bytes + index_bytes + trie_bytes,
-             build_us,
+             "%s: %d words (%d shipped + %d learned, %d dropped as duplicates), "
+             "%d nodes; list %zuB + index %zuB + trie %zuB = %zuB, built in "
+             "%.0fus (build #%d; a 26-wide child array would make the trie %zuB)",
+             z_lm_name(), n_words - n_dups, n_const, n_words - n_const, n_dups,
+             (int)n_nodes, list_bytes, index_bytes, trie_bytes,
+             list_bytes + index_bytes + trie_bytes, build_us, n_rebuilds,
              (size_t)n_nodes * (26 * sizeof(int32_t) + 2 * sizeof(float)));
 }

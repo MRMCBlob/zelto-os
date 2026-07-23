@@ -31,32 +31,76 @@
 // words nobody is typing is fractionally more likely.
 //
 // WHAT WAS LEFT OUT, and why each one is a decision rather than an omission:
-//   - A CORPUS-DERIVED LIST. The obvious source is a public-domain frequency list
-//     (SCOWL / the Ubuntu `wamerican` package, or a Gutenberg-derived n-gram
-//     count). The build environment has no network route, so it could not be
-//     fetched and pinned in this phase; and neither of those two is what is
-//     wanted anyway — SCOWL is a spelling wordlist with no frequencies and over
-//     100k entries, and an n-gram count needs the same hand-editing at the head
-//     to be usable. Written down as the upgrade: replace THIS FILE, and nothing
-//     above it changes.
-//   - APOSTROPHES. "don't", "it's", "we're" are among the hundred commonest
-//     tokens in English and none of them can be in a trie over a-z. They are here
-//     as "dont", "its", "were" — which is what a phone user types, because the
-//     apostrophe is on the symbols layer — and the keyboard does NOT expand them.
-//     Expansion is an autocorrect decision that changes a character the user did
-//     not type into one they cannot see; it needs the suggestion strip to be
-//     defensible, and the strip exists now, so this is a candidate for next
-//     phase and not a thing the dictionary can fix.
-//   - INFLECTIONS. "walk" is here; "walks", "walked", "walking" are not, unless
-//     they are common enough to earn their own rank. A stemmer would multiply the
-//     list by four for the same coverage, and a suffix rule would need the trie to
-//     answer "is this a word" in two places instead of one.
+//   - A CORPUS-DERIVED LIST — MEASURED IN P49 AND REJECTED ON THE EVIDENCE.
+//     P48 recorded this as the obvious upgrade, blocked only by the build
+//     environment having no network route. P49 checked: the route exists now. So
+//     the candidate was fetched and compared against this file instead of being
+//     assumed better, and the answer is no.
+//
+//     The candidate was google-10000-english-usa (first20hours/google-10000-
+//     english, sha256 981c776dc7e8996accb256e5fea9d241331b9602efe0c977285734890
+//     e1ae729), a frequency-ordered list derived from Google's Trillion Word
+//     Corpus — i.e. exactly the "corpus-derived n-gram count" that was wanted.
+//     Its first 1620 entries overlap this file by 51%, and what is in the other
+//     49% says why it lost: "pm online c e am s click x date n re copyright jan
+//     d info rights privacy items r sex user de university games p f". It is a
+//     WEB corpus. Its head is single letters, boilerplate and navigation
+//     furniture, none of which anybody types into a phone.
+//
+//     The ranks make the same point on the words that matter here: "hello" is
+//     rank 478 in this file and 2419 in the corpus; "dont" 227 against 3668;
+//     "keyboard" 608 against 3573. On the 200 words this file ranks highest the
+//     median rank disagreement is 67 places and the maximum is 6802. Adopting it
+//     would measurably worsen the two behaviours P48 shipped — the space bar
+//     grows on a COMPLETE WORD, and autocorrect proposes the COMMONER word — for
+//     every one of them.
+//
+//     THE REAL REQUIREMENT, now that it has been paid for: a list ranked by what
+//     people TYPE, not by what the web contains. Subtitle corpora (OpenSubtitles
+//     frequency lists) are the closest public-domain proxy and are the thing to
+//     measure next, against this same comparison. Until one wins that comparison
+//     this file stays, and "it is hand-assembled" stops being a reason on its own.
+//   - APOSTROPHES — EXPANDED NOW, THROUGH THE VISIBLE PATH (P49). "don't",
+//     "it's", "we're" are among the hundred commonest tokens in English and none
+//     of them can be in a trie over a-z, so they are here as the bare forms
+//     "dont", "its", "were" — which is also what a phone user types, because the
+//     apostrophe is on the symbols layer. P48 declined to expand them and wrote
+//     down the condition: expansion changes a character the user did not type
+//     into one they cannot see, so it needs the suggestion strip to be
+//     defensible. The strip shipped in P48, so CONTRACTIONS_EN at the foot of
+//     this file is the follow-through — and it goes through kbd_autocorrect like
+//     every other correction, so it is in the strip before it fires and one
+//     backspace takes it back. The rule for what may be in that table is with
+//     the table; the short version is that "its" and "were" are not in it and
+//     never will be, because they are words.
+//   - INFLECTIONS — STILL NOT IN THE LIST, AND THAT IS NOW A RULE INSTEAD OF AN
+//     OMISSION (P49). "walk" is here; "walks", "walked", "walking" are not. What
+//     P48 wrote here was a coverage argument — a stemmer multiplies the list by
+//     four for the same words — and it was answering the wrong question, because
+//     the cost of the omission was never coverage. Measured on 60 hand-checked
+//     inflected forms of common words (meta/kbd-measure.sh): autocorrect REWROTE 49
+//     of them into a different word. walked -> walk. hands -> and. dogs -> does.
+//     reading -> wedding. taking -> thing. That had been happening since
+//     autocorrect shipped and nothing looked broken, because every test and every
+//     worked example used uninflected words.
+//     The fix is a suffix rule (inflected_word in lm_trie.c), and the objection
+//     recorded here — "a suffix rule would need the trie to answer 'is this a
+//     word' in two places" — is answered by putting the rule INSIDE
+//     z_lm_is_word: there is still exactly one function every caller asks. After
+//     it, 60 of 60 are left alone and 15 of 16 real typos are still corrected.
 //   - PROPER NOUNS AND NAMES. The trie is lower-case, and a name is exactly the
 //     string P47's centre-zone rule exists to protect: the keyboard must type it
 //     accurately without knowing it, and it does.
-//   - A LEARNED USER DICTIONARY. It is the obvious next feature and it is a
-//     privacy decision as much as a technical one (what is stored, where, and
-//     whether a password field can leak into it). Not started here.
+//   - A LEARNED USER DICTIONARY — BUILT IN P49, AND STILL NOT IN THIS FILE.
+//     P48 called it the obvious next feature and a privacy decision as much as a
+//     technical one. Both were right, and the second is why nothing about it
+//     landed here: a learned word merges into the LIST at runtime (z_lm_learn,
+//     predict.h) and is answered by the same trie, but it is never written into
+//     the shipped source. What is stored, where, and what may never get in are
+//     decided where the field's content purpose is visible — the privacy note
+//     over kbd_learn() in system/keyboard/main.c. This file is what ships in the
+//     image; that one is what a person's phone learns, and they are deliberately
+//     not the same artifact.
 //
 // SIZE, measured: see the "[keyboard] lm trie" line the model prints at build —
 // bytes of source list, node count, and bytes of built trie, all reported rather
@@ -287,5 +331,54 @@ static const char *const WORDS_EN[] = {
     "yard\nyellow\nyourself\n",
     "youth\nzero\nzone\n",
 };
+
+// --- the contractions (P49) --------------------------------------------------
+// APOSTROPHES, PUT BACK. P48 wrote down why the list carries "dont", "its" and
+// "were" as bare forms — a trie over a-z cannot hold an apostrophe, and a bare
+// form is what a phone user types because the apostrophe is on the symbols layer
+// — and why the keyboard did NOT expand them: expansion changes a character the
+// user did not type into one they cannot see, and that needs the suggestion strip
+// to be defensible. The strip shipped in P48. This is the follow-through: an
+// expansion is a correction like any other, so it goes through kbd_autocorrect,
+// shows in the strip before it fires, and one backspace takes it back.
+//
+// THE RULE FOR WHAT IS IN THIS TABLE, and it is the entire safety argument:
+// ONLY CONTRACTIONS WHOSE BARE FORM IS NOT ITSELF AN ENGLISH WORD. That is why
+// this list is thirty-odd entries and not the ~90 contractions English has.
+// Deliberately absent, each because the bare form is a real word that means
+// something else:
+//     its   ("its colour")        were  ("they were here")
+//     well  ("a well")            shell ("a shell")
+//     lets  ("he lets go")        hell / ill / id / were / whos->whos? no
+//     shed  ("a shed")            wed   ("we wed")
+//     cant / wont ARE words in the strictest sense ("insincere talk", "as is his
+//     wont") and are in this table anyway: both are vanishingly rare against the
+//     contraction, both are absent from the shipped list, and every phone
+//     keyboard makes the same call. That is a judgement, so it is written down
+//     here rather than buried.
+//
+// It lives in THIS file rather than beside the code that uses it because it is
+// lexical data about English, which is what this file is, and because a test can
+// then lint it (test_kbd_predict: unique, and every expansion is its bare form
+// with exactly one apostrophe inserted).
+typedef struct ZWordContraction {
+    const char *bare, *full;
+} ZWordContraction;
+
+static const ZWordContraction CONTRACTIONS_EN[] = {
+    {"dont", "don't"},         {"doesnt", "doesn't"},   {"didnt", "didn't"},
+    {"cant", "can't"},         {"wont", "won't"},       {"isnt", "isn't"},
+    {"arent", "aren't"},       {"wasnt", "wasn't"},     {"werent", "weren't"},
+    {"havent", "haven't"},     {"hasnt", "hasn't"},     {"hadnt", "hadn't"},
+    {"wouldnt", "wouldn't"},   {"couldnt", "couldn't"},
+    {"shouldnt", "shouldn't"}, {"youre", "you're"},     {"youve", "you've"},
+    {"youll", "you'll"},       {"theyre", "they're"},   {"theyve", "they've"},
+    {"theyll", "they'll"},     {"weve", "we've"},       {"wouldve", "would've"},
+    {"couldve", "could've"},   {"shouldve", "should've"},
+    {"thats", "that's"},       {"whats", "what's"},     {"theres", "there's"},
+    {"heres", "here's"},       {"ive", "I've"},         {"im", "I'm"},
+};
+#define N_CONTRACTIONS_EN                                                      \
+    ((int)(sizeof(CONTRACTIONS_EN) / sizeof(CONTRACTIONS_EN[0])))
 
 #endif  // ZELTO_KBD_WORDS_EN_H

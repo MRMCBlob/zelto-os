@@ -124,6 +124,55 @@ typedef float (*ZLmSubstCost)(void *ud, char want, char got);
 int z_lm_candidates(const char *typed, ZLmSubstCost subst, void *ud,
                     ZLmWord *out, int max);
 
+// --- learning (P49) ----------------------------------------------------------
+// THE KEYBOARD KNOWS 1620 WORDS AND NOT ONE OF THEM IS YOURS. That is the whole
+// of what this adds, and the reason it is four small functions rather than a
+// subsystem: a learned word MERGES INTO THE LIST the tree is built from, so from
+// the moment it is learned it is answered by the same z_lm_p, the same
+// z_lm_is_word and the same z_lm_candidates as a shipped word. There is no second
+// model to disagree with the first, and no code above this line can tell which
+// kind of word it just got an answer about.
+//
+// THIS SIDE MAKES NO POLICY. Who may teach it a word, how many times a string has
+// to be typed before it counts, whether the field was a password, where the list
+// is kept between boots and how a user deletes it are all decisions that need to
+// see the field's content purpose and the OS's storage — so they live in the
+// keyboard (kbd_learn / dict_load / dict_save in main.c, and the privacy note
+// above them). What is here is a data structure and a doorbell.
+//
+// Learn `word` (lowercase a-z, 2..23 characters). Returns true if it was added —
+// false if it is malformed, already known, or the store is full. It does NOT
+// rebuild the tree; the rebuild is deferred to the next question so that the
+// keystroke that taught the word does not pay 55ms for it on the target.
+bool z_lm_learn(const char *word);
+
+// Everything that has been learned, for the two callers that must be able to see
+// it: the code that PERSISTS the list, and the code that shows the user what is
+// in it. A store the user cannot read is a log; this is what stops it being one.
+// Writes up to `max` pointers into the model's own storage and returns how many.
+int z_lm_learned(const char **out, int max);
+
+// Forget all of it, and blank the bytes rather than just the index. The delete
+// half of the same decision — see Settings > Keyboard > Learned words.
+void z_lm_forget_all(void);
+
+// Bumped by every learn and every forget. A caller that MEMOISES an answer from
+// this model (kbd_candidates in main.c does) needs to know the model underneath
+// its cache has changed, and "the word is the same" is no longer enough.
+unsigned z_lm_generation(void);
+
+// The apostrophe form of a bare contraction ("dont" -> "don't"), or NULL. A trie
+// over a-z cannot hold an apostrophe, so the list carries the bare forms and this
+// is how they get their punctuation back. On this side of the seam because it is
+// a fact about ENGLISH; whether to apply it, and how visibly, is the keyboard's
+// call (see kbd_autocorrect).
+const char *z_lm_contraction(const char *lower);
+
+// How many words the model is answering from, shipped plus learned. The cost of
+// a candidate scan is linear in this, so a caller reporting what a scan cost has
+// to be able to say what it scanned.
+int z_lm_word_count(void);
+
 // What the model cost to build, for the log: entries, trie nodes, bytes of
 // source list, bytes of built trie, and microseconds spent building it. Reported
 // rather than estimated — the word list ships in the image, so its size is a

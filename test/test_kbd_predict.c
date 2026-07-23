@@ -116,6 +116,19 @@ static float cy(char ch) {
     int i = key_of(ch);
     return KEYS[i].y + KEYS[i].h * 0.5f;
 }
+// A substitution cost that COUNTS how often it is asked. The number is the whole
+// point (section I): the real callback scans the laid-out caps and takes a square
+// root, so how many times the edit-distance search asks it is the difference
+// between a 79us scan and a 929us one.
+static int subst_calls;
+static float counting_subst(void *ud, char want, char got) {
+    (void)ud;
+    subst_calls++;
+    // Roughly the shape of the real one — adjacent letters are cheap — so the
+    // answers below are the answers the keyboard would get, not a degenerate 1.0.
+    return (want > got ? want - got : got - want) <= 1 ? 0.5f : 1.0f;
+}
+
 static char classify(float x, float y, const char *prefix, bool lang) {
     int i = z_kbd_classify(KEYS, N_KEYS, x, y, prefix, lang, NULL, 0);
     return i < 0 ? '?' : KEYS[i].ch;
@@ -542,6 +555,259 @@ int main(void) {
               "\"wrold\" did not propose \"world\" — and without this the "
               "zero-candidate assertion above proves nothing",
               n > 0 ? w[0].word : "none");
+    }
+
+    // --- H2. INFLECTED ENGLISH IS NOT DESTROYED (P49) ------------------------
+    // A REGRESSION TEST FOR A SHIPPED BUG, and it is worth stating what the bug
+    // was because the fix reads like a feature. words_en.h carries "walk" and not
+    // "walked", which P48 recorded as a coverage decision. It was not a coverage
+    // problem: measured over 60 hand-checked inflected forms of common words,
+    // autocorrect REWROTE 49 of them into a different word — walked -> walk,
+    // hands -> and, dogs -> does, reading -> wedding, taking -> thing. It had been
+    // doing that since autocorrect shipped, invisibly, because every test and
+    // every worked example in that phase used uninflected words.
+    //
+    // Both directions are asserted, because a rule that made everything a word
+    // would pass the first half and break autocorrect entirely.
+    {
+        static const char *INFLECTED[] = {
+            "walked", "asked", "opened", "carried", "stopped", "moved",
+            "walking", "making", "running", "reading", "writing",
+            "walks", "dogs", "hands", "watches", "carries",
+        };
+        for (int i = 0; i < (int)(sizeof(INFLECTED) / sizeof(INFLECTED[0]));
+             i++) {
+            snprintf(msg, sizeof(msg),
+                     "\"%s\" is not a word to the model, so autocorrect will "
+                     "rewrite it into a shorter one — ordinary inflected English "
+                     "is not a typo",
+                     INFLECTED[i]);
+            CHECK(z_lm_is_word(INFLECTED[i]), msg, "not a word");
+        }
+        // ...and the other direction. A suffix rule that accepted anything
+        // ending in s/ed/ing would silently switch autocorrect off, which no
+        // assertion above would notice.
+        static const char *TYPOS[] = {"teh", "wrold", "freind", "recieve",
+                                      "hleped", "wnats", "zqxvv", "runing"};
+        for (int i = 0; i < (int)(sizeof(TYPOS) / sizeof(TYPOS[0])); i++) {
+            snprintf(msg, sizeof(msg),
+                     "the typo \"%s\" now reads as a WORD — the inflection rule "
+                     "may only accept a suffix on a base that is itself in the "
+                     "dictionary, or it takes typos out of autocorrect's reach",
+                     TYPOS[i]);
+            CHECK(!z_lm_is_word(TYPOS[i]), msg, "is a word");
+        }
+        // The doubling rule, as its own pair: English doubles the final
+        // consonant of a single-syllable C-V-C base, so "running" is a word and
+        // "runing" is a typo, and only a rule that knows the difference can have
+        // both. Without it "runing" strips to "run" and stops being correctable.
+        CHECK(z_lm_is_word("running"), "\"running\" is not a word", "not a word");
+        CHECK(!z_lm_is_word("runing"),
+              "\"runing\" reads as a word — it strips to \"run\", but a "
+              "single-syllable C-V-C base doubles its consonant, so this is a "
+              "typo and not an inflection", "is a word");
+        // ...and the exceptions that keep that rule from over-firing: w/x/y
+        // never double, so these must stay words.
+        CHECK(z_lm_is_word("fixing"),
+              "\"fixing\" was rejected — 'x' never doubles", "not a word");
+        CHECK(z_lm_is_word("buying"),
+              "\"buying\" was rejected — 'y' never doubles", "not a word");
+    }
+
+    // --- I. THE SUBSTITUTION COST IS ASKED 26x26 TIMES, NOT 200,000 ----------
+    // P49 item 1. The caller's substitution callback is a fact about the LAYOUT:
+    // the keyboard's scans the laid-out caps for two characters and takes a
+    // square root, and the DP asked it once per mismatched cell — over 1620 words
+    // that is hundreds of thousands of calls for an answer with only 676 possible
+    // questions in it. It was 95% of what a scan cost (929us with the callback,
+    // 51us without, measured on the real list).
+    //
+    // Counted rather than timed, because a wall clock in a test is a flake. The
+    // bound is the SHAPE of the memo — at most one call per (want, got) pair —
+    // and the same call must still return the same answer, which is the second
+    // assertion and the reason the first one is not enough on its own.
+    {
+        ZLmWord w[4];
+        subst_calls = 0;
+        int n = z_lm_candidates("wrold", counting_subst, NULL, w, 4);
+        snprintf(act, sizeof(act), "%d calls", subst_calls);
+        CHECK(subst_calls <= 26 * 26,
+              "the substitution cost was asked more than 26x26 times for one "
+              "candidate search — it is a fact about the layout with 676 possible "
+              "answers, and asking it per DP cell is 95% of what a scan costs",
+              act);
+        CHECK(n > 0 && strcmp(w[0].word, "world") == 0,
+              "memoising the substitution cost changed the answer — the memo is "
+              "only correct if the callback is a pure function of (want, got), "
+              "which is what the interface promises",
+              n > 0 ? w[0].word : "none");
+        // The positive control for that bound: the callback WAS consulted. A memo
+        // that never called it at all would pass the assertion above trivially.
+        snprintf(act, sizeof(act), "%d calls", subst_calls);
+        CHECK(subst_calls > 0,
+              "the substitution callback was never called, so the bound above "
+              "proves nothing about memoisation", act);
+    }
+
+    // --- J. A LEARNED WORD IS ANSWERED BY THE SAME MODEL ---------------------
+    // P49 item 2, and the property the whole design turns on: a learned word
+    // merges INTO THE LIST the tree is built from, so it is not a second model
+    // consulted alongside the first. The test of that is not "learning works", it
+    // is that EVERY entry point changes together — z_lm_is_word, z_lm_is_prefix,
+    // z_lm_p and z_lm_candidates. A second model would move one and not the rest.
+    {
+        const char *LEARNED = "zelto";
+        // The negative control comes first and from the same run: before the
+        // word is taught, all four say no.
+        CHECK(!z_lm_is_word(LEARNED),
+              "\"zelto\" was already a word before anything learned it — the "
+              "before/after comparison below would prove nothing", "is a word");
+        float p_before = z_lm_p("zelt", 'o');
+        ZLmWord w[4];
+        int n, n_before = z_lm_candidates(LEARNED, NULL, NULL, w, 4);
+        unsigned gen_before = z_lm_generation();
+        int words_before = z_lm_word_count();
+
+        CHECK(z_lm_learn(LEARNED), "the model refused to learn a plain new word",
+              "refused");
+
+        CHECK(z_lm_is_word(LEARNED),
+              "a learned word is not a word to z_lm_is_word — autocorrect would "
+              "go on 'correcting' it, which is the exact behaviour learning "
+              "exists to stop", "not a word");
+        CHECK(z_lm_is_prefix("zelt"),
+              "a learned word did not make its own prefix live — the classifier "
+              "reads z_lm_is_prefix, so the letters would still fight the user "
+              "half way through typing it", "not a prefix");
+        float p_after = z_lm_p("zelt", 'o');
+        snprintf(act, sizeof(act), "%.4f -> %.4f", p_before, p_after);
+        CHECK(p_after > 4.0f * p_before,
+              "learning a word did not change P(next | prefix) — z_lm_p is what "
+              "the CLASSIFIER consumes, so a learned word that does not move it "
+              "is a dictionary entry the touch targets have never heard of", act);
+        n = z_lm_candidates(LEARNED, NULL, NULL, w, 4);
+        CHECK(n > 0 && strcmp(w[0].word, LEARNED) == 0,
+              "a learned word is not its own best candidate — the strip and "
+              "autocorrect read this list, and an exact hit must win it",
+              n > 0 ? w[0].word : "none");
+        snprintf(act, sizeof(act), "%d before, %d after", n_before, n);
+        CHECK(z_lm_generation() != gen_before,
+              "z_lm_generation did not change after a learn — callers memoise "
+              "answers from this model (kbd_candidates does) and have nothing "
+              "else to invalidate against", "unchanged");
+        CHECK(z_lm_word_count() == words_before + 1,
+              "the word count did not go up by exactly one", act);
+
+        // Learning is IDEMPOTENT. A word taught twice must not become two
+        // entries — the duplicate lint at the top of this file is what would
+        // eventually notice, long after the rank of the second copy was silently
+        // discarded.
+        CHECK(!z_lm_learn(LEARNED),
+              "the model learned the same word twice", "learned again");
+        CHECK(z_lm_word_count() == words_before + 1,
+              "a repeated learn changed the word count", "count moved");
+
+        // WHAT IT REFUSES. Not a policy list — the policy is in the keyboard —
+        // but the shape contract the keyboard's policy is written against.
+        CHECK(!z_lm_learn("Zelto"), "a capital was accepted into an a-z trie",
+              "accepted");
+        CHECK(!z_lm_learn("zelto2"), "a digit was accepted", "accepted");
+        CHECK(!z_lm_learn("z"), "a one-letter word was accepted", "accepted");
+        CHECK(!z_lm_learn(""), "an empty string was accepted", "accepted");
+
+        // A LEARNED WORD MUST NOT OUTRANK THE SHIPPED LIST AT THE SAME EDIT
+        // DISTANCE. LM_LEARN_RANK is what stops learning from turning into "the
+        // last thing you typed is now the commonest word in English".
+        //
+        // THE PROBE HAS TO HOLD EVERYTHING BUT THE RANK CONSTANT, which the first
+        // attempt at this assertion did not: it learned "teg" and checked that
+        // "teh" still corrected to "the" — and it did, at LM_LEARN_RANK 0, because
+        // "the" is a TRANSPOSITION of "teh" (cost 0.8) and "teg" a substitution
+        // (cost 1.0), so the edit discount decided it and the rank never came into
+        // it. The negative test caught that: the break passed. Here both
+        // candidates are exactly one edit from the typed string, so rank is the
+        // only thing left to decide between them.
+        CHECK(z_lm_learn("worla"), "could not learn the test word", "refused");
+        n = z_lm_candidates("worl", NULL, NULL, w, 4);
+        snprintf(act, sizeof(act), "best '%s'", n > 0 ? w[0].word : "none");
+        CHECK(n > 0 && strcmp(w[0].word, "worla") != 0,
+              "a word learned ONCE now beats the shipped dictionary at the same "
+              "edit distance — a learned word is common FOR YOU, not commoner "
+              "than the words everybody uses, and LM_LEARN_RANK is what says so",
+              act);
+
+        // ...and FORGET puts it all back. The delete half of the privacy
+        // decision: Settings > Keyboard > Clear Learned Words calls this.
+        z_lm_forget_all();
+        CHECK(!z_lm_is_word(LEARNED),
+              "a forgotten word is still a word — Clear Learned Words is the "
+              "only way out of the store, and it has to actually work",
+              "still a word");
+        snprintf(act, sizeof(act), "%d words", z_lm_word_count());
+        CHECK(z_lm_word_count() == words_before,
+              "forgetting did not restore the shipped word count", act);
+        CHECK(z_lm_is_word("hello"),
+              "forgetting the learned words took the SHIPPED dictionary with it",
+              "hello is gone");
+    }
+
+    // --- K. THE CONTRACTION TABLE, LINTED -----------------------------------
+    // P49 item 3b. The table is data about English (words_en.h) and its safety
+    // rule — only contractions whose bare form is not itself a word — is a human
+    // judgement that no test can make. What a test CAN do is catch the mechanical
+    // ways the table goes wrong: a duplicate, and an expansion that is not its own
+    // bare form with an apostrophe put back.
+    {
+        for (int i = 0; i < N_CONTRACTIONS_EN; i++) {
+            const char *bare = CONTRACTIONS_EN[i].bare;
+            const char *full = CONTRACTIONS_EN[i].full;
+            CHECK(z_lm_contraction(bare) == full,
+                  "a contraction in the table is not reachable through "
+                  "z_lm_contraction", bare);
+            // Strip the apostrophe from the expansion and it must be the bare
+            // form, case-insensitively ("im" -> "I'm" is the one that needs the
+            // case slack, and it is the only transformation allowed here).
+            char stripped[32];
+            int k = 0;
+            for (const char *p = full; *p && k < (int)sizeof(stripped) - 1; p++) {
+                if (*p == '\'') {
+                    continue;
+                }
+                stripped[k++] = (char)((*p >= 'A' && *p <= 'Z') ? *p + 32 : *p);
+            }
+            stripped[k] = '\0';
+            snprintf(msg, sizeof(msg),
+                     "the expansion of \"%s\" is \"%s\", which is not that word "
+                     "with an apostrophe put back — an expansion may only insert "
+                     "punctuation, never change a letter",
+                     bare, full);
+            CHECK(strcmp(stripped, bare) == 0, msg, full);
+            int apos = 0;
+            for (const char *p = full; *p; p++) {
+                apos += (*p == '\'');
+            }
+            snprintf(msg, sizeof(msg),
+                     "\"%s\" -> \"%s\" inserts %d apostrophes; exactly one is "
+                     "what a contraction is", bare, full, apos);
+            CHECK(apos == 1, msg, full);
+            for (int j = i + 1; j < N_CONTRACTIONS_EN; j++) {
+                snprintf(msg, sizeof(msg),
+                         "\"%s\" appears twice in the contraction table", bare);
+                CHECK(strcmp(bare, CONTRACTIONS_EN[j].bare) != 0, msg, bare);
+            }
+        }
+        CHECK(z_lm_contraction("hello") == NULL,
+              "an ordinary word came back from the contraction table", "found");
+        // The one the rule exists for, stated as a test so that adding it later
+        // has to argue with this line: "were" is an English word and must never
+        // be rewritten to "we're".
+        CHECK(z_lm_contraction("were") == NULL,
+              "\"were\" is in the contraction table — it is a real English word "
+              "(\"they were here\"), and the rule for what may be in that table "
+              "is precisely that the bare form is NOT one", "found");
+        CHECK(z_lm_contraction("its") == NULL,
+              "\"its\" is in the contraction table — \"its colour\" is not a "
+              "typo for \"it's\"", "found");
     }
 
     return zt_result();
