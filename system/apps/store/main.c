@@ -87,9 +87,9 @@ static void install_tampered(ZApp *app, void *state) {
 // measured to ONE line and ran off the edge. The strap line is authored here,
 // but `last_msg` is an INSTALLER RESULT — it carries package names and failure
 // reasons, so its length is not something this file gets to assume.
-#define STORE_PAD 32.0f
+#define STORE_PAD ((float)Z_SPACE_L)
 #define STORE_PANEL_W 620.0f
-#define STORE_PANEL_PAD 18.0f
+#define STORE_PANEL_PAD ((float)Z_SPACE_L)
 
 static ZView store_body(ZApp *app, StoreState *state) {
     float strap_w = (float)z_app_width(app) - 2.0f * STORE_PAD;
@@ -129,10 +129,10 @@ static ZView store_body(ZApp *app, StoreState *state) {
                                          .width = STORE_PANEL_W
                                                   - 2.0f * STORE_PANEL_PAD,
                                          .size = Z_FONT_BODY)),
-                            .spacing = 8, .align = Z_ALIGN_LEADING,
+                            .spacing = Z_SPACE_S, .align = Z_ALIGN_LEADING,
                             .padding = STORE_PANEL_PAD)))),
             Spacer(),
-            .padding = STORE_PAD, .spacing = 16, .align = Z_ALIGN_CENTER));
+            .padding = STORE_PAD, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(StoreState, store_body, "os.zelto.store")

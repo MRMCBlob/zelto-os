@@ -275,7 +275,7 @@ static ZView w_clock(ZApp *app, void *state) {
         Weight(Z_WEIGHT_BOLD,
             Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE2, Text("%s", hhmm)))),
         Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", date))),
-        .spacing = 1, .align = Z_ALIGN_LEADING);
+        .spacing = Z_SPACE_2XS, .align = Z_ALIGN_LEADING);
 }
 
 // A horizontal meter: a filled run and the empty remainder, side by side. The
@@ -327,7 +327,7 @@ static ZView w_battery(ZApp *app, void *state) {
         Foreground(Z_COLOR_TEXT_MUTED,
             Font(Z_FONT_FOOTNOTE,
                  Text("%s%s", charging ? "Charging \xc2\xb7 " : "", net))),
-        .spacing = 6, .align = Z_ALIGN_LEADING);
+        .spacing = Z_SPACE_XS, .align = Z_ALIGN_LEADING);
 }
 
 // The notifications glance: the live count of stored notifications.
@@ -345,7 +345,7 @@ static ZView w_notifs(ZApp *app, void *state) {
                        .color = Z_COLOR_TEXT_MUTED)),
             Weight(Z_WEIGHT_SEMIBOLD,
                 Foreground(Z_COLOR_TEXT, Font(Z_FONT_CALLOUT, Text("All clear")))),
-            .spacing = 8, .align = Z_ALIGN_LEADING);
+            .spacing = Z_SPACE_XS, .align = Z_ALIGN_LEADING);
     }
     return VStack(
         Weight(Z_WEIGHT_BOLD,
@@ -353,7 +353,7 @@ static ZView w_notifs(ZApp *app, void *state) {
         Foreground(Z_COLOR_TEXT_MUTED,
             Font(Z_FONT_FOOTNOTE,
                  Text("%s", n == 1 ? "notification" : "notifications"))),
-        .spacing = 2, .align = Z_ALIGN_LEADING);
+        .spacing = Z_SPACE_2XS, .align = Z_ALIGN_LEADING);
 }
 
 typedef struct WidgetDef {
@@ -1367,7 +1367,7 @@ static ZView app_cell_content(ZApp *app, const AppEntry *e) {
             EllipsizeText(app, e->name, .width = cell_side(z_app_width(app)),
                           .size = Z_FONT_CAPTION2, .weight = Z_WEIGHT_MEDIUM,
                           .color = Z_COLOR_TEXT))),
-        .spacing = 7, .align = Z_ALIGN_CENTER);
+        .spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER);
 }
 
 // --- the dock -------------------------------------------------------------
@@ -1753,7 +1753,7 @@ static ZView page_dots(int npages, int nlib, float page_v) {
     int active = (int)floorf(page_v + 0.5f);
     // Flanking Spacers centre the dots: a bare HStack expands to the full width
     // and would otherwise pack the dots at the leading edge.
-    ZStackOpts row = {.spacing = 9, .align = Z_ALIGN_CENTER};
+    ZStackOpts row = {.spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER};
     int k = 0;
     row.children[k++] = Spacer();
     for (int i = 0; i < npages && k < Z_MAX_CHILDREN - 3; i++) {
@@ -2183,7 +2183,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         ? OnTap(exit_rearrange,
             Background(Z_COLOR_PRIMARY,
                 CornerRadius(Z_RADIUS_PANEL,
-                    Padding(14.0f,
+                    Padding(Z_SPACE_S,
                         Foreground(Z_COLOR_ON_PRIMARY,
                             Weight(Z_WEIGHT_SEMIBOLD,
                                 Font(Z_FONT_CALLOUT, Text("Done"))))))))
@@ -2312,7 +2312,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         ZView box = OnPan(on_toast_pan,
             Background(Z_COLOR_SURFACE_2,
                 CornerRadius(12.0f,
-                    Padding(14.0f,
+                    Padding(Z_SPACE_S,
                         Foreground(Z_COLOR_TEXT_INV,
                             Font(Z_FONT_BODY, Text("%s", state->toast)))))));
         toast = Opacity(te * (1.0f - dprog), OffsetXY(0.0f, tslide + td, Fill(VStack(

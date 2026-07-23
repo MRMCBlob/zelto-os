@@ -89,10 +89,10 @@ static ZView pinger_body(ZApp *app, PingerState *state) {
                                     Text("%s", state->got_action
                                                    ? state->last_action
                                                    : "(none yet)"))),
-                            .spacing = 6, .align = Z_ALIGN_LEADING,
-                            .padding = 16)))),
+                            .spacing = Z_SPACE_XS, .align = Z_ALIGN_LEADING,
+                            .padding = Z_SPACE_L)))),
             Spacer(),
-            .padding = 32, .spacing = 18, .align = Z_ALIGN_CENTER));
+            .padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(PingerState, pinger_body, "os.zelto.pinger")

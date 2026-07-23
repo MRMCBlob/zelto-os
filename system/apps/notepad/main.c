@@ -138,7 +138,7 @@ static void add_note(ZApp *app, void *state) {
 
 // The DB rows list (most recent first), or a placeholder when empty.
 static ZView rows_panel(NotepadState *s) {
-    ZStackOpts opts = {.spacing = 6, .align = Z_ALIGN_LEADING, .padding = 16};
+    ZStackOpts opts = {.spacing = Z_SPACE_S, .align = Z_ALIGN_LEADING, .padding = Z_SPACE_L};
     int k = 0;
     opts.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("DB rows (newest first)")));
@@ -221,7 +221,7 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     // overlay, because an overlay's buttons proved un-hittable; a fixed slot (bar
     // when a field is focused, else an empty placeholder) keeps the layout stable.
     ZView bar = z_selection_bar(app);
-    ZStackOpts col = {.padding = 20, .spacing = 12, .align = Z_ALIGN_CENTER};
+    ZStackOpts col = {.padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER};
     int k = 0;
     // Fixed gap clears the system shade's top grab strip (~72px below the 40px
     // status bar catches the pull-down gesture) so the bar slot below it is tappable.

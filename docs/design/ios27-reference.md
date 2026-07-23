@@ -100,22 +100,43 @@ margin are conventions + layout-guide APIs (`layoutMarginsGuide`, `readableConte
 each chose their own number. `ROW_PAD` is correct (`Z_PT(16)`). `SEC_GAP` (30u) and the
 inline `spacing=12` are literals off the grid.
 
-**Proposed Stage 1 scale** (steps of `Z_PT`, so it retunes from one numerator, and off-grid
-literals become steps of it):
+**THE SHIPPED SCALE (Stage 1a)** — steps of `Z_PT`, so it retunes from one numerator.
+`Z_PT` is integer arithmetic and truncates, so `Z_PT(8)` is 14, not 15:
 
 ```
-Z_SPACE_XS  Z_PT(4)   =  7    tight intra-component
-Z_SPACE_S   Z_PT(8)   = 15    base
-Z_SPACE_M   Z_PT(12)  = 22    value↔control
-Z_SPACE_L   Z_PT(16)  = 29    edge margin / row inset  (== ROW_PAD)
-Z_SPACE_XL  Z_PT(20)  = 37    section gap (measure SEC_GAP against this)
+Z_SPACE_2XS Z_PT(2)   =  3    a subtitle under its title
+Z_SPACE_XS  Z_PT(4)   =  7    a caption under the control it names
+Z_SPACE_S   Z_PT(8)   = 14    THE DEFAULT: siblings in a row
+Z_SPACE_M   Z_PT(12)  = 22    components in a column
+Z_SPACE_L   Z_PT(16)  = 29    content margin  (== ROW_PAD)
+Z_SPACE_XL  Z_PT(20)  = 37    between the groups of a grouped list (SEC_GAP)
 Z_SPACE_2XL Z_PT(24)  = 44
 Z_SPACE_3XL Z_PT(32)  = 59
 ```
 
-`SEC_GAP`'s replacement is measured against a re-shoot in Stage 1 (iOS grouped-section gap
-runs larger than 16pt — ~35pt between sections — so `Z_SPACE_XL` (20pt) or a dedicated
-section step is the candidate, confirmed by a shot, not chosen at a desk).
+**The histogram was the evidence, and it is a transcription bug, not an aesthetic.** The
+three commonest gap literals in the OS were `8`, `10` and `12` — exactly SwiftUI's default
+VStack spacing (8pt), its default HStack spacing (10pt), and the grid's 12pt step, typed
+into screen units. The paddings were `16 / 20 / 24 / 32`, the grid's point steps. So every
+gap was drawn at ~54% of what it was written for: the same defect as the P43 type scale
+and the P44 safe areas, third occurrence, and invisible for the same reason — uniformly
+wrong looks like a style. **The corroboration is already in the tree**: the two metrics
+that had been through this (`ROW_PAD = Z_PT(16)`, `Z_ROW_H = Z_PT(44)`) are the correct
+ones, and `settings/main.c:338` says so in P44's own words — "16 units is 8.6pt where the
+list it copies uses 16pt". The row holding a correct 16pt outer margin was putting a
+6.5pt gap between its own icon and its label.
+
+`SEC_GAP` went 30 → `Z_SPACE_XL` (37). iOS's grouped-section gap reads ~35pt (the default
+grouped section-header height), which would be 65u; `XL` is the largest step that does not
+push the root list's last group off the fold. The 35pt figure stays here as the upper
+bound to test against a shot rather than adopt at a desk.
+
+Two carve-outs are deliberate and written into the header. A gap that IS a control's own
+geometry (the passcode dots' pitch, the status bar's glyph cluster) takes the NEAREST step
+rather than the role's reference — regridding gaps is not redrawing controls. And GLYPH
+internals (the battery meter's segments, the App Library's 2×2 quad mark) plus
+Button/TextField's own insets stay off the scale entirely: the first is drawing, the
+second is control metrics (see §6).
 
 ---
 
@@ -262,6 +283,22 @@ the single most visible metric miss in the OS — a switch appears on Settings r
 Control Center. **Stage 2 fix**, measured: track → ~94×57u, knob → ~51u with a ~3u inset,
 track radius = height/2 (fully rounded). Re-shoot Settings to confirm the row still lays
 out (a taller switch changes `z_row_h`'s floor interaction — verify against the AX audit).
+
+**A SECOND CONTROL IS UNDER THE TOUCH TARGET, found while regridding the spacing
+(Stage 1a).** `sdk/src/view.c` gives `Button` a 14-unit inset and `ZTextField` a 12-unit
+inset, each with a comment reading "~44px tall at body size". That comment was written
+when Body was 17 *units* — it is pre-P43, and the P43 fix moved Body to 31 units without
+moving these. Measured at today's ramp (`z_line_height(BODY)` ≈ 41u):
+
+| control | inset | line box | total | in pt | vs 44pt min |
+|---|---|---|---|---|---|
+| `Button` | 14 × 2 | 41 | **69u** | 37pt | **−7pt** |
+| `ZTextField` | 12 × 2 | 41 | **65u** | 35pt | **−9pt** |
+
+Both are below Apple's 44pt minimum touch target, which `Z_ROW_H` already encodes
+correctly at 81u. **Stage 2 fix:** the inset becomes whatever makes the total reach
+`Z_ROW_H` — an expression over the line box, like `z_row_h()`, not a new literal. Same
+shape of bug as the switch, in the toolkit rather than in an app.
 
 **Buttons have no iOS point height** — iOS 26 sizes via `ControlSize`/`buttonSizing` and
 defaults to **Capsule** (radius = height/2). Do not hardcode a button height "to match

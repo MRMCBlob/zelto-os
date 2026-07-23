@@ -258,7 +258,7 @@ static ZView switch_card(ZApp *app, const ZTask *t, float cw, float ch) {
             Foreground(t->active ? Z_COLOR_TEXT_MUTED : Z_COLOR_TEXT_FAINT,
                 Font(Z_FONT_CAPTION2, Text("%s", t->active ? "Active"
                                                            : "Paused"))),
-            .spacing = 8, .align = Z_ALIGN_CENTER));
+            .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER));
 
     // The card face. A picture of the WINDOW when the compositor has one — which
     // is the whole point of a switcher: you recognise the thing you were doing,

@@ -47,7 +47,7 @@ static ZView share_body(ZApp *app, ShareState *state) {
                 Font(Z_FONT_CAPTION,
                     Text("shared %d time(s)", state->shares))),
             Spacer(),
-            .padding = 32, .spacing = 18, .align = Z_ALIGN_CENTER));
+            .padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(ShareState, share_body, "os.zelto.share")

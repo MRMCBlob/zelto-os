@@ -35,7 +35,7 @@ static inline ZView z_section(const char *text) {
 static inline ZView z_card(ZView content) {
     return Shadow(Z_ELEV_1,
         Background(Z_COLOR_SURFACE,
-            CornerRadius(Z_RADIUS_CARD, Padding(16.0f, content))));
+            CornerRadius(Z_RADIUS_CARD, Padding(Z_SPACE_L, content))));
 }
 
 // A titled content card: a muted caption over its value. The caption is SMALL and
@@ -48,7 +48,7 @@ static inline ZView z_stat_card(const char *caption, const char *value) {
             Weight(Z_WEIGHT_SEMIBOLD,
                 Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY,
                     z_text("%s", value)))),
-            .spacing = 4, .align = Z_ALIGN_LEADING));
+            .spacing = Z_SPACE_XS, .align = Z_ALIGN_LEADING));
 }
 
 #endif  // ZELTO_APP_CHROME_H

@@ -21,8 +21,8 @@
 // The screen's own margin. Named because the prose below has to wrap to the
 // column it leaves, and a wrap width that repeats a padding literal is a wrap
 // width that goes stale the day the padding moves.
-#define FETCH_PAD 32.0f
-#define PANEL_PAD 18.0f
+#define FETCH_PAD ((float)Z_SPACE_L)
+#define PANEL_PAD ((float)Z_SPACE_L)
 
 typedef struct FetchState {
     ZApp *app;            // captured each build so the net callback can repaint
@@ -161,10 +161,10 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
                                         : "(tap Fetch)",
                                     .width = col_w - 2.0f * PANEL_PAD,
                                     .size = Z_FONT_BODY)),
-                            .spacing = 8, .align = Z_ALIGN_LEADING,
+                            .spacing = Z_SPACE_S, .align = Z_ALIGN_LEADING,
                             .padding = PANEL_PAD)))),
             Spacer(),
-            .padding = FETCH_PAD, .spacing = 18, .align = Z_ALIGN_CENTER));
+            .padding = FETCH_PAD, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(FetchState, fetch_body, "os.zelto.fetch")

@@ -39,7 +39,7 @@ static ZView widget_body(ZApp *app, WidgetState *state) {
             Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CAPTION, Text("taps: %d", state->taps))),
             Spacer(),
-            .padding = 32, .spacing = 18, .align = Z_ALIGN_CENTER));
+            .padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(WidgetState, widget_body, "os.zelto.widget")

@@ -148,7 +148,7 @@ static ZView sensors_body(ZApp *app, SensorsState *st) {
                             reading("Light", light),
                             reading("Steps", steps),
                             reading("Location", loc),
-                            .spacing = 12, .padding = 20, .align = Z_ALIGN_LEADING)))),
+                            .spacing = Z_SPACE_S, .padding = Z_SPACE_L, .align = Z_ALIGN_LEADING)))),
             Spacer(),
             // The level: a dot inside a ring, nudged by device tilt.
             Background(Z_COLOR_SURFACE,
@@ -160,7 +160,7 @@ static ZView sensors_body(ZApp *app, SensorsState *st) {
                                     CornerRadius(14, Frame(28.0f, 28.0f, Spacer())))),
                             .align = Z_ALIGN_CENTER)))),
             Spacer(),
-            .padding = 28, .spacing = 14, .align = Z_ALIGN_CENTER));
+            .padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(SensorsState, sensors_body, "os.zelto.sensors")

@@ -129,6 +129,61 @@ typedef enum ZAxis {
 // The type ramp's spelling of the same conversion — a step is points, always.
 #define Z_TYPE(pt) Z_PT(pt)
 
+// --- The spacing scale (P52) ---------------------------------------------
+// THE THIRD TIME THIS BUG HAS BEEN FOUND. Until P52 there was no spacing scale
+// at all: every gap in the OS was an inline literal, and the histogram of those
+// literals is the confession. The three commonest values were `spacing = 8`,
+// `spacing = 10` and `spacing = 12` — which are, exactly, SwiftUI's default
+// VStack spacing (8pt), its default HStack spacing (10pt), and the 12pt step of
+// Apple's grid, typed straight into SCREEN UNITS. The paddings tell the same
+// story: 16, 20, 24, 32 units, which are the iOS grid's POINT steps. So every
+// gap in the OS was drawn at ~54% of the size it was written for, the identical
+// defect as the P43 type scale and the P44 safe areas, and invisible for the
+// identical reason — it was uniformly wrong, so nothing looked broken. The
+// corroboration is that the metrics which had ALREADY been through this (ROW_PAD
+// = Z_PT(16), Z_ROW_H = Z_PT(44)) are the ones that are correct today: the row
+// that holds a 16pt outer margin was putting a 6.5pt gap between its own icon
+// and its label.
+//
+// THE SCALE IS THE 8PT GRID with a 4pt half-step, which is Apple's convention
+// rather than a published token table (there is no enumerated Apple spacing
+// scale — see docs/design/ios27-reference.md §2). Two additions to the bare
+// grid, each with a reason:
+//   - 2XS (2pt) is BELOW the grid on purpose. A title and the line under it are
+//     nearly leading-adjacent in every Apple surface; snapping that pair up to
+//     4pt loosens every text stack in the OS, which is a redesign, not a regrid.
+//   - L (16pt) is the CONTENT MARGIN and is deliberately the same number as
+//     ROW_PAD. A gap between siblings and the inset that holds them under a
+//     card's edge are the same measurement seen twice, and writing them as one
+//     step is what stops them drifting apart again.
+// SwiftUI's horizontal default is 10pt against its vertical 8pt; Zelto keeps ONE
+// default (S = 8pt). Having a single sibling gap is worth more here than
+// reproducing a 2pt axis distinction nothing in this OS reads as intentional.
+//
+// Pick by ROLE:
+//   between siblings in a ROW          S
+//   between components in a COLUMN     M
+//   a caption under the control it names   XS
+//   a subtitle under its title             2XS
+//   a container's content margin           L
+// A gap that IS a control's own geometry (the passcode dots' pitch, the status
+// bar's glyph cluster) takes the NEAREST step rather than the role's reference —
+// this scale regrids the gaps BETWEEN views, and redrawing a control is the
+// control-metrics stage's job, not a spacing pass's. Two things are deliberately
+// outside the scale entirely: the internals of a GLYPH (the battery meter's
+// segments, the App Library's 2x2 quad mark) are drawing, not layout, and
+// Button/TextField's own insets are control metrics.
+//
+// A raw number in a layout is the bug this scale exists to stop.
+#define Z_SPACE_2XS Z_PT(2)    //  3 — leading-adjacent text: a title and its subtitle
+#define Z_SPACE_XS  Z_PT(4)    //  7 — inside one control: a glyph and its label
+#define Z_SPACE_S   Z_PT(8)    // 14 — THE DEFAULT gap between siblings
+#define Z_SPACE_M   Z_PT(12)   // 22 — between the components of a column
+#define Z_SPACE_L   Z_PT(16)   // 29 — content margin / row inset (== ROW_PAD)
+#define Z_SPACE_XL  Z_PT(20)   // 37 — between the groups of a grouped list
+#define Z_SPACE_2XL Z_PT(24)   // 44 — an app's outer column padding
+#define Z_SPACE_3XL Z_PT(32)   // 59 — the widest breathing room in the system
+
 // A standard list row's MINIMUM total height — Apple's 44pt table row, which is
 // also the HIG minimum touch target and therefore the floor for anything
 // tappable. It is a TOOLKIT metric (List's default row, a settings row), not a
@@ -393,7 +448,7 @@ typedef enum ZWeight {
 //   VStack(
 //       Text("Title"),
 //       Rect(.color = Z_COLOR_PRIMARY, .width = 80, .height = 80),
-//       .spacing = 12, .align = Z_ALIGN_LEADING, .padding = 16);
+//       .spacing = Z_SPACE_M, .align = Z_ALIGN_LEADING, .padding = Z_SPACE_L);
 // ---------------------------------------------------------------------------
 typedef struct ZStackOpts {
     ZView children[Z_MAX_CHILDREN];      // MUST be first (positional children)

@@ -44,7 +44,7 @@ static ZView lifecycle_banner(ZApp *app) {
     bool act = z_app_active(app);
     return Background(act ? Z_COLOR_SUCCESS_DIM
                           : Z_COLOR_WARN_DIM,
-        Padding(10,
+        Padding(Z_SPACE_S,
             Foreground(Z_COLOR_TEXT_INV,
                 Font(Z_FONT_CALLOUT, Text(act ? "ACTIVE" : "PAUSED")))));
 }
@@ -57,7 +57,7 @@ static ZView camera_section(ZApp *app, CardsState *s) {
     const char *status_txt = s->cam == Z_PERM_GRANTED ? "camera: granted"
                              : s->cam == Z_PERM_DENIED ? "camera: denied"
                                                        : "camera: prompt";
-    ZStackOpts opts = {.spacing = 10, .align = Z_ALIGN_CENTER};
+    ZStackOpts opts = {.spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER};
     int k = 0;
     opts.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("%s", status_txt)));
@@ -106,7 +106,7 @@ static ZView cards_body(ZApp *app, CardsState *state) {
             Button(bump, "Tap me"),
             camera_section(app, state),
             Spacer(),
-            .padding = 28, .spacing = 18, .align = Z_ALIGN_CENTER));
+            .padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER));
 }
 
 Z_APP_ID(CardsState, cards_body, "os.zelto.cards")

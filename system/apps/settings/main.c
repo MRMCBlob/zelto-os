@@ -345,8 +345,15 @@ static void lock_now(ZApp *app, void *state) {
 // z_row_h(app) — the larger of the 44pt touch target and one Body line plus its
 // breathing room — which is still exactly 81 at the default size, so no shot of
 // an unconfigured device moved.
-#define ROW_PAD ((float)Z_PT(16))      // 29 — leading/trailing inset inside a card
-#define SEC_GAP 30.0f     // between one group's footer and the next group's header
+#define ROW_PAD ((float)Z_SPACE_L)     // 29 — leading/trailing inset inside a card
+// Between one group's footer and the next group's header. P52: this was a bare
+// 30.0f — 16.2pt, off the grid, and the ONLY thing separating two cards that are
+// otherwise identical surfaces. iOS's grouped list runs ~35pt between sections
+// (the default grouped section-header height); Z_SPACE_XL is 20pt = 37 units,
+// which is the largest step of the scale that does not push the root list's last
+// group off the fold. The 35pt reading is recorded in the dossier as the upper
+// bound to test against a shot rather than adopted at a desk.
+#define SEC_GAP ((float)Z_SPACE_XL)
 // The gap between a wrapped label and the control that moved under it when the
 // row reflowed. Half the row's own vertical breathing room: the two belong to
 // each other and must read as one row, not as two.
@@ -450,7 +457,7 @@ static ZView labelled(ZApp *app, const char *label, ZView control) {
         Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", label))),
         Spacer(),
         control,
-        .spacing = 12, .align = Z_ALIGN_CENTER));
+        .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER));
 }
 
 // An ACTION row: a full-width card with a centred label and no control. It does
@@ -561,7 +568,7 @@ static ZView stepper_row(ZApp *app, const char *label, int64_t val,
                 Font(Z_FONT_BODY, Text("%lld%s", (long long)val, unit))),
             .spacing = 0, .align = Z_ALIGN_CENTER));
     return labelled(app, label,
-        HStack(value, pill, .spacing = 12, .align = Z_ALIGN_CENTER));
+        HStack(value, pill, .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER));
 }
 
 // The disclosure chevron: the mark that says "this row is a DOOR, not a
@@ -611,7 +618,7 @@ static ZView detail_row(ZApp *app, const char *label, const char *value,
                 Foreground(Z_COLOR_TEXT_MUTED,
                     Font(Z_FONT_BODY, Text("%s", value ? value : ""))),
                 chevron(),
-                .spacing = 10, .align = Z_ALIGN_CENTER)));
+                .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER)));
 }
 
 // A label + slider row. Unlike the stepper this row has NO numeric read-out: the
@@ -682,9 +689,17 @@ static ZView section_block(ZApp *app, const char *header, ZView card,
 // big one), whereas sharing means picking a wallpaper is instant (its bitmap is
 // already warm) at the cost of holding the handful of demo wallpapers at full res
 // — well within the 64-entry cache. See docs + the P25 memory note.
-#define WP_THUMB_W 186.0f
-#define WP_THUMB_H 118.0f
+// The tile is DERIVED, not declared. 186 x 118 was a literal that happened to
+// fit — 3 x 186 + 2 x 12 = 582, exactly the card's inner column — which means the
+// grid silently depended on the gutter never changing. It does change here (the
+// gutter is a step of the spacing scale now), so the tile is the expression it
+// always was: the column, less the gutters, over the columns. The 0.634 is the
+// tile's own proportion, kept as it shipped; a wallpaper thumb that showed the
+// screen's real 1:2 portrait would be a different grid and is not this phase.
 #define WP_COLS 3
+#define WP_GUTTER ((float)Z_SPACE_S)
+#define WP_THUMB_W ((INSET_TEXT_W - (float)(WP_COLS - 1) * WP_GUTTER) / (float)WP_COLS)
+#define WP_THUMB_H (WP_THUMB_W * 0.6344f)
 
 static ZView wp_thumb(SettingsState *s, int i) {
     bool cur = strcmp(s->wp_paths[i], s->wp_current) == 0;
@@ -701,10 +716,10 @@ static ZView wp_thumb(SettingsState *s, int i) {
 // row redistribute by child count, so a row of two tiles would sit at different
 // x's than a row of three and the columns would visibly shift.
 static ZView wp_grid(SettingsState *s) {
-    ZStackOpts grid = {.spacing = 12, .align = Z_ALIGN_LEADING};
+    ZStackOpts grid = {.spacing = WP_GUTTER, .align = Z_ALIGN_LEADING};
     int k = 0;
     for (int i = 0; i < s->wp_count && k < Z_MAX_CHILDREN; i += WP_COLS) {
-        ZStackOpts row = {.spacing = 12, .align = Z_ALIGN_CENTER};
+        ZStackOpts row = {.spacing = WP_GUTTER, .align = Z_ALIGN_CENTER};
         for (int c = 0; c < WP_COLS; c++) {
             int j = i + c;
             row.children[c] = j < s->wp_count
@@ -875,7 +890,7 @@ static ZView text_size_row(ZApp *app, SettingsState *s) {
                    Slider(app, &s->text_slider, .length = 380.0f,
                           .thickness = 6.0f),
                    Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("A"))),
-                   .spacing = 14, .align = Z_ALIGN_CENTER)),
+                   .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER)),
                Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
                .spacing = 0, .align = Z_ALIGN_CENTER));
 }
@@ -897,7 +912,10 @@ static ZView screen_accessibility(ZApp *app, void *props) {
                          .line_gap = 4.0f),
                 Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
                 .spacing = 0, .align = Z_ALIGN_CENTER,
-                .padding = 16)));
+                // The card's own breathing room. Its HORIZONTAL inset is the two
+                // ROW_PAD frames above — `.padding` insets BOTH axes, so this
+                // step is chosen for the vertical and lands on top of them.
+                .padding = Z_SPACE_S)));
 
     ZView size_rows[] = {text_size_row(app, s)};
     ZView vis_rows[] = {

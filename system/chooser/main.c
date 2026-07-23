@@ -69,13 +69,17 @@
 // literals written out twice — once in the column and once in the sum — which is
 // the shape of every reserve this project has had to go back and fix.
 #define SHEET_GRAB_H 5.0f          // the drag grabber's bar
-#define SHEET_PREVIEW_GAP 16.0f    // above and below the preview row
-#define SHEET_RULE_H 1.0f          // the hairline
-#define SHEET_RULE_GAP 18.0f       // hairline to the target row
-#define SHEET_NAME_GAP 8.0f        // a target's icon to its name
-#define SHEET_MORE_GAP 10.0f       // above the "N more apps" line
-#define SHEET_ACTION_GAP 20.0f     // above the Cancel row
-#define SHEET_FOOT 14.0f           // clearance under the last row
+// The sheet's gaps, on the spacing scale (P52). SHEET_PAD above is deliberately
+// NOT on it yet: test_radius_ladder.sh asserts Z_RADIUS_SHEET == Z_RADIUS_CARD +
+// SHEET_PAD (the concentric rule, P48), so the pad and the radius ladder move
+// together in the radius stage rather than separately here.
+#define SHEET_PREVIEW_GAP ((float)Z_SPACE_M)   // above and below the preview row
+#define SHEET_RULE_H 1.0f                      // the hairline
+#define SHEET_RULE_GAP ((float)Z_SPACE_M)      // hairline to the target row
+#define SHEET_NAME_GAP ((float)Z_SPACE_XS)     // a target's icon to its name
+#define SHEET_MORE_GAP ((float)Z_SPACE_S)      // above the "N more apps" line
+#define SHEET_ACTION_GAP ((float)Z_SPACE_M)    // above the Cancel row
+#define SHEET_FOOT ((float)Z_SPACE_S)          // clearance under the last row
 #define TARGET_ICON 68.0f
 #define TARGET_CELL 96.0f    // the fixed column a target occupies (icon + name)
 #define TARGET_MAX 6         // targets shown before the row would overflow 720px
@@ -330,7 +334,7 @@ static ZView chooser_body(ZApp *app, ChooserState *s) {
 
     // The target row. Cells are fixed-width and the row is LEADING-aligned, so a
     // sheet with two targets puts them where the first two of four would be.
-    ZStackOpts row = {.spacing = 10.0f, .align = Z_ALIGN_LEADING};
+    ZStackOpts row = {.spacing = Z_SPACE_S, .align = Z_ALIGN_LEADING};
     for (int i = 0; i < n; i++) {
         row.children[i] = target_cell(app, s->ids[i], i + 1);
     }

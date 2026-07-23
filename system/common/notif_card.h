@@ -104,7 +104,7 @@ static inline ZView zelto_notif_card(ZApp *app, float card_w,
                          .weight = Z_WEIGHT_SEMIBOLD))),
             Foreground(ink,
                 WrapText(app, body, .width = tw, .size = Z_FONT_SUBHEAD)),
-            .spacing = 2, .align = Z_ALIGN_LEADING));
+            .spacing = Z_SPACE_2XS, .align = Z_ALIGN_LEADING));
     if (trailing) {
         row.children[k++] = trailing;
     }

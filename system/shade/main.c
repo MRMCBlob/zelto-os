@@ -127,6 +127,15 @@
 #define CC_SLIDER_W 150.0f  // the tall brightness/volume slab
 #define CC_SLIDER_H 260.0f
 
+// The two content insets this file lays cards out inside. They were bare literals
+// written TWICE each — once as the stack's `.padding` and again in the `card_w`
+// derivation beside it — which is the standing rule broken in the smallest
+// possible way: the width a card is wrapped to is a function of the padding, so
+// the two can only stay in step by hand. They are one name each now, and each is
+// a step of the spacing scale.
+#define BANNER_PAD ((float)Z_SPACE_S)   // the heads-up strip's inset from the edge
+#define PANEL_PAD  ((float)Z_SPACE_L)   // the pulled panel's content margin
+
 // Which panel a pull is bringing down.
 enum { PANEL_NONE = 0, PANEL_CC, PANEL_NC };
 
@@ -379,7 +388,7 @@ static ZView notif_card(ZApp *app, float card_w, Banner *b, bool interactive) {
             OnTapData(tap_action, b,
                 Background(Z_COLOR_PRIMARY,
                     CornerRadius(Z_RADIUS_CHIP,
-                        Padding(12,
+                        Padding(Z_SPACE_S,
                             Foreground(Z_COLOR_ON_PRIMARY,
                                 Weight(Z_WEIGHT_SEMIBOLD,
                                     Font(Z_FONT_SUBHEAD,
@@ -518,7 +527,7 @@ static ZView cc_cell(ZAction on_tap, CcTint t, ZView mark, const char *label) {
             Foreground(t.label,
                 Weight(Z_WEIGHT_MEDIUM,
                     Font(Z_FONT_CAPTION2, Text("%s", label)))),
-            .spacing = 8, .align = Z_ALIGN_CENTER));
+            .spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER));
 }
 
 // The toggle grid: 3 across, 2 down. Every one of these is a REAL brokered key
@@ -553,7 +562,7 @@ static ZView cc_grid(ZApp *app, ShadeState *s) {
                 zelto_glyph_wifi(CC_GLYPH, wifi.ink), "Wi-Fi"),
         cc_cell(toggle_mute, mute,
                 zelto_glyph_speaker(CC_GLYPH, mute.ink, s->qs_mute), "Silent"),
-        .spacing = 10, .align = Z_ALIGN_CENTER);
+        .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER);
     ZView row2 = HStack(
         cc_cell(toggle_bright, bright,
                 zelto_glyph_sun(CC_GLYPH, bright.ink), "Bright"),
@@ -561,7 +570,7 @@ static ZView cc_grid(ZApp *app, ShadeState *s) {
                 zelto_glyph_lock(CC_GLYPH, lock.ink), "Lock"),
         cc_cell(toggle_motion, motion,
                 zelto_glyph_motion(CC_GLYPH, motion.ink), "Motion"),
-        .spacing = 10, .align = Z_ALIGN_CENTER);
+        .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER);
 
     // The two TALL sliders, below the toggles. This is the pair iOS leads its
     // Control Center with, and until P42 Zelto had neither: brightness was a
@@ -583,9 +592,9 @@ static ZView cc_grid(ZApp *app, ShadeState *s) {
                .glyph = zelto_glyph_speaker(CC_GLYPH, Z_COLOR_TEXT_MUTED,
                                             s->qs_volume == 0)),
         Grow(1.0f, Spacer()),
-        .spacing = 18, .align = Z_ALIGN_CENTER);
+        .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER);
 
-    return VStack(row1, row2, sliders, .spacing = 22, .align = Z_ALIGN_CENTER);
+    return VStack(row1, row2, sliders, .spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER);
 }
 
 // --- Notification Center ----------------------------------------------------
@@ -616,7 +625,7 @@ static ZView nc_clock(void) {
                 Font(Z_FONT_LARGE_TITLE, Text("%s", clock)))),
         Foreground(Z_COLOR_TEXT_MUTED,
             Font(Z_FONT_SUBHEAD, Text("%s", date))),
-        .spacing = 2, .align = Z_ALIGN_LEADING);
+        .spacing = Z_SPACE_2XS, .align = Z_ALIGN_LEADING);
 }
 
 // --- pull gesture -----------------------------------------------------------
@@ -914,11 +923,12 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
         // Banners up: the heads-up cards strip (opaque cards over transparent),
         // sliding down + fading in on the entrance spring (P32).
         z_full_repaint(app);
-        ZStackOpts col = {.padding = 8, .spacing = 8, .align = Z_ALIGN_LEADING};
-        // The strip's cards span the surface less its own 8px padding on each
-        // side. WrapText needs this at BUILD time, so it is derived here rather
-        // than left to layout.
-        float card_w = (float)w - 2.0f * 8.0f;
+        ZStackOpts col = {.padding = BANNER_PAD, .spacing = Z_SPACE_S,
+                          .align = Z_ALIGN_LEADING};
+        // The strip's cards span the surface less its own padding on each side.
+        // WrapText needs this at BUILD time, so it is derived here rather than
+        // left to layout.
+        float card_w = (float)w - 2.0f * BANNER_PAD;
         int k = 0;
         for (int i = 0; i < MAX_BANNERS && k < Z_MAX_CHILDREN - 1; i++) {
             if (s->banners[i].used) {
@@ -954,10 +964,11 @@ static ZView shade_body(ZApp *app, ShadeState *s) {
     // the Notification Center is the clock, then the active notifications and a
     // little recently-dismissed history. Neither list scrolls yet (no Scroll
     // here), so a drag anywhere on the panel still controls the pull.
-    ZStackOpts list = {.spacing = 12, .padding = 22, .align = Z_ALIGN_LEADING};
+    ZStackOpts list = {.spacing = Z_SPACE_S, .padding = PANEL_PAD,
+                       .align = Z_ALIGN_LEADING};
     // Same derivation as the banner strip: the panel's width less the list's own
     // padding is the width a notification card is laid out at.
-    float card_w = panel_w - 2.0f * 22.0f;
+    float card_w = panel_w - 2.0f * PANEL_PAD;
     int li = 0;
     if (cc) {
         list.children[li++] = cc_grid(app, s);

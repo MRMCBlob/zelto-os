@@ -60,7 +60,7 @@ static ZView payload_panel(const char *label, const char *value, bool got) {
                         Foreground(Z_COLOR_TEXT,
                             Font(Z_FONT_BODY,
                                 Text("%s", got ? value : "(nothing yet)")))),
-                    .spacing = 8, .align = Z_ALIGN_LEADING, .padding = 16))));
+                    .spacing = Z_SPACE_XS, .align = Z_ALIGN_LEADING, .padding = Z_SPACE_L))));
 }
 
 static ZView notes_body(ZApp *app, NotesState *state) {
@@ -77,7 +77,7 @@ static ZView notes_body(ZApp *app, NotesState *state) {
     // shade's grab strip — same structure as Notepad (an overlay's buttons proved
     // un-hittable).
     ZView bar = z_selection_bar(app);
-    ZStackOpts col = {.padding = 24, .spacing = 14, .align = Z_ALIGN_LEADING};
+    ZStackOpts col = {.padding = Z_SPACE_L, .spacing = Z_SPACE_M, .align = Z_ALIGN_LEADING};
     int k = 0;
     col.children[k++] = Rect(.height = 84.0f);   // clears the shade grab strip
     col.children[k++] =

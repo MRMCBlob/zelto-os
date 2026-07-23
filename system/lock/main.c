@@ -74,7 +74,7 @@
 // not centred) because everything below it — notifications, and eventually a
 // widget row — is content that grows downward from it.
 #define LOCK_TOP 96.0f      // from the top edge to the padlock
-#define LOCK_SIDE 22.0f     // side inset for the whole plate
+#define LOCK_SIDE ((float)Z_SPACE_L)   // side inset for the whole plate
 #define LOCK_MAX_CARDS 4    // cards shown before the list is summarised
 
 // A fixed gap: NOT Frame(w, h, Spacer()), which keeps its grow flag and eats the
@@ -509,7 +509,7 @@ static ZView keypad(LockState *s) {
     // The entry indicator is four dots that FILL as you type, not underscores
     // turning into asterisks — a row of glyphs that change identity reads as text,
     // and this is a progress display.
-    ZStackOpts dots = {.spacing = 20.0f, .align = Z_ALIGN_CENTER};
+    ZStackOpts dots = {.spacing = Z_SPACE_M, .align = Z_ALIGN_CENTER};
     for (int i = 0; i < 4; i++) {
         bool on = i < s->entry_len;
         dots.children[i] = Frame(16.0f, 16.0f,
@@ -558,7 +558,7 @@ static ZView lock_clock(void) {
             Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", date)))),
         Weight(Z_WEIGHT_BOLD,
             Foreground(Z_COLOR_TEXT, Font(Z_FONT_DISPLAY, Text("%s", clock)))),
-        .spacing = 2, .align = Z_ALIGN_CENTER);
+        .spacing = Z_SPACE_2XS, .align = Z_ALIGN_CENTER);
 }
 
 // The stack of notification cards under the clock. They are the SAME card the
@@ -579,7 +579,7 @@ static ZView lock_notifs(ZApp *app, LockState *s) {
     if (cw < 120.0f) {
         cw = 720.0f - 2.0f * LOCK_SIDE;   // before the first configure
     }
-    ZStackOpts col = {.spacing = 10.0f, .align = Z_ALIGN_CENTER};
+    ZStackOpts col = {.spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER};
     int k = 0, shown = 0;
     for (int i = 0; i < LOCK_MAX_NOTIFS && shown < LOCK_MAX_CARDS; i++) {
         if (!s->notifs[i].used) {

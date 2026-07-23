@@ -562,7 +562,7 @@ ZView z_selection_bar(ZApp *app) {
         Button(sel_cut, "Cut"),
         Button(sel_paste, "Paste"),
         Button(sel_all, "Select all"),
-        .spacing = 8, .align = Z_ALIGN_CENTER);
+        .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER);
 }
 
 // --- modifiers ------------------------------------------------------------
@@ -728,7 +728,7 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     // line and leaves the value floating in the middle of a labelled box. Bottom-
     // aligning the caption also gives every widget the same baseline, so a row of
     // them reads as a set (Law of Similarity) whatever their content is.
-    ZStackOpts col = {.spacing = 6, .align = Z_ALIGN_LEADING};
+    ZStackOpts col = {.spacing = Z_SPACE_XS, .align = Z_ALIGN_LEADING};
     int k = 0;
     col.children[k++] = content;
     col.children[k++] = z_spacer();
@@ -754,7 +754,7 @@ ZView z_widget(ZApp *app, const ZWidgetOpts *opts) {
     // in gfx.h for the measurement.
     ZView fill = Background(Z_COLOR_MATERIAL_REGULAR,
         CornerRadius(Z_RADIUS_WIDGET - 1.0f,
-            Padding(17.0f, z_stack(Z_AXIS_VERTICAL, &col))));
+            Padding(Z_SPACE_S, z_stack(Z_AXIS_VERTICAL, &col))));
     return Shadow(Z_ELEV_2,
         Background(Z_COLOR_MATERIAL_EDGE,
             CornerRadius(Z_RADIUS_WIDGET,

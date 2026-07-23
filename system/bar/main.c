@@ -138,7 +138,7 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // showing signal strength next to it states the opposite of the truth. That is
     // also what the mode does functionally here — airplane gates the network stack
     // (P19, z_net_send/z_ws_open) and forces Wi-Fi to read as down below.
-    ZStackOpts cluster = {.spacing = 8, .align = Z_ALIGN_CENTER};
+    ZStackOpts cluster = {.spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER};
     int k = 0;
     if (state->airplane) {
         cluster.children[k++] = zelto_glyph_airplane(15.0f, Z_COLOR_TEXT);
@@ -229,7 +229,7 @@ static ZView bar_body(ZApp *app, BarState *state) {
             Spacer(),
             z_stack(Z_AXIS_HORIZONTAL, &cluster),
             hgap(12.0f),
-            .padding = 4, .spacing = 10, .align = Z_ALIGN_CENTER));
+            .padding = Z_SPACE_2XS, .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER));
 }
 
 Z_LAYER_APP(BarState, bar_body,
