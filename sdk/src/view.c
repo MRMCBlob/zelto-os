@@ -97,7 +97,7 @@ static ZView node_new(ZKind kind) {
     struct ZNode *n = z_arena_alloc(z_build_arena, sizeof(*n));
     n->kind = kind;
     n->fg = Z_COLOR_TEXT;
-    n->font_size = (float)Z_FONT_BODY;
+    n->font_size = z_font_units(Z_FONT_BODY);
     return n;
 }
 
@@ -208,7 +208,7 @@ static ZView wrap_group(const ZWrapLine *lines, int n, const ZWrapOpts *opts,
 // is what makes that correct: adding a byte never shortens the line.
 ZView z_text_ellipsize(ZApp *app, const char *s, const ZEllipsizeOpts *opts) {
     static const char ELL[] = "\xe2\x80\xa6";
-    float size = opts->size > 0 ? (float)opts->size : (float)Z_FONT_BODY;
+    float size = z_font_units(opts->size > 0 ? opts->size : Z_FONT_BODY);
     ZText *t = z_app_text(app);
     const char *src = s ? s : "";
     int len = (int)strlen(src);
@@ -267,7 +267,7 @@ ZView z_text_ellipsize(ZApp *app, const char *s, const ZEllipsizeOpts *opts) {
 // where it really is a caller error rather than an implementation limit, does it
 // warn and stop.
 ZView z_text_wrap(ZApp *app, const char *s, const ZWrapOpts *opts) {
-    float size = opts->size > 0 ? (float)opts->size : (float)Z_FONT_BODY;
+    float size = z_font_units(opts->size > 0 ? opts->size : Z_FONT_BODY);
     WrapUD ud = {z_app_text(app), size, opts->weight};
 
     ZWrapLine lines[Z_MAX_CHILDREN];
@@ -614,8 +614,14 @@ ZView Cover(ZView view) {
     return view;
 }
 
+// THE SEAM (P50). Nineteen surfaces call this with a compile-time step and none
+// of them knows the user has a text size; z_font_units() is where the step
+// becomes a number, so the setting reaches all of them without any of them
+// changing. Anything that assigns node->font_size directly must go through it
+// too — see z_text_wrap / z_text_ellipsize, which resolve the size once and
+// stamp it onto the Text nodes they build.
 ZView Font(ZFont size, ZView view) {
-    view->font_size = (float)size;
+    view->font_size = z_font_units(size);
     return view;
 }
 

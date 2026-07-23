@@ -52,6 +52,17 @@ struct ZNode {
                           // much it needs; the renderer draws from the origin and
                           // does not clip, so text_w > w is glyphs outside the
                           // box, which is invisible in the frames alone.
+    float text_h;         // Z_K_TEXT: the LINE HEIGHT the face reported for that
+                          // string at that size — the other axis of the same
+                          // question, and the one P50 needs. Width overflow comes
+                          // from a string somebody else wrote; HEIGHT overflow
+                          // comes from a BOX somebody else declared: a row whose
+                          // height was read off a spec sheet (Z_ROW_H = 44pt) is
+                          // fixed while the type inside it is not, so at a large
+                          // text size the line is taller than the row and the
+                          // frames still look perfectly reasonable. There is no
+                          // clip here either — the glyphs paint through the row's
+                          // top and bottom into its neighbours.
     float font_size;
     ZWeight weight;       // text weight (variable-font wght axis); default Regular
     ZColor fg;
@@ -311,6 +322,19 @@ void z_arena_free(ZArena *arena);
 // The builder functions allocate from the arena of the app currently building.
 // Single-threaded app loop, so a thread-local-free global is fine.
 extern ZArena *z_build_arena;
+
+// --- Dynamic Type (type.c) -------------------------------------------------
+// The process's text-size state, behind the seam. z_font_units() and z_row_h()
+// are public (<zelto/ui.h>); these two are not.
+//
+// Bold Text is the SECOND term of the same setting and it lands in a different
+// place: not on the size, but on the WEIGHT the shaper is set to — see
+// set_weight() in text.c, which is the one point every measurement and every
+// paint passes through, build-time wrap measurement included.
+bool z_text_bold(void);
+// Apply a new (step, bold); returns true if either actually moved, i.e. whether
+// the caller owes a rebuild.
+bool z_text_size_apply(int step, bool bold);
 
 // --- Text -----------------------------------------------------------------
 typedef struct ZText ZText;          // opaque font/shaping context

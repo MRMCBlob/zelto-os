@@ -236,4 +236,9 @@ Z_LAYER_APP(BarState, bar_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_TOP | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = ZELTO_BAR_H,
-            .height = ZELTO_BAR_H)
+            .height = ZELTO_BAR_H,
+            // The bar's height IS its exclusive zone, and that zone is a
+            // cross-process contract (the shade, the dim scrim and the volume
+            // HUD each offset by ZELTO_BAR_H). Type that grew inside a strip
+            // that cannot would paint the clock through its own edge.
+            .fixed_type = true)

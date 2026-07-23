@@ -193,4 +193,9 @@ Z_LAYER_APP(HomeBarState, bar_body,
             .layer = Z_LAYER_TOP,
             .anchor = Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = ZELTO_HOMEBAR_H,
-            .height = ZELTO_HOMEBAR_H)
+            .height = ZELTO_HOMEBAR_H,
+            // No text on this surface at all — a pill in a 62-unit strip whose
+            // height is an exclusive zone. Declared rather than left to fall out
+            // of "it happens to have no Text node", so a label added here later
+            // cannot silently start resizing the safe area.
+            .fixed_type = true)

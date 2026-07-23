@@ -129,11 +129,34 @@ typedef enum ZAxis {
 // The type ramp's spelling of the same conversion — a step is points, always.
 #define Z_TYPE(pt) Z_PT(pt)
 
-// A standard list row's TOTAL height — Apple's 44pt table row, which is also the
-// HIG minimum touch target and therefore the floor for anything tappable. It is
-// a TOOLKIT metric (List's default row, a settings row), not a safe area: the
-// cross-process contracts with the compositor live in system/common/safe_areas.h.
+// A standard list row's MINIMUM total height — Apple's 44pt table row, which is
+// also the HIG minimum touch target and therefore the floor for anything
+// tappable. It is a TOOLKIT metric (List's default row, a settings row), not a
+// safe area: the cross-process contracts with the compositor live in
+// system/common/safe_areas.h.
+//
+// A FLOOR, as of P50, not the answer. 44pt is a number off a spec sheet — it
+// says how big a finger is, and says nothing about what the row CONTAINS. Body
+// is 31 units inside an 81-unit row at the default text size and 42 at the
+// largest, and a row that stays 81 either clips the label or centres it in a box
+// it no longer fits. So the row height is now the LARGER of this touch-target
+// floor and what the type actually needs; see z_row_h().
 #define Z_ROW_H Z_PT(44)
+
+// The vertical breathing room a row puts above and below its line of text. 11pt
+// is what the shipped row already had — 81 total less Body's ~41-unit line,
+// halved — so at the default text size z_row_h() reproduces Z_ROW_H exactly and
+// this is not a redesign, it is the same row with its height derived instead of
+// declared.
+#define Z_ROW_VPAD Z_PT(11)
+
+// A standard list row's TOTAL height at the current text size: the touch-target
+// floor, or one line of Body plus Z_ROW_VPAD top and bottom, whichever is
+// larger. Needs the app because it asks the FACE for the line height (P46:
+// never estimate a text metric — the true line/size ratio runs 1.3182 down to
+// 1.2529 across the scale, so a fudge factor over-reserves at one end and
+// under-reserves at the other).
+float z_row_h(ZApp *app);
 
 // Type scale — a semantic set of steps, à la the platform text styles (Apple HIG
 // / Material type scale). Pick by ROLE, not by pixel count, so the OS retypes
@@ -170,6 +193,103 @@ typedef enum ZFont {
     // them at ~8.9%. Scaled like everything else it lands at 170.
     Z_FONT_DISPLAY = Z_TYPE(92),       // 170 — the lock clock
 } ZFont;
+
+// ---------------------------------------------------------------------------
+// DYNAMIC TYPE (P50) — the user's text size, and the one seam it needs.
+//
+// THE PROBLEM. Every step above is an enum member: a compile-time constant, in
+// screen units, baked into 19 surfaces that pass it to Font() directly. A user
+// who wants bigger text has nothing to turn — this OS could not make the text
+// bigger at all, which is the one accessibility affordance every phone ships.
+// The fix cannot be "pass a size through 19 call sites", because then every new
+// call site has to remember, and the ones that forget are invisible.
+//
+// THE SEAM. Exactly one function turns a ZFont STEP into the units the shaper
+// gets: z_font_units(). Font(), the default on every node, WrapText,
+// EllipsizeText and z_line_height all route through it, and nothing above it
+// knows a setting exists — the same shape as P47's classifier seam, where the
+// caller asks for a key and the model decides what that means.
+//
+// WHAT THE STEPS BECOME, AND WHY IT IS NOT A MULTIPLIER. "x1.35 everywhere" is
+// the obvious implementation and it is wrong: it turns a 40pt Large Title into
+// 54pt (a hero that eats the screen) while a Caption goes 11 -> 15, and the
+// small end is the end that needed help. Read off Apple's own Dynamic Type
+// table, the rule is not a ratio at all — from the default size (Large) to
+// xxxLarge, EVERY style gains exactly SIX POINTS:
+//
+//        style        L -> xxxL     ratio
+//        Caption2     11 -> 17      x1.55
+//        Footnote     13 -> 19      x1.46
+//        Body         17 -> 23      x1.35
+//        Title        28 -> 34      x1.21
+//        LargeTitle   34 -> 40      x1.18
+//
+// A constant ADDITIVE offset is a large ratio on a small number and a small one
+// on a large number, which is precisely the "large steps move less" behaviour,
+// falling out of one rule instead of a twelve-row table nobody can keep true.
+// So: the ladder scales by a per-size-step POINT OFFSET, applied to every step
+// alike, floored at Caption2's 11pt (Apple floors there too — the small sizes
+// bottom out rather than collapsing).
+//
+// Because the offset is in POINTS and the enum is in UNITS, the conversion is
+// one Z_PT() on the offset — no lossy units->points round trip of the step.
+//
+// THE RANGE: the seven standard sizes, xSmall .. xxxLarge, index 0..6, default
+// 3 (Large — what shipped before this existed, so an unset device is unchanged).
+// A value outside 0..6 is CLAMPED, not rejected: this is read from a brokered
+// string that any process can write, and a garbage value must degrade to a
+// legible screen rather than a 2-unit one.
+//
+// WHAT IS NOT SHIPPED AND WHY. iOS's five ACCESSIBILITY sizes (Body up to 53pt,
+// x3.1) are deliberately out of range. They are not a bigger number of the same
+// kind: at AX3 a label and its control no longer fit side by side on one row, so
+// every row in the OS has to REFLOW to a vertical layout — a different design
+// for the same screen, not a taller row. Shipping the standard range means the
+// fixed heights have to grow (which is P50's other half); shipping AX means the
+// grouped-list row has to become two layouts. That is a phase, and pretending
+// otherwise would ship an accessibility feature that breaks at the sizes the
+// people who need it actually use.
+#define Z_TEXT_SIZE_STEPS 7
+#define Z_TEXT_SIZE_DEFAULT 3
+
+// The brokered keys. These live HERE, not in system/common/settings_defaults.h
+// where the other shared key names are, and the layering is the reason: every
+// libzelto process reads them from inside the toolkit, and system/common sits
+// ABOVE the toolkit (it includes this header). settings_defaults.h points at
+// these rather than spelling them again, so there is still one definition.
+#define ZELTO_KEY_TEXT_SIZE "sys.text_size"   // 0..6, default Z_TEXT_SIZE_DEFAULT
+#define ZELTO_KEY_BOLD_TEXT "sys.bold_text"   // 0/1
+
+// The per-step offset in POINTS, indexed by the size step. Down from the default
+// it is one point per step; up it is two, then two, then two — Apple's own
+// spacing, which grows faster above the default because that is the direction
+// somebody is actively asking for.
+#define Z_TEXT_SIZE_OFFSETS { -3, -2, -1, 0, +2, +4, +6 }
+
+// A step's size in SCREEN UNITS at the process's current text size. This is the
+// only conversion from ZFont to a number the renderer sees.
+float z_font_units(ZFont step);
+
+// The current step index (0..Z_TEXT_SIZE_STEPS-1) and its human name.
+int z_text_size(void);
+const char *z_text_size_name(int step);
+
+// Turn Dynamic Type OFF for this process. Three surfaces must not scale, and it
+// is a DECISION, not an oversight:
+//
+//   - THE STATUS BAR. Its height is an exclusive-zone CONTRACT (ZELTO_BAR_H) that
+//     the shade, the dim scrim and the volume HUD each offset by. Bigger type in
+//     a bar that cannot get taller is a clock painting through its own strip.
+//   - THE KEYBOARD. A cap is a TOUCH TARGET sized in points, not a text box; the
+//     letter on it is a label for a finger, not something you read. Growing the
+//     caps walks the bottom row off the bottom of the surface, which is the exact
+//     P48 bug with a new cause. (iOS does not scale the keyboard either.)
+//   - THE HOME INDICATOR. A 62-unit strip with a pill in it and no text at all.
+//
+// Safe areas are in the same class and need no call: they are PHYSICAL (the
+// strip a thumb can reach, the strip the system owns) and Z_PT() converts them
+// once, at compile time, without going near this.
+void z_text_scaling_disable(void);
 
 // Font weight — the second hierarchy axis. The bundled face is a single Regular;
 // heavier steps are synthesised by emboldening the glyph outline (a modest,
@@ -1002,6 +1122,13 @@ typedef struct ZLayerOpts {
     int32_t exclusive_zone;   // px reserved from the app area (-1 = ignore others)
     int32_t width, height;    // desired size; 0 on an axis = size from anchors
     bool keyboard;            // grab EXCLUSIVE keyboard focus (a modal dialog)
+    // Opt out of Dynamic Type: this surface's type is fixed at the shipped size
+    // whatever sys.text_size says. Equivalent to z_text_scaling_disable(), in
+    // the declaration rather than in a body() — a surface that does not scale is
+    // a property of the surface, and the opts literal is where its properties
+    // are already written. See z_text_scaling_disable() for the three that set
+    // it and why.
+    bool fixed_type;
     // Margins (px) inset from the anchored edges, e.g. margin_top to float a
     // surface below the status bar instead of over it.
     int32_t margin_top, margin_right, margin_bottom, margin_left;

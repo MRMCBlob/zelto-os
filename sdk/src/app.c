@@ -372,8 +372,8 @@ ZText *z_app_text(ZApp *app) { return app ? app->text : NULL; }
 // no-face path needs no special case here.
 float z_line_height(ZApp *app, ZFont size) {
     float ascent = 0.0f, descent = 0.0f;
-    z_text_measure(app ? app->text : NULL, "", (float)size, Z_WEIGHT_REGULAR,
-                   &ascent, &descent);
+    z_text_measure(app ? app->text : NULL, "", z_font_units(size),
+                   Z_WEIGHT_REGULAR, &ascent, &descent);
     return ascent + descent;
 }
 void *z_app_state(ZApp *app) { return app->state; }
@@ -999,7 +999,8 @@ static bool probe_off_surface(ZView root, ZView n) {
 }
 
 typedef struct ProbeCount {
-    int taps, texts, over, off;
+    int taps, texts, over, tall, off;
+    float tall_worst;   // the largest vertical shortfall seen, in screen units
 } ProbeCount;
 
 static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
@@ -1052,14 +1053,48 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
         // in the catalogue. Folding those into one number would make the count
         // permanently non-zero and therefore permanently ignored, which is the
         // noise-floor mistake P45 found in the shot deltas, repeated.
+        //
+        // BOTH AXES, as of P50. Width overflow is a string somebody else WROTE
+        // arriving in a column; HEIGHT overflow is the same defect from the
+        // other side — a BOX somebody else DECLARED, holding type the user just
+        // made bigger. A 44pt row is a spec-sheet number and the line inside it
+        // is not, so at a large text size the glyphs paint through the row into
+        // its neighbours with a frame that still reads as perfectly reasonable.
+        //
+        // ON ITS OWN COUNTER, and not because two numbers are nicer than one.
+        // The vertical baseline is ALREADY non-zero at the default text size:
+        // the App Switcher's card titles want 35 units in a 30-unit box and the
+        // SDK's Rows sample wants 40 in 36, both shipped, both invisible,
+        // because ascent+descent is the face's full line box and a string with
+        // no descender does not use all of it. Folding those into `over` would
+        // make the existing prose-overflow assertions fail on surfaces nobody
+        // changed — and, worse, give the number a permanent floor, which is the
+        // noise-floor mistake P45 found in the shot deltas.
+        //
+        // WHAT THE NUMBER IS FOR is therefore not "is it zero" but "does it grow
+        // when the text does". The worst SHORTFALL is reported beside the count
+        // for exactly that: a row one unit short of the face's line box is a
+        // rounding artefact, and the same row fifteen units short at the largest
+        // text size is a clipped label.
         bool wide = n->text_w > n->w + 0.5f;
+        bool tall = n->text_h > n->h + 0.5f;
         bool out = probe_off_surface(root, n);
-        if (wide) {
+        if (wide || tall) {
             fprintf(stderr,
                     "zelto: probe OVERFLOW text '%s' x=%.0f y=%.0f w=%.0f "
-                    "h=%.0f needs %.0f\n",
-                    n->text, n->x, n->y, n->w, n->h, n->text_w);
+                    "h=%.0f needs %.0fx%.0f (%s)\n",
+                    n->text, n->x, n->y, n->w, n->h, n->text_w, n->text_h,
+                    wide && tall ? "both" : (wide ? "wide" : "tall"));
+        }
+        if (wide) {
             c->over++;
+        }
+        if (tall) {
+            c->tall++;
+            float short_by = n->text_h - n->h;
+            if (short_by > c->tall_worst) {
+                c->tall_worst = short_by;
+            }
         }
         if (out) {
             c->off++;
@@ -1212,9 +1247,10 @@ static void probe_dump_once(ZApp *app, bool from_timer) {
     // reader (or a test) needs both to tell those apart.
     fprintf(stderr,
             "zelto: probe taps: %d in %s (%dx%d), text %d scanned %d "
-            "overflowing %d off-surface\n",
+            "overflowing %d off-surface %d clipped (worst %.0f)\n",
             c.taps, app->app_id ? app->app_id : (app->title ? app->title : "?"),
-            app->width, app->height, c.texts, c.over, c.off);
+            app->width, app->height, c.texts, c.over, c.off, c.tall,
+            c.tall_worst);
     fflush(stderr);
 }
 
@@ -2894,6 +2930,28 @@ static int app_run(ZApp *app) {
     app->ui.press.app = app;
     app->ui.reduce_motion = z_setting_get_int("sys.reduce_motion", 0) != 0;
 
+    // DYNAMIC TYPE (P50): read the user's text size and Bold Text before the
+    // first build, so nothing is ever laid out at one size and painted at
+    // another. Unlike Reduce Motion this DOES take a live update — a text size
+    // is a level you hunt for by looking at the result, so the Settings screen
+    // that changes it has to show the change — which is what the unconditional
+    // subscribe below is for. Both are no-ops on a surface that opted out
+    // (z_text_scaling_disable), so the bar and the keyboard pay nothing.
+    z_text_size_apply((int)z_setting_get_int(ZELTO_KEY_TEXT_SIZE,
+                                             Z_TEXT_SIZE_DEFAULT),
+                      z_setting_get_int(ZELTO_KEY_BOLD_TEXT, 0) != 0);
+
+    // SUBSCRIBE UNCONDITIONALLY, which z_settings_observe does not: it only
+    // subscribes when the APP asked to observe, and the toolkit now has an
+    // interest of its own in every process. The fan-out is a set keyed on fd
+    // (zsysd's settings_subscribe_fd), so an app that also calls
+    // z_settings_observe does not subscribe twice.
+    if (app->ctrl_fd >= 0) {
+        const char *sub = "{\"op\":\"settings_subscribe\"}\n";
+        ssize_t w = write(app->ctrl_fd, sub, strlen(sub));
+        (void)w;
+    }
+
     // Deterministic press freeze-frame for the screenshot harness: pin the press
     // spring at ZELTO_PRESS_AMT (default 1) over (ZELTO_PRESS_X, ZELTO_PRESS_Y) in
     // surface px, so stamp_press highlights the tappable node there on a still
@@ -3243,6 +3301,12 @@ int z_layer_app_main(void *state, ZBodyFn body, const char *title,
     app.is_layer = true;
     if (opts) {
         app.layer_opts = *opts;
+        // Before app_run, so the very first build is at the fixed size: the
+        // startup read of sys.text_size happens inside it and would otherwise
+        // land first.
+        if (opts->fixed_type) {
+            z_text_scaling_disable();
+        }
     }
     return app_run(&app);
 }
@@ -3869,11 +3933,33 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
         z_invalidate(app);
         return;
     }
-    if (strcmp(op, "settings_changed") == 0 && app->settings_cb) {
+    if (strcmp(op, "settings_changed") == 0) {
         char key[64] = {0}, value[160] = {0};
         ctrl_json_get(line, "key", key, sizeof(key));
         ctrl_json_get(line, "value", value, sizeof(value));
-        app->settings_cb(app, key, value, app->settings_ud);
+        // THE TOOLKIT'S OWN SETTINGS come first and are handled whether or not
+        // the app observes anything: Dynamic Type has to reach the 18 surfaces
+        // that have never heard of z_settings_observe. Re-read BOTH keys on
+        // either change rather than parsing the one that arrived — the values
+        // are two ints in a store this process can read synchronously, and a
+        // partial apply (new size, stale weight) is a frame drawn at neither
+        // setting.
+        if (strcmp(key, ZELTO_KEY_TEXT_SIZE) == 0 ||
+            strcmp(key, ZELTO_KEY_BOLD_TEXT) == 0) {
+            bool moved = z_text_size_apply(
+                (int)z_setting_get_int(ZELTO_KEY_TEXT_SIZE,
+                                       Z_TEXT_SIZE_DEFAULT),
+                z_setting_get_int(ZELTO_KEY_BOLD_TEXT, 0) != 0);
+            if (moved) {
+                // A FULL REPAINT, not an invalidate. A size change is not a
+                // recolour: every string on the surface re-measures, so every
+                // frame the damage tracker still believes is clean is now wrong.
+                z_full_repaint(app);
+            }
+        }
+        if (app->settings_cb) {
+            app->settings_cb(app, key, value, app->settings_ud);
+        }
         z_invalidate(app);
         return;
     }

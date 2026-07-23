@@ -108,10 +108,28 @@ void z_text_close(ZText *t) {
     free(t);
 }
 
+// BOLD TEXT (P50) lands here and nowhere else. It is the second term of the
+// Dynamic Type setting, but unlike the size it does not change a step — it
+// raises the FLOOR on weight: Regular becomes Semibold, and anything already
+// heavier is left alone (a Bold title must not become bolder than the face has).
+//
+// This is the right seam because it is the single point where a weight reaches
+// the shaper: measure(), draw(), and WrapText's build-time measurement all call
+// set_weight before shaping, so the setting cannot make a paint and a measure
+// disagree — which is exactly what applying it at the node would risk, since a
+// heavier variable-font instance has WIDER advances.
+static ZWeight effective_weight(ZWeight w) {
+    if (z_text_bold() && w < Z_WEIGHT_SEMIBOLD) {
+        return Z_WEIGHT_SEMIBOLD;
+    }
+    return w;
+}
+
 // Select the variable-font weight instance (no-op on a static face — draw_glyph
 // then emboldens instead). Changing design coords reshapes glyphs + advances, so
 // HarfBuzz is told it changed.
 static void set_weight(ZText *t, ZWeight w) {
+    w = effective_weight(w);
     if (t->cur_weight == w) {
         return;
     }

@@ -37,4 +37,18 @@
 // running still happen on its next boot. See kbd_learn() in system/keyboard.
 #define ZELTO_KEY_KBD_FORGET "sys.kbd_forget_learned"
 
+// --- accessibility (P50) ----------------------------------------------------
+// sys.text_size / sys.bold_text are NOT redefined here. They are read from
+// inside libzelto — every process, before its first build — so they are declared
+// in <zelto/ui.h> beside z_font_units(), and this header is a layer ABOVE the
+// toolkit. Naming them again here would be the exact drift the file exists to
+// stop, so it names where they are instead:
+//
+//   ZELTO_KEY_TEXT_SIZE  "sys.text_size"  — 0..6, default Z_TEXT_SIZE_DEFAULT
+//   ZELTO_KEY_BOLD_TEXT  "sys.bold_text"  — 0/1
+//
+// sys.reduce_motion has no #define anywhere yet: it predates this header (P31)
+// and is read as a literal in four places. Left alone deliberately — moving it
+// is a rename with no bug behind it, and this phase has one.
+
 #endif  // ZELTO_SYSTEM_COMMON_SETTINGS_DEFAULTS_H

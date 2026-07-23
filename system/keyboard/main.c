@@ -2512,4 +2512,10 @@ Z_LAYER_APP(KbdState, kbd_body,
             .anchor = Z_ANCHOR_BOTTOM | Z_ANCHOR_LEFT | Z_ANCHOR_RIGHT,
             .exclusive_zone = 0,
             .height = ZELTO_KBD_TOTAL_H,
-            .keyboard = false)
+            .keyboard = false,
+            // A cap's letter is a label for a FINGER, not something to read, and
+            // the cap is sized as a touch target (ZELTO_KEY_H = 42pt). Scaling
+            // the type here grows the letters inside caps built for the shipped
+            // size, and at the largest step 'space' wants 102x49 in a 73x35 cap.
+            // No phone scales its keyboard with Dynamic Type either.
+            .fixed_type = true)
