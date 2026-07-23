@@ -83,7 +83,7 @@ resized rectangles (grown rectangles overlap, tie and leave gaps):
 ```
 score(key) = P(touch | key) × P(key | prefix)          argmax wins
              ^ Gaussian on the distance   ^ the language model
-               from the key's centre,       (system/keyboard/lm_bigram.c)
+               from the key's centre,       (system/keyboard/lm_trie.c)
                σ = 0.35 × the cap's size
 ```
 
@@ -102,14 +102,106 @@ Three consequences:
   keyboard reads it with `z_im_purpose()` and falls back to geometry.
 
 The model sits behind a seam (`system/keyboard/predict.h`) and says which one it
-is. Today it is a compiled-in letter-pair table, which knows that `l` often
-follows `e` but has no idea the word `hello` exists — so it cannot grow the space
-bar when the prefix is a complete word. A prefix tree over a shipped word list
-replaces `lm_bigram.c` alone.
+is: `z_lm_name()` is **`trie+bigram`**. It is a prefix tree over a shipped word
+list (`words_en.h`, 1620 words, ~85KB built) backed off to the letter-pair table
+(`lm_bigram.c`) the moment a walk leaves the tree — because a trie assigns
+probability **zero** outside its list, and zero is not "unlikely", it is
+"untypeable off-centre" for every name and password.
+
+Two things the dictionary buys that a letter-pair table provably could not:
+
+- **It sharpens with a longer prefix.** A bigram reads the last letter and throws
+  the rest away, so `e` and `hel` are the same question to it. P(`p` | `hel`) is
+  0.67 to the trie and 0.007 to the bigram.
+- **The space bar grows on a complete word.** The space cap carries a
+  `Z_LM_BOUNDARY` symbol competing in the *same* argmax, so P(space | `hello`) is
+  0.88 and P(space | `hel`) is 0.03 — the target reaches 30 units above the bar's
+  top edge after a word and 20 after a fragment. It is the one adaptive-target
+  behaviour a user actually notices.
+
+None of `Z_KBD_SIGMA`, `Z_KBD_CENTRE` or `Z_KBD_ODDS` changed when the dictionary
+landed, and that is worth saying: the centre-zone guarantee is an inequality over
+those constants and the key pitch alone, with no term from the model, so a
+sharper model cannot break it.
 
 The prefix comes from **text-input-v3 surrounding text**, relayed since P21 and
-read since P47 — not from an echo of the keyboard's own keystrokes, which would
-be wrong the moment anything else edited the field.
+read since P47 — not from an echo of the keyboard's own keystrokes.
+
+## Corrections: a different mechanism
+
+Conflating the classifier with autocorrect is the trap, so they are separated by
+an interface and not only by a comment:
+
+|  | classifier | autocorrect |
+|---|---|---|
+| corrects | a **press**, before it commits | a **word**, already in the field |
+| reads | the prefix | the whole word |
+| when | every press | at a word boundary |
+| visible? | no | yes — and sometimes wrong |
+| undo | not needed | one backspace |
+
+Autocorrect drives a three-slot **suggestion strip** above the keys (the surface
+is `ZELTO_KBD_TOTAL_H`, and resizes down to `ZELTO_KBD_H` for a password field,
+which gets no strip at all). Slot 1 is always the literal text; slot 0 is the
+pending correction, tinted the way iOS bolds the word it is about to apply.
+Tapping the middle slot is how you reject it. **Revert lives in surrounding text
+plus one keystroke of keyboard state**: the field holds the corrected word, the
+keyboard holds the original for exactly one key, and the next backspace restores
+it.
+
+A **word boundary is the end of a word, not a space**. Space, return, and every
+punctuation cap on the symbols layer all end one — the rule is the same one that
+finds the current word from the other side, so anything that is not a letter is a
+boundary (except the apostrophe, which lives *inside* English words, and digits,
+which say "this is not prose"). The double-space period runs first, because it
+rewrites the text a correction would have read.
+
+Two lexical rules ride on the same visible path:
+
+- **Contractions.** A trie over a-z cannot hold `don't`, so the list carries the
+  bare form — which is also what people type, the apostrophe being on the symbols
+  layer. `CONTRACTIONS_EN` puts it back. The rule for what may be in that table is
+  the whole safety argument: **only contractions whose bare form is not itself an
+  English word.** `its`, `were` and `lets` are words and stay bare.
+- **Inflections.** The list ships bases, not inflections, and a suffix rule
+  (`inflected_word`) is what stops that from being destructive. Without it,
+  measured over 60 real inflected forms, autocorrect **rewrote 49 of them**:
+  `walked` → `walk`, `hands` → `and`, `dogs` → `does`, `reading` → `wedding`. The
+  rule lives *inside* `z_lm_is_word`, so there is still exactly one function every
+  caller asks.
+
+## The learned dictionary
+
+The keyboard learns words you type that its shipped list does not carry. It is a
+privacy decision at least as much as a technical one, and all three answers are
+written beside the code that implements them (`kbd_learn` in
+`system/keyboard/main.c`):
+
+- **What.** Lowercase a-z, two characters or more, not already known, and only
+  after you have shown it was not a typo. Two signals: **reverting** an
+  autocorrection learns the word immediately (a person disagreeing with the model
+  is the strongest signal there is), and surviving **three** word boundaries
+  uncorrected learns it too. A word typed once is a typo.
+- **Where.** One newline-separated file in the keyboard's private directory under
+  `/var/zelto` — the same shape as `words_en.h`, because a store you cannot read
+  is a log. A learned word merges into the **list the trie is built from**, so it
+  is answered by the same `z_lm_p` / `z_lm_is_word` / `z_lm_candidates` as a
+  shipped one. There is no second model to disagree with the first.
+- **What never gets in.** Nothing from a password field — the string never reaches
+  the in-RAM counter, let alone the file. Nothing that is not a word: the current
+  word stops at the first non-letter, so emails, keys and postcodes are not words
+  to any of this. **The counts themselves are never written to disk** — only words
+  that reached the threshold are, because a file of "strings this person typed
+  once" is exactly the log this must not become.
+- **The way out.** *Settings → Keyboard* shows how many words have been learned
+  and offers **Clear Learned Words**, which forgets them, blanks the bytes and
+  deletes the file. The words themselves are deliberately not listed: a screen
+  showing what somebody typed is a shoulder-surfing surface of its own, and the
+  count plus the delete answers the question without building one.
+
+A learned word gets the weight of roughly the middle of the shipped list, not
+rank 0 — a word you typed three times is common *for you*, not commoner than
+"the".
 
 ## Holding a key
 
@@ -148,6 +240,7 @@ wrong the moment a paste, a caret move or an app clearing the field happens):
 | Rule | Condition | Gated on |
 |---|---|---|
 | **double-space period** | the text ends `<alnum><space>` and you press space | not a password field |
+| **autocorrect** | a word boundary ends a word that is not in the dictionary, is not a live prefix of one, and has a clearly better candidate | not a password field |
 | **auto-capitalise** | the text is empty, ends `.`/`?`/`!` + space(s), or ends in a newline | the field's `autocap` hint |
 | **caps lock** | two shift presses inside 0.35s | — |
 
