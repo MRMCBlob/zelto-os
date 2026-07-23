@@ -4,6 +4,7 @@
 /build-arm64/
 /build*/
 builddir/
+out/
 
 # Generated build-system glue and work areas.
 /meta/build/
