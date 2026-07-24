@@ -48,7 +48,29 @@ if ! command -v grim >/dev/null 2>&1; then
 fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/zelto-capture-lock.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+# KEEP THE LOGS WHEN IT FAILS. Every failure message below ends with "see
+# $LOG_X" — and this trap used to delete that file unconditionally, so the
+# evidence a failure pointed at was guaranteed to be gone before anyone could
+# read it. That is not hypothetical: this test failed once inside a full-suite
+# run during P52 (7/7 in isolation, 1 of 3 under the suite), and the reason it
+# could not be diagnosed is that its logs had already been removed. A test whose
+# diagnostics delete themselves reports that something is wrong and destroys the
+# only means of finding out what.
+#
+# The suspected mechanism, recorded but NOT acted on: run B seeds the lock at 4s
+# and lands app B at 6s, both wall-clock from boot, so a loaded machine could let
+# the edge arrive before the lock engages — after which "capture: suppressed"
+# never appears and the run fails honestly. Plausible is not confirmed, and P51
+# spent a phase on a flake whose recorded mechanism turned out to be disproven by
+# reading the code. So the margin is left alone and the NEXT occurrence is made
+# diagnosable instead.
+# The notice goes to STDERR, not stdout: run-tests.sh reproduces only the
+# ZT_FAIL| protocol lines from a test's stdout (see its report_failure), so a
+# plain echo would be swallowed by the very harness that is meant to show it.
+# Found by negative-testing this trap rather than by reading — the first version
+# kept the directory and said so into a void.
+trap '[ "${ZT_FAILURES:-0}" -eq 0 ] && rm -rf "$TMP" \
+      || echo "kept the simulator logs for diagnosis: $TMP" >&2' EXIT
 
 # The two apps. A is up from boot; B launches later and pushes A into the
 # background, which is the edge under test.

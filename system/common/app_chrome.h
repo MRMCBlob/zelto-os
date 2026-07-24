@@ -30,12 +30,19 @@ static inline ZView z_section(const char *text) {
             Font(Z_FONT_FOOTNOTE, z_text("%s", text))));
 }
 
-// A content card: the standard raised, rounded surface a block of app content
-// sits on. One radius, one fill, one elevation, everywhere.
+// A content card: the standard rounded surface a block of app content sits on.
+// One radius, one fill, everywhere.
+//
+// NO SHADOW, as of P52. This card SITS ON a surface rather than floating over
+// anything, and it is already a step up the tone ladder from what it sits on —
+// #1c1c1e on #000000 — which is the separation. iOS separates a grouped card
+// exactly this way and casts nothing, and so does the biggest list in this OS:
+// Settings' own cards have never had a shadow. This one did, so the two idioms
+// were disagreeing inside one product. See the note over Z_ELEV_* in gfx.h for
+// the rule and for which surfaces DO keep a shadow.
 static inline ZView z_card(ZView content) {
-    return Shadow(Z_ELEV_1,
-        Background(Z_COLOR_SURFACE,
-            CornerRadius(Z_RADIUS_CARD, Padding(Z_SPACE_L, content))));
+    return Background(Z_COLOR_SURFACE,
+        CornerRadius(Z_RADIUS_CARD, Padding(Z_SPACE_L, content)));
 }
 
 // A titled content card: a muted caption over its value. The caption is SMALL and

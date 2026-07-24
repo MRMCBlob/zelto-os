@@ -320,14 +320,30 @@ transient surfaces (popover/menu), and even there the numbers aren't documented.
 
 | Zelto token | value | iOS convention | verdict |
 |---|---|---|---|
-| `ELEV_1` 6u | chips/rows | iOS: **no shadow** on rows — tone only | candidate to drop on flat cards |
-| `ELEV_2` 14u | cards/widgets | iOS: tone + hairline | keep for genuinely raised (widget) |
+| `ELEV_1` 6u | a knob, a key cap, an app icon | iOS shadows these too | keep |
+| `ELEV_2` 14u | home widget, dock plate | over the wallpaper — floating | keep |
 | `ELEV_3` 28u | overlays/modals | iOS: soft shadow on floating overlays | keep |
 
-**Stage 1/2 finding:** audit where Zelto casts a shadow on something iOS would separate by
-tone (a settings card sitting on the page). Reserve `Shadow()` for floating transient
-surfaces; lean on the tone ladder + hairline for cards. This is an optical change with a
-rule behind it, not a taste call.
+**STAGE 1e OUTCOME — 20 shadow sites audited, exactly one was wrong, and the ladder itself
+did not move.** The rule that came out of it is not "raised in the hierarchy" but **"is
+there something UNDER it that it is floating over?"**:
+
+- **Keeps its shadow:** a sheet or alert (over an app), the keyboard's accent popup and
+  preview callout, the volume HUD, the switcher's cards, an app icon and the dock plate
+  (over the wallpaper), a notification card (over wallpaper / an app / a blurred panel —
+  never over a sibling surface), a knob riding a track.
+- **Drops it:** a card *sitting on* a surface. It is already a step up the tone ladder from
+  what it sits on, and that step **is** the separation.
+
+The single offender was `z_card` in `system/common/app_chrome.h`. **The anchor was in the
+repo, not in a spec:** Settings' own grouped cards cast no shadow — the only `Shadow()` in
+that file is the switch knob — so the most-used list in the OS already followed the rule
+and `z_card` was the outlier. Two idioms visibly disagreeing inside one product is worth
+more than a style guide.
+
+**No lint.** "Floating over something" vs "sitting on a surface" is semantic, not
+syntactic; a rule a grep cannot check belongs in the header where it is read, not in a test
+that would only approximate it.
 
 ---
 

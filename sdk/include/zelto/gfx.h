@@ -376,8 +376,35 @@ ZColor z_on_fill(ZColor fill);
 // level with Shadow() — the higher the level, the further off the surface it
 // floats. SHADOW is the ink (near-black; alpha is scaled per pixel by the
 // distance falloff, so the token's own alpha is the peak under the surface).
-#define Z_ELEV_1   6.0f    // subtle: chips, small raised rows
-#define Z_ELEV_2   14.0f   // cards, home widgets
+//
+// WHEN TO CAST ONE AT ALL (P52). iOS builds depth from TONE and HAIRLINES, not
+// from drop shadows: a grouped list's card is separated from the page by being
+// #1c1c1e on #000000, and it casts nothing. Real shadows are reserved for
+// surfaces that are genuinely FLOATING — a sheet, an alert, a menu, a popover, a
+// thing over the wallpaper. So the test before writing Shadow() is not "is this
+// raised in the visual hierarchy" but "is there something UNDER it that it is
+// floating over":
+//
+//   YES, keep the shadow — a modal sheet or alert (over an app), the keyboard's
+//     accent popup and preview callout, the volume HUD, the switcher's cards, an
+//     app icon and the dock plate (over the wallpaper), a notification card
+//     (over the wallpaper, an app, or a blurred panel — never over a sibling
+//     surface), a knob riding a track.
+//   NO, use the tone ladder — a card sitting ON a surface. It is already a step
+//     up the ramp from what it sits on, and that step IS the separation.
+//
+// The audit that produced this rule found exactly ONE site on the wrong side of
+// it, and the anchor was in the repo rather than in a spec: SETTINGS' OWN
+// GROUPED CARDS CAST NO SHADOW — the only Shadow() in that file is the switch
+// knob — so the most-used list in the OS already did it this way, and
+// app_chrome.h's z_card was the outlier. That is worth more than a style guide,
+// because the two idioms were visibly disagreeing inside one product.
+//
+// No lint enforces this: "floating over something" versus "sitting on a surface"
+// is semantic, not syntactic, and a rule a grep cannot check belongs where it is
+// read rather than in a test that would only approximate it.
+#define Z_ELEV_1   6.0f    // subtle: a knob, a key cap, an app icon
+#define Z_ELEV_2   14.0f   // a home widget, the dock plate — over the wallpaper
 #define Z_ELEV_3   28.0f   // overlays, modals, the lifted ghost
 #define Z_COLOR_SHADOW      z_scrim(0x80)
 
