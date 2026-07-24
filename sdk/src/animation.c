@@ -9,21 +9,63 @@
 
 #include "internal.h"
 
-// Spring profiles (critically-ish damped). Tuned for the design language.
-static void spring_params(ZSpring s, float *k, float *c, float *m) {
+// --- The spring vocabulary, in the two numbers that describe it (P52) -------
+//
+// These were hand-tuned stiffness/damping pairs, which are the wrong units to
+// think in: nobody can look at `k = 300, c = 30` and say how long the motion
+// takes or whether it overshoots. Apple's spring API names the two things that
+// actually matter — RESPONSE (how long the motion takes) and BOUNCE (how much it
+// overshoots, where bounce = 1 - dampingFraction) — and derives the physics.
+// Same move as Z_PT and z_font_units: author in the units the value is reasoned
+// about in, convert at one seam.
+//
+//     omega = 2*pi / response      k = m * omega^2
+//     zeta  = 1 - bounce           c = 2 * zeta * sqrt(k * m)
+//
+// THE REFACTOR IS VALUE-NEUTRAL, WHICH IS THE FINDING. Converting the shipped
+// constants back through those formulas lands within a few percent of numbers a
+// designer would have chosen deliberately:
+//
+//     SNAPPY  k 300 c 30  ->  response 0.36, bounce 0.15   (derived: 304.6, 29.67)
+//     PRESS   k 520 c 34  ->  response 0.28, bounce 0.25   (derived: 503.6, 33.66)
+//
+// So the hand-tuning had been consistent with this model all along; it just could
+// not be read. STANDARD is the one that moves at all: its true response was
+// 0.482s and its damping ratio 0.997 — a hair off the critical damping it was
+// meant to be. It is exactly 1.0 now, and 0.5s, which is Apple's `.smooth`.
+//
+// THE DURATIONS DIVERGE FROM iOS DELIBERATELY. Apple gives all three of
+// smooth/snappy/bouncy the SAME 0.5s and lets bounce be the only axis. Zelto
+// keeps SNAPPY at 0.36s and PRESS at 0.28s, because those two exist for moments
+// where the motion is answering the finger rather than presenting a surface — a
+// carousel page flip and a touch-down highlight. A press veil that takes half a
+// second to appear reads as lag, not as polish. STANDARD, which IS the
+// "presenting a surface" case, matches Apple exactly.
+typedef struct SpringSpec {
+    float response;   // seconds for the motion to make its move
+    float bounce;     // 0 = critically damped, higher = more overshoot
+} SpringSpec;
+
+static SpringSpec spring_spec(ZSpring s) {
     switch (s) {
     case Z_SPRING_PRESS:
         // Tight + fast so touch-down registers immediately and release snaps back.
-        *k = 520.0f; *c = 34.0f; *m = 1.0f;
-        break;
+        return (SpringSpec){0.28f, 0.25f};
     case Z_SPRING_SNAPPY:
-        *k = 300.0f; *c = 30.0f; *m = 1.0f;
-        break;
+        return (SpringSpec){0.36f, 0.15f};
     case Z_SPRING_STANDARD:
     default:
-        *k = 170.0f; *c = 26.0f; *m = 1.0f;
-        break;
+        return (SpringSpec){0.50f, 0.0f};   // Apple's .smooth
     }
+}
+
+static void spring_params(ZSpring s, float *k, float *c, float *m) {
+    SpringSpec spec = spring_spec(s);
+    float omega = 6.2831853f / spec.response;
+    float zeta = 1.0f - spec.bounce;
+    *m = 1.0f;
+    *k = omega * omega * *m;
+    *c = 2.0f * zeta * sqrtf(*k * *m);
 }
 
 double z_now_seconds(void) {

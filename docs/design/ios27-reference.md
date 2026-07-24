@@ -452,9 +452,41 @@ than iOS's press feedback, appropriate for immediate touch-down.
 **Reduce Motion** replaces slide/scale/zoom with cross-fades and suppresses overshoot —
 Zelto already collapses every spring to an instant jump (P31); **do not regress that.**
 
-**Stage 3 candidates:** (a) `SNAPPY` response 0.36→~0.5s to match iOS, or keep faster and
-document why; (b) a `bouncy` profile (ζ0.7) if any surface wants overshoot — currently none
-does; (c) confirm press feedback timing against the frozen-transition catalogue shots.
+**STAGE 3 OUTCOME — the durations were not the problem; the REPRESENTATION was.**
+
+The springs were hand-tuned `k`/`c` pairs, which are the wrong units to think in: nothing
+about `k = 300, c = 30` says how long the motion takes or whether it overshoots, so no one
+could tell whether a profile matched its own description. They are authored as **response**
+and **bounce** now — Apple's own two axes, `bounce = 1 − dampingFraction` — and the physics
+is derived (`ω = 2π/response`, `k = mω²`, `c = 2(1−bounce)√(km)`).
+
+**The refactor is value-neutral, and that is the finding.** Converting the shipped constants
+back through those formulas lands within a few percent of numbers a designer would have
+chosen on purpose:
+
+| profile | shipped | as (response, bounce) | derived back |
+|---|---|---|---|
+| `SNAPPY` | k 300, c 30 | 0.36s, 0.15 | k 304.6, c 29.67 |
+| `PRESS` | k 520, c 34 | 0.28s, 0.25 | k 503.6, c 33.66 |
+| `STANDARD` | k 170, c 26 | **0.50s, 0.00** | k 157.9, c 25.13 |
+
+So the hand-tuning had been consistent with this model all along — it just could not be read.
+`STANDARD` is the only one that moves: its true response was **0.482s** and its damping ratio
+**0.997**, a hair off the critical damping it was meant to be. It is exactly 1.000 and 0.5s
+now, which is Apple's `.smooth`.
+
+**The duration divergence is kept, deliberately.** Apple gives smooth/snappy/bouncy the same
+0.5s and lets bounce be the only axis. Zelto keeps `SNAPPY` at 0.36s and `PRESS` at 0.28s
+because those two exist for moments where the motion **answers the finger** rather than
+presents a surface — a carousel page flip, a touch-down highlight. A press veil that takes
+half a second to appear reads as lag, not polish. `STANDARD`, which *is* the presenting case,
+matches Apple exactly. **No `bouncy` profile was added**: no surface asks for one, and a token
+nothing asks for is the step that gets picked by whoever wants "a bit more energy".
+
+`test_motion_tokens.c` asserts the round trip in both directions, that the ladder stays
+ordered (quicker ⇒ bouncier), that a zero-bounce profile is *exactly* critically damped, and
+— the load-bearing one — that **every** spring entry point still honours Reduce Motion (P31),
+counted structurally so a profile added later cannot forget.
 
 ---
 
