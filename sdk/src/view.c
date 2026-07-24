@@ -362,7 +362,21 @@ ZView z_button(ZAction on_tap, const char *fmt, ...) {
     ZView n = node_new(Z_K_STACK);
     n->axis = Z_AXIS_HORIZONTAL;
     n->align = Z_ALIGN_CENTER;
-    n->padding = 14.0f;                 // ~14px inset -> >=44px tall at body size
+    // P52: the comment here used to read "~14px inset -> >=44px tall at body
+    // size", and it was written when Body was 17 UNITS — i.e. before P43 moved
+    // the type scale onto Z_PT. At today's ramp a Body line box is ~41 units, so
+    // 14 + 41 + 14 = 69 units = 37pt, against Apple's 44pt minimum touch target
+    // that Z_ROW_H already encodes correctly at 81. The button had been 7pt under
+    // the minimum ever since the type scale was fixed, because the inset was a
+    // literal chosen to hit a total rather than an expression over one.
+    //
+    // Now the inset is only the label's horizontal breathing room, and the
+    // HEIGHT is the floor itself — measured on the outer box, so it is the size
+    // of the thing a finger has to hit rather than a number that happens to add
+    // up at one text size. It follows Dynamic Type for free: past the step where
+    // a Body line exceeds the floor, the label's own line box wins.
+    n->padding = (float)Z_SPACE_S;
+    n->min_h = (float)Z_ROW_H;
     n->has_bg = true;
     n->bg = Z_COLOR_PRIMARY;
     n->radius = Z_RADIUS_CARD;
@@ -453,7 +467,11 @@ ZView z_text_field(ZApp *app, ZTextField *f, const char *placeholder) {
     n->axis = Z_AXIS_HORIZONTAL;
     n->align = Z_ALIGN_CENTER;
     n->spacing = 0.0f;
-    n->padding = 12.0f;                 // ~44px tall at body size
+    // Same defect and same fix as z_button above: 12 + a 41-unit Body line + 12
+    // is 65 units = 35pt against the 44pt minimum. The inset is the text's own
+    // breathing room; the touch target is the floor.
+    n->padding = (float)Z_SPACE_S;
+    n->min_h = (float)Z_ROW_H;
     n->has_bg = true;
     // A focused field lifts one step up the surface ramp — it does NOT grow a
     // coloured ring. (The old ring was a raw azure hex, the last one in the SDK.)

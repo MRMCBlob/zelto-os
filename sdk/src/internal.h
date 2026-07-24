@@ -37,6 +37,13 @@ struct ZNode {
                           // weights divide the WHOLE axis rather than the slack
     float fixed_w;        // Frame width  (0 = auto)
     float fixed_h;        // Frame height (0 = auto)
+    // A FLOOR on the node's OUTER height, applied after padding (0 = none).
+    // Deliberately not the same shape as fixed_h, which measure() treats as an
+    // INNER height and adds padding to — the trap that has cost this project two
+    // phases. A touch target is the box a FINGER lands on, so it is the outer
+    // box by definition, and expressing it as fixed_h would make the control a
+    // whole padding taller than the minimum it is trying to meet.
+    float min_h;
 
     // Visuals.
     bool has_bg;

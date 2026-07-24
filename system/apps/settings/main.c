@@ -505,9 +505,24 @@ static ZView toggle_row(ZApp *app, uint64_t key, const char *label, bool on,
     // the wrong control. A switch shows its state by POSITION (the knob is left or
     // right) as well as by fill, so it reads at a glance and while it animates,
     // and it is the single most recognisable control on a phone.
-    const float TRACK_W = 52.0f, TRACK_H = 32.0f, KNOB = 26.0f;
+    // THE METRICS WERE THE POINTS-AS-PIXELS BUG, SURVIVING IN ONE CONTROL (P52).
+    // iOS's switch track is 51x31 POINTS. This drew 52x32 UNITS — the spec sheet
+    // transcribed with no Z_PT, which is the P43 type scale and the P44 safe
+    // areas a third time. It was invisible for the usual reason (a small switch
+    // looks like a small switch) and the proof is proportional rather than
+    // absolute: iOS's switch is 31 of a 44pt row, or 70% of the row's height,
+    // while this one was 32 of 81 — 40%. It looked undersized NEXT TO ITS OWN
+    // ROW, which is the in-frame comparison that needs no external reference.
+    //
+    // The knob is Apple's 27.5pt [unpub but consistent across sources], and the
+    // inset is what is left over: (31 - 27.5)/2 = 1.75pt at each end. Derived
+    // rather than declared, so the three cannot drift apart — the old `- 6.0f`
+    // was an inset written into the travel and nowhere else.
+    const float TRACK_W = (float)Z_PT(51), TRACK_H = (float)Z_PT(31);
+    const float KNOB = (float)Z_PT(275) / 10.0f;   // 27.5pt, kept off the integer macro
+    const float INSET = (TRACK_H - KNOB) * 0.5f;
     ZColor track = z_color_lerp(Z_COLOR_SURFACE_3, Z_COLOR_PRIMARY, v);
-    float travel = (TRACK_W - KNOB - 6.0f);      // 3px inset at each end
+    float travel = (TRACK_W - KNOB - 2.0f * INSET);
     float knob_x = -travel * 0.5f + travel * v;  // slides left -> right with `v`
     ZView sw = Frame(TRACK_W, TRACK_H,
         Background(track,
@@ -630,7 +645,9 @@ static ZView slider_row(ZApp *app, const char *label, ZSlider *sl) {
     // having reflowed, because a slider's precision is its length.
     float len = z_text_size_reflows() ? INSET_TEXT_W : 300.0f;
     return labelled(app, label,
-        Slider(app, sl, .length = len, .thickness = 6.0f));
+        // No .thickness: the toolkit's default is Apple's 4pt track (P52), and
+        // repeating a number here is how the pair drifts apart again.
+        Slider(app, sl, .length = len));
 }
 
 // A GROUP: the inset, rounded card that a run of settings rows lives in, with a
@@ -893,8 +910,7 @@ static ZView text_size_row(ZApp *app, SettingsState *s) {
         HStack(Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),
                Grow(1.0f, HStack(
                    Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION2, Text("A"))),
-                   Slider(app, &s->text_slider, .length = 380.0f,
-                          .thickness = 6.0f),
+                   Slider(app, &s->text_slider, .length = 380.0f),
                    Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("A"))),
                    .spacing = Z_SPACE_S, .align = Z_ALIGN_CENTER)),
                Frame(ROW_PAD, 1.0f, Rect(.color = z_rgba(0, 0, 0, 0))),

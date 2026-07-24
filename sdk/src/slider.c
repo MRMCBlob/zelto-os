@@ -133,9 +133,17 @@ ZView z_slider(ZApp *app, ZSlider *s, const ZSliderOpts *opts) {
     }
 
     // --- list-row shape ------------------------------------------------------
+    // iOS: a 4pt track carrying a ~28pt thumb [unpub, but consistent across
+    // sources]. Both on Z_PT (P52), and the THUMB is the number that was wrong:
+    // the track was 6 units = 3.2pt, close enough to be unremarkable, while the
+    // thumb was written as `t * 4` = 24 units = 13pt against Apple's 28. So the
+    // defect is a RATIO — iOS's thumb-to-track is 7x, this was 4x — and it hid
+    // behind a track that looked fine. Stating both in points instead of one in
+    // points and the other as a multiplier is what stops the pair drifting again;
+    // a bare `* 7` would be the same un-sourced constant one step along.
     float w = opts->length > 0.0f ? opts->length : 200.0f;
-    float t = opts->thickness > 0.0f ? opts->thickness : 6.0f;
-    float knob = t * 4.0f;
+    float t = opts->thickness > 0.0f ? opts->thickness : (float)Z_PT(4);
+    float knob = (float)Z_PT(28);
     // The knob's centre travels the track MINUS its own width, so it stops flush
     // with each end instead of hanging off.
     float travel = w - knob;

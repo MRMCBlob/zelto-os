@@ -357,8 +357,8 @@ that would only approximate it.
 | Nav bar height | 44 | 81 | 81 (`BAR_H`) | 44 | 0 | ✓ contract |
 | Large-title total area | ~96 | ~177 | — | — | — | Zelto has no large-title nav yet |
 | Tab bar | 49 (+34 safe) | 90 (+62) | — | — | — | Zelto uses homebar, no tab bar |
-| **Switch — track** | **51×31** | **94×57** | **52×32** | 28×17 | **−42×−25** | ⚠️ **headline finding** |
-| Switch — knob | 27.5 **[unpub]** | 51 | 26 | 14 | **−25** | ⚠️ ~half size |
+| **Switch — track** | **51×31** | **94×57** | ~~52×32~~ → **94×57** | 51×31 | **closed** | ✅ measured in frame |
+| Switch — knob | 27.5 **[unpub]** | 51 | ~~26~~ → **50** | 27 | **closed** | inset now derived |
 | Slider — track | 4 | 7 | 6 (`thickness`) | 3.2 | −1 | ✓ close |
 | Slider — thumb | ~28 **[unpub]** | ~52 | **24** (`t × 4`) | 13 | **−28** | ⚠️ see below |
 | Segmented — height | ~32 **[unpub]** | ~59 | (CC toggles) | — | — | verify Stage 2 |
@@ -404,6 +404,23 @@ Both are below Apple's 44pt minimum touch target, which `Z_ROW_H` already encode
 correctly at 81u. **Stage 2 fix:** the inset becomes whatever makes the total reach
 `Z_ROW_H` — an expression over the line box, like `z_row_h()`, not a new literal. Same
 shape of bug as the switch, in the toolkit rather than in an app.
+
+**STAGE 2 OUTCOME — all three closed, and the switch verified in a real frame.** `ZELTO_PROBE_TAPS`
+on Settings ▸ Lock Screen reports the switch's tappable at **`w=94 h=57`** (exactly `Z_PT(51)` ×
+`Z_PT(31)`), its right edge 29u inside the card, and `0 overflowing / 0 clipped / 0 sideways`.
+**57 in an 82-unit row is 70%** — iOS's proportion, against the 40% it had.
+
+The touch targets took a new toolkit primitive rather than a bigger padding: `min_h`, a floor on a
+node's **outer** height applied after padding. `fixed_h` was the wrong tool — `measure()` treats it
+as an *inner* height and adds padding to it (the double-count trap that has cost two phases), and a
+touch target is by definition the box a finger lands on. `Button` and `ZTextField` now ask for
+`Z_ROW_H` by name, so they follow Dynamic Type for free: past the step where a Body line exceeds
+the floor, the label's own line box wins.
+
+**A process note.** The first PNG of the change *looked* like the stepper pills had grown to fill
+their rows — a regression I was about to chase. The probe said `w=52 h=36`, unchanged, at row pitch
+82. The frames were fine and the reading was wrong, which is exactly why the standing rule is *ask
+the layout, never measure a coordinate off a screenshot.*
 
 **Buttons have no iOS point height** — iOS 26 sizes via `ControlSize`/`buttonSizing` and
 defaults to **Capsule** (radius = height/2). Do not hardcode a button height "to match

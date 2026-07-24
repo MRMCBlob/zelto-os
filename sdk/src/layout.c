@@ -92,6 +92,12 @@ static void measure(ZView n, ZText *text) {
     }
     n->w = dw + pad2;
     n->h = dh + pad2;
+    // The touch-target floor, LAST and on the outer box (see min_h in
+    // internal.h). After the padding, not before it: the point is the size of
+    // the thing a finger has to hit.
+    if (n->min_h > 0.0f && n->h < n->min_h) {
+        n->h = n->min_h;
+    }
 }
 
 static float align_offset(ZAlign align, float free) {
