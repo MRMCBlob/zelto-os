@@ -1186,7 +1186,15 @@ run_shot 88-ax-settings-last-flat "AX1: the last step that does NOT reflow (cf. 
 # weekday measures 371, its '100%' 324, its 'All clear' 379 — none of them prose
 # that could wrap or an identifier that could ellipsize. So a widget takes the
 # whole row (entry_span), which is the same reflow in the only shape a grid has.
-SEED="$TS_AX" EXPECT='zelto-launcher\|Thursday' \
+# 'All clear', not the weekday. The EXPECT here used to be 'Thursday' — which is
+# the day P51 wrote it on, so the claim passed one day in seven and failed the
+# other six. (Found in P52's re-shoot, on a Friday: the surface rendered
+# perfectly and the assertion about it was what had rotted.) 'All clear' is on
+# the same widget row, is one of the strings that MOTIVATED the reflow — it
+# measures 379 units against a 298-unit cell — and does not depend on when the
+# catalogue is run. The standing rule is that an EXPECT is computed from a run
+# rather than at a desk; this one was, and the run happened to be on a Thursday.
+SEED="$TS_AX" EXPECT='zelto-launcher\|All clear' \
 run_shot 89-ax-home-widgets "AX5: home widgets go full-width (a glance needs the row)" 6
 
 # 90: the screen that SETS the size, at the size it sets. Its slider legend is

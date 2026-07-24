@@ -64,3 +64,8 @@ Thumbs.db
 !resources/app-icons/
 !resources/app-icons/**
 __pycache__/
+
+
+.env
+.env.local
+.env.*

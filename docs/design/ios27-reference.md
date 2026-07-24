@@ -490,26 +490,28 @@ counted structurally so a profile added later cannot forget.
 
 ---
 
-## Highest-leverage fixes, sequenced
+## Highest-leverage fixes, sequenced — and what each turned out to be
 
-1. **The switch (Stage 2).** ~55% undersized; most visible metric miss. Track 52×32→94×57u,
-   knob 26→51u. Solid Apple number. Re-shoot Settings + Control Center.
-2. **The spacing scale (Stage 1).** No scale exists; `SEC_GAP` and inline `12` are off-grid
-   literals. Establish `Z_SPACE_*` on `Z_PT`, replace literals. Highest leverage — one
-   ladder tightens every surface at once.
-3. **Concentric radii (Stage 1).** Make nested = outer − padding an expression (iOS 26's own
-   load-bearing rule). Fixes chip-in-card / card-in-sheet consistency.
-4. **Semantic-fill contrast (Stage 1).** WARN 1.96:1 and SUCCESS 3.71:1 — redraw the fills
-   (dark ink on WARN, darken SUCCESS), extend `test_contrast_tokens.c`. Was deferred from
-   P51 precisely because it needs the palette change now in scope.
-5. **Type ramp drifts (Stage 1).** Large Title +6pt, Callout +4pt (really Title3), Title2
-   +2pt. Small, deliberate-looking; decide per-step and RE-RUN the AX5 overflow/reflow audit
-   after any change (a bigger line box can clip a box that fit).
-6. **Tracking (Stage 1 decision).** Add Title-level tightening (−1 to −2u) or record out of
-   scope — but write the decision down.
-7. **Shadow-vs-tone (Stage 1/2).** Audit shadows Zelto casts where iOS separates by tone;
-   reserve `Shadow()` for floating transient surfaces.
-8. **Hairline (Stage 1).** `BORDER` #38383a → toward iOS #545458; confirm 1u width on target.
+Kept as written at Stage 0, with the outcome beside it. **Three of the eight predictions were
+wrong**, and the ways they were wrong are the most useful thing in this file: a dossier
+assembled from a spec is a set of hypotheses, and the codebase is what settles them.
+
+| # | Predicted at Stage 0 | Outcome |
+|---|---|---|
+| 1 | The switch, ~55% undersized | ✅ **as predicted**, and the mechanism was the points-as-pixels bug — 51×31 **pt** drawn as 52×32 **u**. Proven in-frame: 40% → 70% of its row. |
+| 2 | Spacing: no scale, `SEC_GAP` + inline `12` off-grid | ✅ **understated.** It was not "no scale" but the *same transcription bug*: the commonest literals `8/10/12` are SwiftUI's default VStack/HStack spacings and the grid's 12pt step, in units. |
+| 3 | Concentric radii | ✅ done — and it **determined** `SHEET` (16 + 29 = 45) rather than merely tidying it, and exposed a non-monotonic ladder nothing could see. |
+| 4 | Semantic fills: WARN 1.96, SUCCESS 3.71 | ❌ **wrong pairs.** `ON_PRIMARY`-on-`SUCCESS` is not drawn by this OS; the drawn failure was `TEXT_INV` on WARN (1.99). And the real defect was these tokens **as ink** — the old green hit 2.13 on a chip. |
+| 5 | Type ramp: three drifts | ✅ **but Callout was misdiagnosed** as iOS Title 3. All 22 call sites are control labels or emphasised body — the *number* was Title 3, every *use* was a Callout. |
+| 6 | Tracking: decide | ✅ recorded **out of scope**, with the risk (measure/paint must agree or text overflows silently) as the reason. |
+| 7 | Shadow-vs-tone | ✅ **but far smaller than expected.** 19 of 20 sites were already right; exactly one (`z_card`) was wrong, and Settings' own cards were the in-repo anchor. |
+| 8 | Hairline → iOS #545458 | ❌ **artefact of the comparison.** iOS's separator is 60% *alpha*; composited it lands in the band Zelto already occupies. **No change.** |
+
+Two more that were not on the list at all, both found by working through the code rather than
+the spec: the **`Button`/`ZTextField` touch targets** (69u/65u against an 81u minimum, stale
+since P43), and the **slider's thumb-to-track ratio** (4× where iOS is 7×, hidden behind a
+track that measured fine). And Stage 3 turned out not to be a tuning question at all — the
+springs were **unreadable**, not mistuned.
 
 ## What Apple does not publish (so Zelto owns it, and "match iOS" doesn't apply)
 
