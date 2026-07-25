@@ -40,6 +40,7 @@
 #include <unistd.h>
 
 #include "common/exec_cmd.h"
+#include "common/settings_defaults.h"
 
 #define MANIFEST_DIR "/usr/share/zelto/apps"
 #define CONSENT_BIN "/usr/bin/zelto-consent"
@@ -266,6 +267,18 @@ static bool g_low_warned;       // one-shot latch for the low-battery notificati
 // count through the settings store (defined later), and vice versa.
 static bool settings_apply(const char *key, const char *value);
 static void publish_notif_count(void);
+static void publish_camera_in_use(void);
+
+// Keys the BROKER owns: it publishes them from its own records and a client may
+// only read them. Every other sys.* key is a preference the user sets, so a
+// client write is the whole point; these state a fact ABOUT a client, and an app
+// that can rewrite the record kept about it makes that record worthless. Kept as
+// one list because the enforcement is one check, at the single place client
+// writes arrive (settings_set).
+static bool setting_is_broker_owned(const char *key) {
+    return strcmp(key, ZELTO_KEY_CAMERA_IN_USE) == 0 ||
+           strcmp(key, "sys.notif_count") == 0;
+}
 
 // Strip a trailing CR/LF in place.
 static void chomp(char *s) {
@@ -1120,6 +1133,15 @@ static void publish_notif_count(void) {
     settings_apply("sys.notif_count", buf);
 }
 
+// How many apps hold a camera stream right now, published for the status bar's
+// in-use indicator. settings_apply is idempotent, so a repeated open (a resume
+// after a background pause is one) fans nothing out.
+static void publish_camera_in_use(void) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", g_n_camera_users);
+    settings_apply(ZELTO_KEY_CAMERA_IN_USE, buf);
+}
+
 // --- power source (battery) ------------------------------------------------
 
 static int64_t now_ms(void) {
@@ -1703,6 +1725,23 @@ static void handle_line(int slot, int fd, char *line) {
         char key[64] = {0}, value[160] = {0};
         json_get(line, "key", key, sizeof(key));
         json_get(line, "value", value, sizeof(value));
+        // A BROKER-OWNED KEY IS NOT WRITABLE BY A CLIENT, and until P53 every
+        // sys.* key was: settings_set took whatever it was handed from whoever
+        // sent it. That was harmless while the store held only preferences the
+        // user sets anyway — but the moment a key states a FACT ABOUT AN APP,
+        // an ungated write is the app editing the record kept about it. The
+        // camera indicator would have been switchable off by the app being
+        // indicated, which is not a privacy control at all.
+        //
+        // Refused here, at the one place every client write arrives, rather than
+        // by asking each publisher to defend its own key. sys.notif_count had
+        // exactly the same exposure and is covered by the same guard.
+        if (key[0] && setting_is_broker_owned(key)) {
+            fprintf(stderr,
+                    "[zsysd] settings_set REFUSED %s (broker-owned; a client "
+                    "may read it, never write it)\n", key);
+            return;
+        }
         if (key[0] && settings_apply(key, value)) {
             fprintf(stderr, "[zsysd] settings_set %s=%s -> %d subscriber(s)\n",
                     key, value, g_n_settings_subs);
@@ -1787,6 +1826,11 @@ static void handle_line(int slot, int fd, char *line) {
         fprintf(stderr, "[zsysd] camera %s app=%s (%d in use)\n",
                 opening ? "OPEN" : "CLOSE", capp[0] ? capp : "?",
                 g_n_camera_users);
+        // Publish the fact so the status bar can show it. Routed through the
+        // settings fan-out the bar already observes rather than a new protocol —
+        // the same reuse sys.notif_count made for the home widget — and the key
+        // is broker-owned, so the app it describes cannot turn it off.
+        publish_camera_in_use();
         return;
     }
 

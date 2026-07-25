@@ -37,6 +37,15 @@
 // running still happen on its next boot. See kbd_learn() in system/keyboard.
 #define ZELTO_KEY_KBD_FORGET "sys.kbd_forget_learned"
 
+// --- broker-owned keys (P53) -------------------------------------------------
+// sys.camera_in_use: how many apps currently hold a camera stream. Published by
+// zsysd from its OWN record of who opened one, and REFUSED to every client that
+// tries to write it (see the broker-owned check in zsysd) — which is the entire
+// reason a status-bar indicator built on it means anything. An indicator an app
+// can switch off is not a privacy control, it is decoration that happens to be
+// on by default.
+#define ZELTO_KEY_CAMERA_IN_USE "sys.camera_in_use"
+
 // --- accessibility (P50) ----------------------------------------------------
 // sys.text_size / sys.bold_text are NOT redefined here. They are read from
 // inside libzelto — every process, before its first build — so they are declared

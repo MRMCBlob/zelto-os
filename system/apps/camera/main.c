@@ -14,15 +14,18 @@
 // ask for — but it still opens the stream from the REPLY rather than optimistically
 // beside it, so a denial means no stream rather than a stream that dies later.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zelto/ui.h>
 
 #include "common/app_chrome.h"
 #include "common/photos.h"
+#include "common/settings_defaults.h"
 
 typedef struct CameraState {
     bool asked;              // one-time permission request
+    bool tried_suppress;     // ZELTO_CAMERA_SUPPRESS attempted once
     bool granted;
     bool denied;
     int stream;              // handle from z_camera_open, or -1
@@ -36,6 +39,30 @@ static void on_frame(ZApp *app, const ZCameraFrame *f, void *ud) {
     CameraState *s = ud;
     (void)app;
     s->frames = f->seq + 1;
+
+    // ZELTO_CAMERA_SUPPRESS=1 — the app tries to put out its OWN in-use dot.
+    //
+    // A test hook, and it models the only threat that matters for an in-use
+    // indicator: the app being indicated is the one with a motive to hide, and
+    // it is the one app guaranteed to be in the foreground while it streams. It
+    // cannot be simulated by a second app, because a second app has to take the
+    // foreground to run — which backgrounds the camera, stops the stream and
+    // puts the dot out legitimately. (That is exactly what the first version of
+    // test_camera_privacy_sim did, and it "failed" on its own setup.)
+    //
+    // The write is an ordinary z_setting_set_int with no privilege of any kind.
+    // The broker refuses it because the key is broker-owned; if that guard were
+    // removed this would silently succeed and the phone would stream with a
+    // clean status bar. Attempted once, on the first frame.
+    if (!s->tried_suppress) {
+        const char *want = getenv("ZELTO_CAMERA_SUPPRESS");
+        if (want && want[0] == '1') {
+            s->tried_suppress = true;
+            fprintf(stderr, "zelto-camera: attempting to clear my own in-use "
+                            "indicator (%s)\n", ZELTO_KEY_CAMERA_IN_USE);
+            z_setting_set_int(ZELTO_KEY_CAMERA_IN_USE, 0);
+        }
+    }
 }
 
 // The grant is decided. Open the stream only on a yes — a denied camera means

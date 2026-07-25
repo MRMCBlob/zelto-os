@@ -174,6 +174,30 @@ static void layer_sync_keyboard(ZcompLayerSurface *ls) {
         wlr_seat_keyboard_notify_enter(seat, l->surface, NULL, 0, NULL);
     }
     server->focused_layer = l;
+
+    // AND THE APPS UNDERNEATH ARE NO LONGER IN THE FOREGROUND.
+    //
+    // This line is a privacy fix, not bookkeeping. Taking the screen with a
+    // modal layer used to change ONLY the keyboard route: every app kept its xdg
+    // "activated" state, so as far as libzelto was concerned the app the lock
+    // screen had just covered was still the foreground app. Everything keyed on
+    // that state therefore kept running underneath — measured, not assumed: with
+    // the lock engaging at 8s a camera preview opened at 5.9s went on producing
+    // frames for the rest of the boot, with no pause logged. A phone that keeps
+    // reading its camera while it is locked is the exact thing the when-in-use
+    // rule exists to prevent, and the same held for every sensor and GPS stream
+    // (P39's background pause rides the same signal).
+    //
+    // ANY exclusive-keyboard layer counts, not just the lock screen. That is the
+    // conservative reading and it matches the precedent already in the tree:
+    // capture.c refuses to photograph a window whenever `focused_layer` is set
+    // and calls it "the screen is held by a modal layer" rather than "locked",
+    // because a consent dialog covering an app is equally a moment when that app
+    // is not what the user is looking at.
+    //
+    // The reverse is already handled: layer_release_keyboard re-focuses the front
+    // toplevel, which broadcasts activation again and resumes the streams.
+    zcomp_update_activation(server, NULL);
 }
 
 // The modal went away: return the keyboard to the front app toplevel.

@@ -23,8 +23,8 @@
 // activated state is kept in lockstep so the task switcher highlights the same
 // window. This is the whole of app lifecycle: no custom protocol, just the
 // standard xdg activated state plus the foreign-toplevel mirror.
-static void zcomp_update_activation(ZcompServer *server,
-                                    ZcompToplevel *focused) {
+void zcomp_update_activation(ZcompServer *server,
+                             ZcompToplevel *focused) {
     ZcompToplevel *t;
     wl_list_for_each(t, &server->toplevels, link) {
         bool active = (t == focused);

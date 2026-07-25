@@ -43,6 +43,7 @@ typedef struct BarState {
     int64_t lock_now;     // sys.lock_now counter (a long-press on the bar bumps it)
     int64_t battery_pct;  // P23: 0..100 (from the zsysd power source)
     bool charging;        // P23: sys.battery_charging
+    int64_t camera_in_use;  // P53: apps currently holding a camera stream
     // The last set of marks reported (P47), so the line below is emitted on a
     // CHANGE rather than on every rebuild — the bar rebuilds each minute anyway.
     char marks[128];
@@ -80,9 +81,16 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->battery_pct = v;
     } else if (strcmp(key, "sys.battery_charging") == 0) {
         s->charging = v != 0;
+    } else if (strcmp(key, ZELTO_KEY_CAMERA_IN_USE) == 0) {
+        s->camera_in_use = v;
     }
     z_invalidate(app);
 }
+
+// The in-use dot's diameter. Smaller than the 15-unit glyphs beside it because a
+// filled disc reads heavier than an outline at the same extent — it is a signal,
+// not a control, and it should not shout louder than the battery.
+#define Z_CAMERA_DOT 10.0f
 
 static ZView bar_body(ZApp *app, BarState *state) {
     // First build: read the system state from the broker and subscribe for live
@@ -102,6 +110,7 @@ static ZView bar_body(ZApp *app, BarState *state) {
         state->lock_now = z_setting_get_int("sys.lock_now", 0);
         state->battery_pct = z_setting_get_int("sys.battery_pct", 100);
         state->charging = z_setting_get_int("sys.battery_charging", 0) != 0;
+        state->camera_in_use = z_setting_get_int(ZELTO_KEY_CAMERA_IN_USE, 0);
         z_settings_observe(app, on_changed, state);
     }
 
@@ -140,6 +149,25 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // (P19, z_net_send/z_ws_open) and forces Wi-Fi to read as down below.
     ZStackOpts cluster = {.spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER};
     int k = 0;
+    // THE CAMERA IN-USE DOT, and it leads the cluster because it is the one mark
+    // here that is not about the phone's condition but about what an app is
+    // doing to you. iOS puts it at the same end for the same reason.
+    //
+    // WHY THIS IS TRUSTWORTHY, which is the whole point of the indicator: the
+    // bar reads sys.camera_in_use, zsysd publishes it from its OWN record of who
+    // opened a stream, and the broker REFUSES a client write to that key. The app
+    // being indicated therefore neither draws the dot nor can clear it. An
+    // indicator an app can switch off is decoration.
+    //
+    // A filled dot rather than a glyph: it has to read at a glance in an 81-unit
+    // strip, and SUCCESS is the green every phone has trained people to read as
+    // "the camera is live" — used here as ink on the bar, the role P52 retuned
+    // it for.
+    if (state->camera_in_use > 0) {
+        cluster.children[k++] = Background(Z_COLOR_SUCCESS,
+            CornerRadius(Z_CAMERA_DOT * 0.5f,
+                Frame(Z_CAMERA_DOT, Z_CAMERA_DOT, Spacer())));
+    }
     if (state->airplane) {
         cluster.children[k++] = zelto_glyph_airplane(15.0f, Z_COLOR_TEXT);
     } else {
@@ -192,6 +220,16 @@ static ZView bar_body(ZApp *app, BarState *state) {
                      (int)state->signal, wifi_live ? "on" : "off",
                      state->lock_enabled ? "on" : "off", (int)state->battery_pct,
                      state->charging ? "yes" : "no");
+        }
+        // The camera dot is appended rather than folded into both branches: it
+        // is orthogonal to airplane mode, and this is the line the privacy test
+        // reads to prove the bar SHOWS the camera is live (a drawn dot has no
+        // string of its own, and a 10-unit disc moves the 720x81 strip by less
+        // than the clock does between boots).
+        if (state->camera_in_use > 0) {
+            size_t n = strlen(marks);
+            snprintf(marks + n, sizeof(marks) - n, " camera=in-use:%d",
+                     (int)state->camera_in_use);
         }
         if (strcmp(marks, state->marks) != 0) {
             snprintf(state->marks, sizeof(state->marks), "%s", marks);

@@ -109,3 +109,39 @@ physical sensor's pixels reach this API is not, and cannot be here.
 The frames carry their own sequence number in the top-left pixel so a capture can
 be **proven** to have kept the live frame rather than a stale buffer. An honest
 fake also *looks* fake: the preview is a test pattern, not a photograph.
+
+## Privacy (P53)
+
+Three controls, each **executed** by `test/test_camera_privacy_sim.sh` rather than
+asserted about. All three are invisible when they break — a camera still streaming
+under a lock screen looks exactly like one that stopped — so none of them is left
+as a claim.
+
+**1. An in-use indicator.** While any app holds a stream, the status bar shows a
+green dot. zsysd publishes `sys.camera_in_use` from *its own record* of who called
+`camera_open`, and the bar observes it through the settings fan-out it already
+had.
+
+**2. The indicated app cannot put it out.** `sys.camera_in_use` is **broker-owned**:
+`settings_set` refuses a client write to it. Before P53 every `sys.*` key was
+writable by any app, which was harmless while the store held only preferences the
+user sets — but a key that states a *fact about an app* is one the app must not be
+able to edit. `sys.notif_count` had the same exposure and is covered by the same
+guard.
+
+> Negative-tested: with the guard removed, the camera app's own write lands so
+> quickly that the bar **never shows the dot at all** — the phone streams the whole
+> session behind a clean status bar.
+
+**3. Locking the screen stops the stream.** Found broken by measurement, not by
+review: taking the screen with a modal layer used to change only the *keyboard
+route*, so the app underneath kept its xdg `activated` state. A preview opened
+before the lock went on producing frames for the rest of the boot. `layer.c` now
+broadcasts deactivation when a layer takes the screen, which stops the camera and
+every sensor/GPS stream (P39 rides the same signal).
+
+**What this does not cover**, stated rather than implied: an app shipping a
+patched libzelto could generate frames without telling the broker. That is
+unfixable client-side by construction; on a device the real gate is the kernel
+refusing the camera device node. The indicator is honest about apps using the
+platform, not about apps replacing it.

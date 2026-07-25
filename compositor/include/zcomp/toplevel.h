@@ -65,6 +65,11 @@ void zcomp_handle_new_xdg_surface(struct wl_listener *listener, void *data);
 // Give keyboard focus to a toplevel's surface (and raise it within `apps`).
 void zcomp_focus_toplevel(ZcompToplevel *toplevel);
 
+// Broadcast the xdg "activated" state: exactly `focused` is active and every
+// other mapped toplevel is cleared. Pass NULL to deactivate them ALL, which is
+// what a modal layer surface taking the screen must do — see layer.c.
+void zcomp_update_activation(ZcompServer *server, ZcompToplevel *focused);
+
 // Global window-management chords (invoked from the seat keyboard handler):
 //   Home   -> raise + focus the launcher (the back-most app), revealing it.
 //   Switch -> focus the next toplevel in MRU order (cycle the foreground).

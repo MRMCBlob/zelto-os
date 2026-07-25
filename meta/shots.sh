@@ -1288,7 +1288,15 @@ run_shot 96-photos-delete "Photos: the delete confirmation (the only irreversibl
 # deliberate — there is no camera in the simulator, so the source is synthetic
 # (sdk/src/camera.c), and an honest fake should look unmistakably like a test
 # pattern rather than like a photograph the OS took of something.
-EXPECT='zelto-camera\|Camera' run_shot 97-camera "Camera: the live preview and its shutter" 10     SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/true
+#
+# LOGSAYS carries the other half of this frame: the green in-use dot in the
+# status bar. The dot is DRAWN, so it has no string for EXPECT to match, and it
+# is 10 units across — well under the noise a glyph or the clock already puts
+# into the 720x81 strip, so a pixel check could not see it either. The bar's own
+# marks line is the mechanism P47 added for exactly this case.
+EXPECT='zelto-camera\|Camera' LOGSAYS='camera=in-use:[1-9]' \
+run_shot 97-camera "Camera: the live preview, its shutter, and the in-use dot" 10 \
+    SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/true
 
 # 98: the same screen with the permission REFUSED. The state an app has to
 # handle gracefully and the one nobody photographs.
