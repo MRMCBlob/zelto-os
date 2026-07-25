@@ -99,6 +99,7 @@ typedef struct LockNotif {
     char app_id[96];
     char title[128];
     char body[192];
+    char image[256];        // a picture the notification is ABOUT (may be empty)
 } LockNotif;
 
 typedef struct LockState {
@@ -367,6 +368,7 @@ static void on_notif_show(ZApp *app, const ZShownNotification *n, void *ud) {
     snprintf(slot->app_id, sizeof(slot->app_id), "%s", n->app_id ? n->app_id : "");
     snprintf(slot->title, sizeof(slot->title), "%s", n->title ? n->title : "");
     snprintf(slot->body, sizeof(slot->body), "%s", n->body ? n->body : "");
+    snprintf(slot->image, sizeof(slot->image), "%s", n->image ? n->image : "");
     // Only repaint if the card is actually on screen. While unlocked this surface
     // draws nothing at all, and a full-surface damage on an always-mapped
     // full-screen overlay for every notification the phone receives is a real cost
@@ -586,8 +588,9 @@ static ZView lock_notifs(ZApp *app, LockState *s) {
             continue;
         }
         col.children[k++] = Frame(cw, 0.0f,
-            zelto_notif_card(app, cw, s->notifs[i].app_id, s->notifs[i].title,
-                             s->notifs[i].body, NULL, false));
+            zelto_notif_card_img(app, cw, s->notifs[i].app_id,
+                                 s->notifs[i].title, s->notifs[i].body,
+                                 s->notifs[i].image, NULL, false));
         shown++;
     }
     if (total > shown) {

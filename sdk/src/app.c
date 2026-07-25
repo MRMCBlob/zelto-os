@@ -1002,6 +1002,48 @@ static bool probe_off_surface(ZView root, ZView n) {
     return probe_off_x(root, n) || probe_off_y(root, n);
 }
 
+// SIDEWAYS — a node that BEGINS on the screen and ENDS past its right edge.
+//
+// Narrower than probe_off_x, and P53 is what forced the distinction to be
+// written down instead of assumed. The counter shipped in P51 with the claim
+// that "a surface with a carousel reports the same fourteen at every text size",
+// which let the audit read it as a delta and cancel the carousel's
+// legitimately-off-screen pages out. That was an observation about the twelve
+// apps in the tree at the time, not a property of anything: adding a THIRTEENTH
+// made the App Library need two pages at the largest text size and one at the
+// default, so the carousel contributed a different number at each end and the
+// audit reported a defect where a strip you swipe had gained a page.
+//
+// THE DISTINCTION THE GEOMETRY CAN ACTUALLY MAKE. Nothing in a static frame says
+// whether a surface pans horizontally — the home carousel and the App Switcher
+// deck are both hand-built strips with no scroll node to inspect, and they do not
+// even share a page pitch (the carousel steps by the screen width, the deck by a
+// card plus a gap). So a rule based on page windows is guesswork for one of them.
+// What IS unambiguous is where a node STARTS:
+//
+//   * starts past the right edge  -> it was never on this page. It is the next
+//     page of a carousel, the next card in a deck, the next row below a fold —
+//     content you reach by moving the strip, and moving the strip is what these
+//     surfaces are for.
+//   * starts ON the page and runs off it -> nothing will ever bring the rest of
+//     it into view, because the page it belongs to is the one you are looking at.
+//     This is exactly the case the counter was built for: at AX2 the Settings
+//     stepper's '+' key was laid out at x=701 w=52 on a 720-unit screen, so 33
+//     units of it can never be pressed and nothing on screen says it is there.
+//   * starts LEFT of the surface -> the same argument mirrored.
+//
+// So the baseline is genuinely near zero rather than "some number that must not
+// grow", and it no longer moves with how many apps happen to be installed.
+static bool probe_sideways(ZView root, ZView n) {
+    if (n->x < root->x - 0.5f) {
+        return true;
+    }
+    if (n->x >= root->x + root->w - 0.5f) {
+        return false;           // begins beyond the edge: another page, not an escape
+    }
+    return n->x + n->w > root->x + root->w + 0.5f;
+}
+
 // THE THIRD COUNTER (P51), and it is on the same line as the other two because a
 // counter nobody reads is worth nothing.
 //
@@ -1022,11 +1064,11 @@ static bool probe_off_surface(ZView root, ZView n) {
 // does not scroll sideways, and there is no way to tell those two apart from a
 // static frame.
 //
-// So this number is read the way P50's `worst` is read: not "is it zero" but
-// "does it GROW WHEN THE TEXT DOES". A surface with a carousel reports the same
-// fourteen at every text size; a row whose control walked off the edge reports
-// more than it did at the default. The test boots both ends and compares
-// (test_text_size_overflow_sim.sh).
+// The test still boots both ends and compares (test_text_size_overflow_sim.sh),
+// because a delta is the safer reading. But the number itself no longer counts a
+// carousel's other pages at all — see probe_sideways above, and the P53 note
+// there about why "a surface with a carousel reports the same fourteen at every
+// text size" was an observation about the installed app set rather than a rule.
 typedef struct ProbeCount {
     int taps, texts, over, tall, off;
     int sideways;       // nodes that left the surface HORIZONTALLY (taps + text)
@@ -1054,7 +1096,7 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
         // A TAPPABLE counts here as well as a Text, and it is the case the
         // counter was added for: the control that walked off the edge carries no
         // string of its own worth measuring, and it is the one you cannot press.
-        if (probe_off_x(root, n)) {
+        if (probe_sideways(root, n)) {
             c->sideways++;
         }
     }
@@ -1135,7 +1177,7 @@ static void probe_dump_walk(ZView root, ZView n, ProbeCount *c) {
         if (out) {
             c->off++;
         }
-        if (probe_off_x(root, n)) {
+        if (probe_sideways(root, n)) {
             c->sideways++;
         }
     }
@@ -3965,7 +4007,8 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
     }
     if (strcmp(op, "notify_show") == 0 && app->notify_show_cb) {
         char id[24] = {0}, app_id[96] = {0}, title[128] = {0}, body[192] = {0},
-             tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0};
+             tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0},
+             image[256] = {0};
         ctrl_json_get(line, "id", id, sizeof(id));
         ctrl_json_get(line, "app_id", app_id, sizeof(app_id));
         ctrl_json_get(line, "title", title, sizeof(title));
@@ -3973,6 +4016,7 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
         ctrl_json_get(line, "tap_route", tap_route, sizeof(tap_route));
         ctrl_json_get(line, "action_id", action_id, sizeof(action_id));
         ctrl_json_get(line, "action_title", action_title, sizeof(action_title));
+        ctrl_json_get(line, "image", image, sizeof(image));
         ZShownNotification n = {
             .id = (int64_t)atoll(id),
             .app_id = app_id,
@@ -3981,6 +4025,7 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
             .tap_route = tap_route,
             .action_id = action_id,
             .action_title = action_title,
+            .image = image,
         };
         app->notify_show_cb(app, &n, app->notify_sink_ud);
         z_invalidate(app);
@@ -4153,6 +4198,7 @@ struct ZNotification {
     char tap_route[256];
     char action_id[64];
     char action_title[64];
+    char image[256];
 };
 
 ZNotification *z_notify_new(const char *title, const char *body) {
@@ -4174,6 +4220,12 @@ void z_notify_set_channel(ZNotification *n, const char *channel_id) {
 void z_notify_set_tap_route(ZNotification *n, const char *url) {
     if (n && url) {
         snprintf(n->tap_route, sizeof(n->tap_route), "%s", url);
+    }
+}
+
+void z_notify_set_image(ZNotification *n, const char *path) {
+    if (n && path) {
+        snprintf(n->image, sizeof(n->image), "%s", path);
     }
 }
 
@@ -4238,9 +4290,9 @@ int64_t z_notify_post(ZNotification *n) {
             msg, sizeof(msg),
             "{\"op\":\"notify_post\",\"app_id\":\"%s\",\"title\":\"%s\","
             "\"body\":\"%s\",\"channel\":\"%s\",\"tap_route\":\"%s\","
-            "\"action_id\":\"%s\",\"action_title\":\"%s\"}\n",
+            "\"action_id\":\"%s\",\"action_title\":\"%s\",\"image\":\"%s\"}\n",
             app->app_id ? app->app_id : "", n->title, n->body, n->channel,
-            n->tap_route, n->action_id, n->action_title);
+            n->tap_route, n->action_id, n->action_title, n->image);
         if (m > 0 && m < (int)sizeof(msg) &&
             write(fd, msg, (size_t)m) == m) {
             char line[64];

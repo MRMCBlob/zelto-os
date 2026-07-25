@@ -153,6 +153,14 @@ typedef struct Notification {
     char tap_route[256];
     char action_id[64];
     char action_title[64];
+    // An IMAGE the notification is ABOUT — the thumbnail of the thing that just
+    // happened, not the poster's icon (that is resolved from app_id, as it
+    // always was). A screenshot notification showing a grey camera glyph tells
+    // you an event occurred; one showing the picture tells you WHICH. An
+    // absolute path into the photo library: the broker moves the string and
+    // never opens the file, so it stays a router rather than growing a second
+    // image pipeline.
+    char image[256];
 } Notification;
 static Notification g_notifs[MAX_NOTIFS];
 static int64_t g_next_notif_id = 1;
@@ -764,9 +772,9 @@ static void send_notify_show(int fd, const Notification *n) {
         msg, sizeof(msg),
         "{\"op\":\"notify_show\",\"id\":\"%lld\",\"app_id\":\"%s\","
         "\"title\":\"%s\",\"body\":\"%s\",\"tap_route\":\"%s\","
-        "\"action_id\":\"%s\",\"action_title\":\"%s\"}\n",
+        "\"action_id\":\"%s\",\"action_title\":\"%s\",\"image\":\"%s\"}\n",
         (long long)n->id, n->app_id, n->title, n->body, n->tap_route,
-        n->action_id, n->action_title);
+        n->action_id, n->action_title, n->image);
     if (m > 0 && m < (int)sizeof(msg)) {
         ssize_t w = write(fd, msg, (size_t)m);
         (void)w;
@@ -812,7 +820,8 @@ static void notif_drop(int64_t id) {
 // notify_show to every sink. A denial replies {"id":"-1"}.
 static void handle_notify_post(int fd, const char *line) {
     char app_id[96] = {0}, title[128] = {0}, body[192] = {0}, channel[64] = {0},
-         tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0};
+         tap_route[256] = {0}, action_id[64] = {0}, action_title[64] = {0},
+         image[256] = {0};
     json_get(line, "app_id", app_id, sizeof(app_id));
     json_get(line, "title", title, sizeof(title));
     json_get(line, "body", body, sizeof(body));
@@ -820,6 +829,7 @@ static void handle_notify_post(int fd, const char *line) {
     json_get(line, "tap_route", tap_route, sizeof(tap_route));
     json_get(line, "action_id", action_id, sizeof(action_id));
     json_get(line, "action_title", action_title, sizeof(action_title));
+    json_get(line, "image", image, sizeof(image));
 
     const char *st = app_id[0] ? decide("perm_request", app_id, "notifications")
                                : "denied";
@@ -856,6 +866,7 @@ static void handle_notify_post(int fd, const char *line) {
     snprintf(n->tap_route, sizeof(n->tap_route), "%s", tap_route);
     snprintf(n->action_id, sizeof(n->action_id), "%s", action_id);
     snprintf(n->action_title, sizeof(n->action_title), "%s", action_title);
+    snprintf(n->image, sizeof(n->image), "%s", image);
 
     char reply[64];
     int m = snprintf(reply, sizeof(reply), "{\"id\":\"%lld\"}\n",
@@ -1147,6 +1158,11 @@ static void post_system_notification(const char *title, const char *body) {
     }
     n->used = true;
     n->id = g_next_notif_id++;
+    // Clear every field this poster does not set. The slot is REUSED from a
+    // fixed pool, so anything left over is the previous occupant's — a system
+    // notification inheriting a stale image path would show a picture from an
+    // unrelated event, which is worse than showing none.
+    n->image[0] = '\0';
     snprintf(n->app_id, sizeof(n->app_id), "os.zelto.system");
     snprintf(n->title, sizeof(n->title), "%s", title);
     snprintf(n->body, sizeof(n->body), "%s", body);

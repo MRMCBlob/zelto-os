@@ -93,7 +93,15 @@ z_db_run(db, "INSERT INTO todos(text) VALUES(?)", z_args("Buy milk"));
 
 See [../api-reference/c/system.md](../api-reference/c/system.md).
 
+## Shared media
+
+Everything above is scoped to **your app**. Images the user creates are not: screenshots
+and camera stills go into one shared library that several apps write to and several read
+from, under `<data>/media/`. See [photo-library.md](photo-library.md) for where it lives,
+what a photo's identity is, and why the index is the directory rather than a database.
+
 ## Next
 
 - [networking.md](networking.md)
+- [photo-library.md](photo-library.md)
 - [../system-apis/media.md](../system-apis/media.md)

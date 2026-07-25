@@ -1218,6 +1218,57 @@ run_shot 91-increase-contrast "Increase Contrast on, at the smallest text size (
     SIM_APP=zelto-settings
 
 # ===========================================================================
+# P53 — the content pipeline: capture, the notification, the library.
+# ===========================================================================
+
+# 92 photographs THE SCREENSHOT ITSELF. The capture chord fires at 5s; what is on
+# screen at 9s is the heads-up banner carrying a thumbnail of the very frame that
+# was captured. This is the only place in the OS where a notification shows a
+# PICTURE rather than the poster's icon, and the two are deliberately both
+# present — the icon says who, the thumbnail says which.
+EXPECT='zelto-shade\|Screenshot saved' \
+run_shot 92-screenshot-banner "Screenshot saved: the heads-up banner with its thumbnail" 9 \
+    ZCOMP_SHOT_AT=5000
+
+# 93/94 are the Photos app, and 93 needs a POPULATED library while run_shot gives
+# every shot a fresh data dir on purpose (no cross-shot bleed). Taking the
+# screenshots inside the same boot does not work either: a heads-up banner has no
+# dwell timer, so three captures leave three cards sitting over the grid that is
+# meant to be the subject.
+#
+# So the library is pointed at a directory prepared here, through the same
+# $ZELTO_PHOTOS_ROOT override the tests use. WHAT IS IN THE PICTURES IS NOT THE
+# SUBJECT: this shot is about the GRID — a cell derived from the column count and
+# the spacing scale, three columns, a centre crop — and that is the same layout
+# whatever the images are. The thumbs directory gets the same files, because a
+# missing thumbnail falls back to the full image and the fallback is not what is
+# being reviewed here.
+PHOTOLIB="$TMP/photolib"
+mkdir -p "$PHOTOLIB/photos" "$PHOTOLIB/thumbs"
+pl_i=0
+for wp in "$REPO_ROOT"/resources/wallpaper/*.png; do
+    [ -f "$wp" ] || continue
+    [ "$pl_i" -ge 5 ] && break
+    # A valid library id: 13 digits of epoch-ms then a 2-digit sequence, which is
+    # what makes a reverse sort chronological (system/common/photos.h).
+    pl_id="$(printf '17849%08d-00' "$((10000000 + pl_i))")"
+    cp "$wp" "$PHOTOLIB/photos/$pl_id.png"
+    cp "$wp" "$PHOTOLIB/thumbs/$pl_id.png"
+    pl_i=$((pl_i + 1))
+done
+
+EXPECT='zelto-photos\|5 photos' \
+run_shot 93-photos-grid "Photos: the library grid (3 columns, cell derived, centre-cropped)" 8 \
+    SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB"
+
+# 94: the empty library. Worth its own frame because it is the state a new phone
+# is in, and because it is the one screen here made of PROSE — the sentence under
+# "No photos" is a WrapText, which is what the AX audit will exercise.
+EXPECT='zelto-photos\|No photos' MUSTNOT='zelto-photos\|5 photos' \
+run_shot 94-photos-empty "Photos: nothing captured yet (the empty state)" 8 \
+    SIM_APP=zelto-photos
+
+# ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)
 # ===========================================================================
 INDEX="$OUT/index.html"

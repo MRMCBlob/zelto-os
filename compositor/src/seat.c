@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -310,14 +311,86 @@ static void volume_toggle_mute(void) {
     zsysd_set_int("sys.mute", zsysd_get_int("sys.mute", 0) ? 0 : 1);
 }
 
+// --- screenshot ------------------------------------------------------------
+//
+// THE CAPTURE CHORD, and the reason its privacy guard lives HERE.
+//
+// Taking the picture is zelto-shot's job (system/shot); deciding whether one may
+// be taken is the compositor's, and the split is not arbitrary. Only zcomp knows
+// whether a modal layer surface is currently holding the screen —
+// server->focused_layer is set exactly while a layer surface holds EXCLUSIVE
+// keyboard interactivity, which is what zelto-lock does when it locks. A client
+// cannot see that, so a check inside zelto-shot would be a client applying a
+// rule to itself, which is a claim rather than a control.
+//
+// This is the SAME guard, on the same signal, as zcomp_capture_take()'s refusal
+// to photograph a window that is backgrounded under a lock screen (P42/P43). It
+// is the more serious of the two: a window snapshot leaks one app's contents to
+// the App Switcher, a screenshot of a locked phone writes the whole screen into
+// a library that anybody holding the handset can browse.
+//
+// WHAT THIS DOES NOT COVER, stated rather than implied. wlr-screencopy remains
+// bound-able by any client, so this stops the SYSTEM screenshot path and not
+// every possible capture. Closing that hole means gating the protocol itself,
+// which would also stop `grim` — and grim is how the entire shot catalogue
+// photographs the lock screen. That trade is a privacy-stage decision with a
+// harness consequence, so it is made there and not smuggled in here.
+//
+// The log line NAMES what happened for the same reason capture.c's does: "a
+// screenshot did not happen" is not assertable from an anonymous line, and this
+// guard is otherwise exactly the kind of code that is reviewed once and never
+// executed.
+#define ZELTO_SHOT_BIN "/usr/bin/zelto-shot"
+
+static void zcomp_screenshot(ZcompServer *server) {
+    if (server && server->focused_layer) {
+        wlr_log(WLR_INFO,
+                "shot: suppressed (screen held by a modal layer)");
+        return;
+    }
+    // The simulator runs uninstalled binaries out of build-host, so the path is
+    // overridable exactly like ZELTO_RECENTS_BIN / ZELTO_CONSENT_BIN.
+    const char *bin = getenv("ZELTO_SHOT_BIN");
+    if (!bin || !bin[0]) {
+        bin = ZELTO_SHOT_BIN;
+    }
+    wlr_log(WLR_INFO, "shot: capturing (%s)", bin);
+
+    // Double fork so the encoder is reparented to init and this process never
+    // owes it a wait(). The compositor's event loop installs no SIGCHLD handler,
+    // and a zombie per screenshot is a leak that only shows up after a long
+    // uptime — which is to say, never during a test.
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            setsid();
+            execlp(bin, bin, (char *)NULL);
+            _exit(127);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        waitpid(pid, NULL, 0);   // reaps the intermediate immediately
+    }
+}
+
 // Compositor-level chords, recognized before app delivery (System UI gestures):
 //   Home -> reveal the launcher;  Tab ("Switch") -> cycle foreground app;
-//   the media keys drive the volume setting (rocker HUD + bar glyph).
+//   the media keys drive the volume setting (rocker HUD + bar glyph);
+//   Print -> a screenshot into the photo library.
 // Returns true if the key was consumed and must not reach the client.
 static bool handle_chord(ZcompServer *server, xkb_keysym_t sym) {
     switch (sym) {
     case XKB_KEY_Home:
         zcomp_home(server);
+        return true;
+    // The capture chord. On a handset this is the power+volume-down combination;
+    // there is no such combination to press in the simulator or in QEMU, and a
+    // keysym is what both harnesses can actually deliver (wtype in the sim,
+    // input-send-event over QMP on the target). Naming it Print rather than
+    // inventing a modifier chord also keeps it out of the way of the text input
+    // path, which every letter key goes through.
+    case XKB_KEY_Print:
+        zcomp_screenshot(server);
         return true;
     case XKB_KEY_Tab:
         zcomp_switch(server);
@@ -646,8 +719,87 @@ static void gesture_init(ZcompServer *server) {
             g_gesture.kind == GESTURE_DRAG ? "drag" : "hold", delay);
 }
 
+// ZCOMP_SHOT_AT="ms [ms ...]" — fire the capture chord at each moment after
+// startup.
+//
+// The same shape as ZCOMP_DRAG/ZCOMP_HOLD and for the same reason: the harness
+// has no way to press a key combination, and the alternatives are worse. wtype
+// would need the keysym to survive the whole input path in a headless boot and
+// would put a second dependency between the test and its subject; driving the
+// capture by TAPPING something would be a coordinate, which is the thing this
+// project has repeatedly watched rot.
+//
+// Crucially this enters through zcomp_screenshot(), the SAME function the chord
+// calls — so the lock guard is on the path under test rather than beside it. A
+// hook that bypassed the guard would make the suppression test prove nothing,
+// which is the failure mode the ACTUATE harness shipped for four phases.
+//
+// IT TAKES A LIST, and that is what makes the privacy assertion honest. "No
+// screenshot was written while the screen was locked" passes trivially in a boot
+// that never managed to take one at all — the same trap that put three shots
+// photographing nothing into the P41 catalogue. Two moments in ONE boot, one
+// before the lock engages and one after, means the run carries its own positive
+// control: the same process, the same binaries, the same everything except the
+// lock.
+#define ZCOMP_SHOT_MAX 4
+
+static struct {
+    ZcompServer *server;
+    struct wl_event_source *timer;
+    int at_ms[ZCOMP_SHOT_MAX];
+    int count;
+    int next;
+} g_shot;
+
+static int shot_tick(void *data) {
+    (void)data;
+    zcomp_screenshot(g_shot.server);
+    g_shot.next++;
+    if (g_shot.next < g_shot.count) {
+        int delta = g_shot.at_ms[g_shot.next] - g_shot.at_ms[g_shot.next - 1];
+        wl_event_source_timer_update(g_shot.timer, delta > 0 ? delta : 1);
+    }
+    return 0;
+}
+
+static void shot_init(ZcompServer *server) {
+    const char *at = getenv("ZCOMP_SHOT_AT");
+    if (!at || !at[0]) {
+        return;
+    }
+    const char *p = at;
+    while (g_shot.count < ZCOMP_SHOT_MAX) {
+        char *end = NULL;
+        long v = strtol(p, &end, 10);
+        if (end == p) {
+            break;
+        }
+        if (v > 0) {
+            // Ascending, so the deltas above are positive. An out-of-order list
+            // is the caller's mistake and is reported rather than reordered.
+            if (g_shot.count > 0 && v <= g_shot.at_ms[g_shot.count - 1]) {
+                wlr_log(WLR_ERROR, "ZCOMP_SHOT_AT: times must ascend");
+                return;
+            }
+            g_shot.at_ms[g_shot.count++] = (int)v;
+        }
+        p = end;
+    }
+    if (g_shot.count == 0) {
+        wlr_log(WLR_ERROR, "ZCOMP_SHOT_AT: want \"ms [ms ...]\"");
+        return;
+    }
+    g_shot.server = server;
+    g_shot.timer = wl_event_loop_add_timer(
+        wl_display_get_event_loop(server->display), shot_tick, NULL);
+    wl_event_source_timer_update(g_shot.timer, g_shot.at_ms[0]);
+    wlr_log(WLR_INFO, "scripted screenshot armed (%d at +%dms...)",
+            g_shot.count, g_shot.at_ms[0]);
+}
+
 void zcomp_virtual_input_init(ZcompServer *server) {
     gesture_init(server);
+    shot_init(server);
 
     server->virtual_pointer =
         wlr_virtual_pointer_manager_v1_create(server->display);

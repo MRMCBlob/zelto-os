@@ -138,6 +138,12 @@ export ZELTO_WALLPAPER_DIR="${ZELTO_WALLPAPER_DIR:-$REPO_ROOT/resources/wallpape
 # a reliable screenshot.
 export ZELTO_FAKE_BATTERY="${ZELTO_FAKE_BATTERY:-1}"
 
+# P53 screenshots: the compositor forks the capture service by absolute path, on
+# the device /usr/bin/zelto-shot. Uninstalled here, so point it at the build-host
+# binary (the ZELTO_RECENTS_BIN / ZELTO_CONSENT_BIN idiom). Drive a capture with
+# ZCOMP_SHOT_AT="ms [ms ...]"; the photos land under $ZELTO_DATA_DIR/media.
+export ZELTO_SHOT_BIN="${ZELTO_SHOT_BIN:-$SYS/shot/zelto-shot}"
+
 # P38 sensor/location source: the host has no phone sensors, so zsysd synthesises
 # them from these ZELTO_SIM_* values (a real device port fills them from a HAL).
 # Override any of them to script a reading — e.g. ZELTO_SIM_LOCATION="48.85,2.35"
@@ -233,6 +239,7 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/store/zelto-store.app" \
          "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app" \
          "$REPO_ROOT/system/apps/sensors/zelto-sensors.app" \
+         "$REPO_ROOT/system/apps/photos/zelto-photos.app" \
          "$REPO_ROOT/samples/andemu-demo/zelto-andemu.app"; do
     [ -f "$m" ] || { echo "!! manifest missing: $m"; continue; }
     # exec= is a COMMAND (system/common/exec_cmd.h): the binary, then optional

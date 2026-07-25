@@ -122,6 +122,30 @@ wlrctl keyboard type "hi"
 grim out/after.png
 ```
 
+### Gestures and the capture chord
+
+`wlrctl` only clicks, so a gesture that has to press and hold — a drag, a long-press — is
+scripted by `zcomp` itself, through the same seat path a finger takes. The screenshot chord
+is scripted the same way, and for the same reason: there is no key combination the harness
+can press.
+
+```sh
+ZCOMP_DRAG="x0 y0 x1 y1 [ms]"   # press, glide, release (pan / swipe)
+ZCOMP_HOLD="x y [ms]"           # press, hold, release (long-press)
+ZCOMP_INPUT_DELAY=ms            # when to start (default 6500 — after the app maps)
+ZCOMP_SHOT_AT="ms [ms ...]"     # fire the capture chord at each moment
+```
+
+`ZCOMP_SHOT_AT` takes a **list** on purpose. A test asserting that no screenshot was written
+while the screen was locked also passes in a boot that never managed to take one at all, so
+two moments in one boot — one before the lock engages, one after — let the run carry its own
+positive control. It enters through the same `zcomp_screenshot()` the chord calls, so the
+lock guard is on the path under test rather than beside it.
+
+Captured photos land in `$ZELTO_DATA_DIR/media/photos` (thumbnails in `media/thumbs`), the
+shared library `system/common/photos.h` defines. `$ZELTO_PHOTOS_ROOT` overrides that root
+for a test or a shot that needs a prepared library.
+
 Both modes use the private `XDG_RUNTIME_DIR` (`/tmp/zelto-sim/xdg`) where `zcomp`'s socket
 is deterministically `wayland-0` — point `grim`/`wlrctl` at that dir + socket. The note
 field lands near `(360, y)` on the default 720×1440 portrait output; retune taps to your

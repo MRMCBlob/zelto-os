@@ -150,6 +150,7 @@ typedef struct Banner {
     char tap_route[256];
     char action_id[64];
     char action_title[64];
+    char image[256];        // a picture the notification is ABOUT (may be empty)
 } Banner;
 
 typedef struct ShadeState {
@@ -312,6 +313,7 @@ static void on_show(ZApp *app, const ZShownNotification *n, void *ud) {
              n->tap_route ? n->tap_route : "");
     snprintf(b->action_id, sizeof(b->action_id), "%s",
              n->action_id ? n->action_id : "");
+    snprintf(b->image, sizeof(b->image), "%s", n->image ? n->image : "");
     snprintf(b->action_title, sizeof(b->action_title), "%s",
              n->action_title ? n->action_title : "");
 }
@@ -394,7 +396,8 @@ static ZView notif_card(ZApp *app, float card_w, Banner *b, bool interactive) {
                                     Font(Z_FONT_SUBHEAD,
                                         Text("%s", b->action_title)))))))));
     }
-    ZView card = zelto_notif_card(app, card_w, b->app_id, b->title, b->body,
+    ZView card = zelto_notif_card_img(app, card_w, b->app_id, b->title, b->body,
+                                      b->image,
                                   action, interactive);
     return interactive ? OnTapData(tap_body, b, card) : card;
 }

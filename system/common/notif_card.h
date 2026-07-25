@@ -37,16 +37,38 @@
 // different action labels used to have their text end in different places.
 #define ZELTO_NOTIF_ACTION_W 120.0f
 
+// AN ATTACHED IMAGE: a square at the card's trailing edge showing the thing the
+// notification is ABOUT (a screenshot's own picture), as distinct from the
+// poster's icon at the leading edge, which says WHO. A row-height square, because
+// that is what this object is — one row's worth of content at the end of a row —
+// and because deriving it from Z_ROW_H means it tracks the one metric in the OS
+// that already answers "how tall is a thing you look at and tap".
+#define ZELTO_NOTIF_IMAGE ((float)Z_ROW_H)
+
 // The width of the card's text column — the value to hand WrapText. The caller
 // knows the CARD's width (it framed it); this turns that into the column, so the
 // arithmetic lives next to the layout it describes instead of at each call site.
-static inline float zelto_notif_text_w(float card_w, bool has_trailing) {
+//
+// EVERY OCCUPANT OF THE ROW MUST BE SUBTRACTED HERE. WrapText is told its column
+// at BUILD time and Text neither wraps nor truncates, so a trailing element the
+// column does not know about does not squeeze the prose — it makes the prose run
+// underneath it. That is invisible in a frame dump and shows up as a title with
+// a thumbnail sitting on top of its last word.
+static inline float zelto_notif_text_w_full(float card_w, bool has_trailing,
+                                            bool has_image) {
     float w = card_w - 2.0f * ZELTO_NOTIF_PAD - ZELTO_NOTIF_ICON
               - ZELTO_NOTIF_GAP;
     if (has_trailing) {
         w -= ZELTO_NOTIF_ACTION_W + ZELTO_NOTIF_GAP;
     }
+    if (has_image) {
+        w -= ZELTO_NOTIF_IMAGE + ZELTO_NOTIF_GAP;
+    }
     return w > 40.0f ? w : 40.0f;
+}
+
+static inline float zelto_notif_text_w(float card_w, bool has_trailing) {
+    return zelto_notif_text_w_full(card_w, has_trailing, false);
 }
 
 // One notification card. `app_id` resolves to the poster's icon + display name
@@ -58,10 +80,13 @@ static inline float zelto_notif_text_w(float card_w, bool has_trailing) {
 // until P45 they were plain Text nodes, which measure to a single line and run
 // straight off the right edge of the card. Nothing clipped them, nothing warned,
 // and the failure needed only a notification with a normal sentence in it.
-static inline ZView zelto_notif_card(ZApp *app, float card_w,
-                                     const char *app_id, const char *title,
-                                     const char *body, ZView trailing,
-                                     bool interactive) {
+// The full form: `image` (may be NULL or "") is an absolute path to a picture the
+// notification is about. zelto_notif_card below is this with no image, so every
+// existing caller keeps its signature.
+static inline ZView zelto_notif_card_img(ZApp *app, float card_w,
+                                         const char *app_id, const char *title,
+                                         const char *body, const char *image,
+                                         ZView trailing, bool interactive) {
     // The posting app's icon (resolved from app_id via its manifest, like
     // Recents), falling back to the shared Placeholder if it has none or it will
     // not load. App icons are square, so a plain aspect-fit Image is right here.
@@ -84,7 +109,11 @@ static inline ZView zelto_notif_card(ZApp *app, float card_w,
     ZColor ink = interactive ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED;
     ZColor bg = interactive ? Z_COLOR_MATERIAL_THICK : Z_COLOR_MATERIAL_REGULAR;
 
-    float tw = zelto_notif_text_w(card_w, trailing != NULL);
+    // Probe the attachment before reserving room for it: a path that will not
+    // decode must not carve a hole out of the text column. z_image_loads caches,
+    // so asking on every build is cheap.
+    bool has_image = (image && image[0] && z_image_loads(image));
+    float tw = zelto_notif_text_w_full(card_w, trailing != NULL, has_image);
 
     ZStackOpts row = {.padding = ZELTO_NOTIF_PAD, .spacing = ZELTO_NOTIF_GAP,
                       .align = Z_ALIGN_CENTER};
@@ -105,6 +134,16 @@ static inline ZView zelto_notif_card(ZApp *app, float card_w,
             Foreground(ink,
                 WrapText(app, body, .width = tw, .size = Z_FONT_SUBHEAD)),
             .spacing = Z_SPACE_2XS, .align = Z_ALIGN_LEADING));
+    if (has_image) {
+        // Cover, not fit: a screenshot is 1:2 and a letterboxed 1:2 image inside
+        // a square would be a sliver with two bars. The centre crop is what iOS
+        // shows and is what makes the tile read as a picture.
+        // The corner is CONCENTRIC with the card's — the container's radius less
+        // the inset between them — not a second constant chosen to look right.
+        row.children[k++] = Frame(ZELTO_NOTIF_IMAGE, ZELTO_NOTIF_IMAGE,
+            CornerRadius(Z_RADIUS_NESTED(Z_RADIUS_CARD, ZELTO_NOTIF_PAD),
+                Cover(Image(image))));
+    }
     if (trailing) {
         row.children[k++] = trailing;
     }
@@ -112,6 +151,14 @@ static inline ZView zelto_notif_card(ZApp *app, float card_w,
     return Shadow(interactive ? Z_ELEV_2 : Z_ELEV_1,
         Background(bg,
             CornerRadius(Z_RADIUS_CARD, z_stack(Z_AXIS_HORIZONTAL, &row))));
+}
+
+static inline ZView zelto_notif_card(ZApp *app, float card_w,
+                                     const char *app_id, const char *title,
+                                     const char *body, ZView trailing,
+                                     bool interactive) {
+    return zelto_notif_card_img(app, card_w, app_id, title, body, NULL,
+                                trailing, interactive);
 }
 
 #endif  // ZELTO_SYSTEM_COMMON_NOTIF_CARD_H

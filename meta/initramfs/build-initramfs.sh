@@ -65,6 +65,12 @@ VOLAPP="${VOLAPP:-$REPO_ROOT/build-arm64/system/volume/zelto-volume}"
 # (the LOCK/LOCKAPP trap from P20), leaving zelto-keyboard uninstalled.
 KBDAPP="${KBDAPP:-$REPO_ROOT/build-arm64/system/keyboard/zelto-keyboard}"
 PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
+# P53 content pipeline: the screenshot service (forked by the compositor on the
+# capture chord; writes a PNG into the shared photo library) and the Photos app
+# that browses it. SHOTAPP, not SHOT — a bare $SHOT would be a harness selector
+# in the same family as LOCK/VOLUME/KBD (the P20 trap).
+SHOTAPP="${SHOTAPP:-$REPO_ROOT/build-arm64/system/shot/zelto-shot}"
+PHOTOS="${PHOTOS:-$REPO_ROOT/build-arm64/system/apps/photos/zelto-photos}"
 # P11 persistent storage: the Notepad demo (prefs + SQLite on the virtio-blk disk).
 NOTEPAD="${NOTEPAD:-$REPO_ROOT/build-arm64/system/apps/notepad/zelto-notepad}"
 # P18 brokered settings: the Settings app (reads/writes the zsysd settings store,
@@ -159,6 +165,8 @@ install_bin "$LOCKAPP"  zelto-lock       # idle/lock lifecycle overlay (P20)
 install_bin "$VOLAPP"   zelto-volume     # volume-rocker HUD overlay (P23)
 install_bin "$KBDAPP"   zelto-keyboard   # on-screen keyboard (P21, layer-shell + input-method)
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
+install_bin "$SHOTAPP"  zelto-shot       # screenshot service (P53; forked by zcomp)
+install_bin "$PHOTOS"   zelto-photos     # photo library browser (P53)
 install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
 install_bin "$SETTINGS_APP" zelto-settings # brokered-settings demo app ("Settings")
 install_bin "$FETCH"    zelto-fetch      # networking demo app ("Fetch")
@@ -186,7 +194,9 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/settings/zelto-settings.app" \
          "$REPO_ROOT/system/apps/fetch/zelto-fetch.app" \
          "$REPO_ROOT/system/apps/store/zelto-store.app" \
-         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app"; do
+         "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app" \
+         "$REPO_ROOT/system/apps/sensors/zelto-sensors.app" \
+         "$REPO_ROOT/system/apps/photos/zelto-photos.app"; do
     if [ -f "$m" ]; then
         echo "    manifest: $(basename "$m")"
         cp "$m" "$ROOT/usr/share/zelto/apps/"

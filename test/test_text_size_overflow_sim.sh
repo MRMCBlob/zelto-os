@@ -75,7 +75,18 @@ if ! command -v grim >/dev/null 2>&1; then
 fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/zelto-tsoverflow.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+# KEEP THE LOGS WHEN IT FAILS. Every failure message here ends with "see $log",
+# and this trap used to delete that file unconditionally — so the evidence a
+# failure pointed at was guaranteed to be gone before anyone could read it. This
+# test's whole output is a DELTA between two boots' probe dumps, which is to say
+# the logs ARE the finding; without them a failure says only that a number moved.
+# (P52 fixed exactly this in test_capture_lock_suppression and the same defect
+# was still sitting here. Found by a real failure that could not be diagnosed.)
+# The notice goes to STDERR: run-tests.sh reproduces only the ZT_FAIL protocol
+# lines from stdout, so a plain echo would be swallowed by the harness meant to
+# show it.
+trap '[ "${ZT_FAILURES:-0}" -eq 0 ] && rm -rf "$TMP" \
+      || echo "kept the probe dumps for diagnosis: $TMP" >&2' EXIT
 
 # Every boot is at the TOP of the range. There is no point auditing the middle:
 # the ladder is monotonic, so the largest size is the worst case for every box in
@@ -206,6 +217,35 @@ audit "the Accessibility screen" accessibility os.zelto.settings 8 8 \
 
 # --- an app whose prose is not its own ---------------------------------------
 audit "Fetch" fetch os.zelto.fetch 8 5 SIM_APP=zelto-fetch
+
+# --- the photo grid ----------------------------------------------------------
+# P53's new surface, and "the image scales" is not an answer for it: the cell is
+# derived from the column count and the spacing scale, neither of which moves
+# with the text size, so everything AROUND the pictures — the title, the count —
+# has to survive a size the grid does not. Audited with a populated library,
+# because an empty one is a different screen (see below) and would leave the grid
+# itself unexercised.
+PHOTOLIB="$TMP/photolib"
+mkdir -p "$PHOTOLIB/photos" "$PHOTOLIB/thumbs"
+pl_i=0
+for wp in "$REPO_ROOT"/resources/wallpaper/*.png; do
+    [ -f "$wp" ] || continue
+    [ "$pl_i" -ge 5 ] && break
+    pl_id="$(printf '17849%08d-00' "$((10000000 + pl_i))")"
+    cp "$wp" "$PHOTOLIB/photos/$pl_id.png"
+    cp "$wp" "$PHOTOLIB/thumbs/$pl_id.png"
+    pl_i=$((pl_i + 1))
+done
+audit "the photo grid" photos os.zelto.photos 8 2 \
+    SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB"
+
+# --- the empty photo library -------------------------------------------------
+# The state a new phone is in, and the one screen in this app made of PROSE. A
+# Text neither wraps nor truncates, so the sentence under "No photos" is a
+# WrapText — and a WrapText is handed its column at BUILD time, which is where
+# this kind of thing goes wrong.
+audit "the empty photo library" photos-empty os.zelto.photos 8 2 \
+    SIM_APP=zelto-photos
 
 # --- the SDK's own List sample -----------------------------------------------
 # Not a system surface, and in for a reason: it is what an APP DEVELOPER copies.

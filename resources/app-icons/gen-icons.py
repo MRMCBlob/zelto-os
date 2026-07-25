@@ -367,6 +367,37 @@ def sensors_icon():
     return buf
 
 
+def photos_icon():
+    # A photograph: a white frame holding a sun and two hills — the mark every
+    # gallery in the world uses, because it is the only one that reads at 104
+    # units without a caption.
+    #
+    # Composed like notepad's page rather than like a line icon: the frame is a
+    # solid white rrect and the SCENE INSIDE IT IS KNOCKED OUT IN THE TILE'S OWN
+    # HUE. That is what keeps it legible at icon size — hills drawn as white
+    # strokes on a white frame would merge into one blob, and a mid-tone would
+    # introduce a third colour the family does not have.
+    buf = tile(hexrgb("#D89BFF"), hexrgb("#8B3FD6"))
+    rrect(buf, 116, 132, 280, 248, 34, W, 0.97)
+    knock = hexrgb("#A85FE0")            # between the two tile stops
+    # The sun, up in the frame's left third.
+    disc(buf, 188, 202, 30, knock)
+    # Two hills, built from overlapping capsules so their slopes share the
+    # frame's bottom edge — a capsule's round cap IS the hill's shoulder, so no
+    # polygon primitive is needed and the join stays anti-aliased.
+    capsule(buf, 168, 356, 250, 268, 34, knock)   # the near hill
+    capsule(buf, 250, 268, 330, 356, 34, knock)
+    # Two capsules meeting at an apex leave a wedge of frame showing between
+    # their lower flanks; this fills the hill's base so the silhouette is solid.
+    capsule(buf, 200, 348, 300, 348, 34, knock)
+    capsule(buf, 268, 356, 322, 292, 26, knock)   # the far hill, behind the ridge
+    capsule(buf, 322, 292, 372, 356, 26, knock)
+    # The frame's bottom band, redrawn over the hills so they sit ON it rather
+    # than spilling past the frame's rounded corner.
+    rrect(buf, 116, 356, 280, 24, 12, W, 0.97)
+    return buf
+
+
 def andemu_icon():
     # The andemu route: an Android app running on Zelto. The bugdroid head — a domed
     # top with a flat bottom, two antennae, two eyes — on the canonical Android
@@ -417,6 +448,7 @@ ICONS = {
     "os.zelto.app": rows_icon,          # samples/hello, shown as "Rows"
     "os.zelto.share": share_icon,
     "os.zelto.sensors": sensors_icon,          # the P38 native sensor/location app
+    "os.zelto.photos": photos_icon,            # the P53 photo library
     "os.zelto.andemu.demo": andemu_icon,       # the andemu Android-compat demo
     "Placeholder": placeholder_icon,
 }
