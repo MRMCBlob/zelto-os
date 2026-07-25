@@ -285,6 +285,13 @@ void z_net_handle_ready(struct pollfd *pfds, int count);
 // subscriptions ride it), so the loop hosts a single fd. z_sensor_poll_fd is that
 // fd (or -1 when no stream is open); z_sensor_handle_ready reads and dispatches
 // whatever samples arrived. See sensors.c.
+// --- Camera loop integration (camera.c) ------------------------------------
+// The preview has no fd to wait on — frames are generated locally — so the loop
+// bounds its sleep by the next frame's deadline and pumps once per iteration.
+void   z_camera_pump(ZApp *app);
+double z_camera_next_deadline(void);   // monotonic s, or < 0 when idle
+void   z_camera_set_paused(bool paused);
+
 int z_sensor_poll_fd(void);
 void z_sensor_handle_ready(void);
 // Foreground gate: pause every sensor/location stream at the broker while the app

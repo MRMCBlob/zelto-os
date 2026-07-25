@@ -1382,6 +1382,11 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
         // when-in-use: pause this app's sensor/GPS streams while it is backgrounded
         // (battery + privacy), resume them on return. No-op if it opened none.
         z_sensor_set_paused(!active);
+        // The camera follows the same rule, and here it is the whole privacy
+        // story rather than a battery one: a preview that keeps running after
+        // you leave the app is exactly what an in-use indicator exists to make
+        // impossible.
+        z_camera_set_paused(!active);
         if (app->lifecycle) {
             app->lifecycle(app, app->state,
                            active ? Z_LC_ACTIVE : Z_LC_INACTIVE);
@@ -3219,6 +3224,16 @@ static int app_run(ZApp *app) {
                 timeout = pt;
             }
         }
+        // A live camera preview has no fd to wait on — the frames are generated
+        // locally — so its next deadline bounds the sleep exactly like the tick.
+        double cam_due = z_camera_next_deadline();
+        if (cam_due >= 0.0) {
+            double remain = cam_due - z_now_seconds();
+            int ct = remain <= 0.0 ? 0 : (int)(remain * 1000.0) + 1;
+            if (timeout < 0 || ct < timeout) {
+                timeout = ct;
+            }
+        }
         // The repeating widget tick bounds the wait the same way (a clock beat).
         if (app->tick_armed) {
             double remain = app->tick_deadline - z_now_seconds();
@@ -3268,6 +3283,8 @@ static int app_run(ZApp *app) {
             (pfds[sensor_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
             z_sensor_handle_ready();
         }
+        // Generate the next camera frame if one is due.
+        z_camera_pump(app);
         // Drive any ready HTTP/WebSocket sockets (callbacks fire from here).
         if (net_n > 0) {
             z_net_handle_ready(&pfds[net_slot], net_n);

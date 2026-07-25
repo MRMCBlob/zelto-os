@@ -164,6 +164,38 @@ typedef struct Notification {
 } Notification;
 static Notification g_notifs[MAX_NOTIFS];
 static int64_t g_next_notif_id = 1;
+// --- camera in-use (P53) ---------------------------------------------------
+// Who currently has the camera streaming. A SET keyed by app_id, not a counter:
+// an app that opens twice (a resume after a background pause is an open) must
+// not be able to hold the indicator on by never balancing its closes, and a
+// crash that skips the close is cleaned up when its connection drops.
+#define MAX_CAMERA_USERS 8
+static char g_camera_users[MAX_CAMERA_USERS][96];
+static int g_n_camera_users;
+
+static void camera_use_set(const char *app_id, bool streaming) {
+    if (!app_id || !app_id[0]) {
+        return;
+    }
+    for (int i = 0; i < g_n_camera_users; i++) {
+        if (strcmp(g_camera_users[i], app_id) == 0) {
+            if (!streaming) {
+                g_camera_users[i][0] = '\0';
+                for (int j = i; j < g_n_camera_users - 1; j++) {
+                    snprintf(g_camera_users[j], sizeof(g_camera_users[j]), "%s",
+                             g_camera_users[j + 1]);
+                }
+                g_n_camera_users--;
+            }
+            return;                     // already present: opening again is a no-op
+        }
+    }
+    if (streaming && g_n_camera_users < MAX_CAMERA_USERS) {
+        snprintf(g_camera_users[g_n_camera_users], 96, "%s", app_id);
+        g_n_camera_users++;
+    }
+}
+
 static int g_sink_fds[MAX_CLIENTS];   // ctrl fds of the subscribed sinks
 static int g_n_sinks;
 
@@ -1723,6 +1755,38 @@ static void handle_line(int slot, int fd, char *line) {
         settings_subscribe_fd(fd);
         fprintf(stderr, "[zsysd] settings observer subscribed (slot %d, %d total)\n",
                 slot, g_n_settings_subs);
+        return;
+    }
+
+    // --- camera in-use (P53) ---------------------------------------------
+    // The broker does NOT carry camera frames — a frame is megabytes and the
+    // kernel arbitrates the device per-process on a real port. What it carries
+    // is WHO IS STREAMING, which is the fact a system in-use indicator has to
+    // be built on: the app being indicated neither draws the indicator nor is
+    // asked whether it consents to it.
+    //
+    // The grant is re-checked here rather than trusted from the client, so an
+    // app cannot open a stream by simply not asking. `perm_status` (not
+    // `perm_request`) because this must never raise a second consent dialog —
+    // the user already answered, and a prompt at stream-open would be a prompt
+    // the app could trigger at will.
+    if (strcmp(op, "camera_open") == 0 || strcmp(op, "camera_close") == 0) {
+        char capp[96] = {0};
+        json_get(line, "app_id", capp, sizeof(capp));
+        bool opening = (strcmp(op, "camera_open") == 0);
+        if (opening) {
+            const char *st = capp[0] ? decide("perm_status", capp, "camera")
+                                     : "denied";
+            if (strcmp(st, "granted") != 0) {
+                fprintf(stderr, "[zsysd] camera REFUSED app=%s (%s)\n",
+                        capp[0] ? capp : "?", st);
+                return;
+            }
+        }
+        camera_use_set(capp, opening);
+        fprintf(stderr, "[zsysd] camera %s app=%s (%d in use)\n",
+                opening ? "OPEN" : "CLOSE", capp[0] ? capp : "?",
+                g_n_camera_users);
         return;
     }
 

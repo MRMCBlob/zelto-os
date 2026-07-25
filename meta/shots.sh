@@ -1284,6 +1284,16 @@ run_shot 96-photos-delete "Photos: the delete confirmation (the only irreversibl
     SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB" ZELTO_PHOTOS_VIEW=1 \
     ZELTO_TAP_LABEL=Delete ZELTO_TAP_APP=os.zelto.photos ZELTO_TAP_AT=9000
 
+# 97: the camera. The preview is a COLOUR-BAR TEST SIGNAL and that is
+# deliberate — there is no camera in the simulator, so the source is synthetic
+# (sdk/src/camera.c), and an honest fake should look unmistakably like a test
+# pattern rather than like a photograph the OS took of something.
+EXPECT='zelto-camera\|Camera' run_shot 97-camera "Camera: the live preview and its shutter" 10     SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/true
+
+# 98: the same screen with the permission REFUSED. The state an app has to
+# handle gracefully and the one nobody photographs.
+EXPECT='zelto-camera\|Camera access denied' run_shot 98-camera-denied "Camera: permission denied (no stream is opened)" 10     SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/false
+
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)
 # ===========================================================================

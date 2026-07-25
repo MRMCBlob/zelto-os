@@ -54,6 +54,7 @@ libzelto = static_library(
     'src/storage.c',
     'src/net.c',
     'src/sensors.c',
+    'src/camera.c',
   ),
   sdk_protocol_src,
   include_directories : [zelto_inc, include_directories('src', 'protocols')],

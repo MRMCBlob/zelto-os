@@ -248,6 +248,13 @@ audit "the photo viewer" photos-viewer os.zelto.photos 12 4 \
     SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB" ZELTO_PHOTOS_VIEW=1 \
     ZELTO_TAP_LABEL=Delete ZELTO_TAP_APP=os.zelto.photos ZELTO_TAP_AT=9000
 
+# --- the camera ---------------------------------------------------------------
+# A viewfinder is mostly picture, which is exactly why the labels around it are
+# easy to forget: a status line and a shutter under a pane whose height is a
+# fixed ratio of the column, so the text has to fit what is left rather than
+# push the pane off the screen.
+audit "the camera" camera os.zelto.camera 10 2     SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/true
+
 # --- the empty photo library -------------------------------------------------
 # The state a new phone is in, and the one screen in this app made of PROSE. A
 # Text neither wraps nor truncates, so the sentence under "No photos" is a

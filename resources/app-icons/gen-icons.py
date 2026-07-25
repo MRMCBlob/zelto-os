@@ -367,6 +367,21 @@ def sensors_icon():
     return buf
 
 
+def camera_icon():
+    # A camera: a body with a lens and a viewfinder bump. The lens is a ring with
+    # a bright core rather than a filled disc, because a solid circle at icon size
+    # reads as a button; the ring reads as glass.
+    buf = tile(hexrgb("#6FB4F0"), hexrgb("#2A6BB8"))
+    rrect(buf, 96, 176, 320, 224, 40, W, 0.97)          # the body
+    rrect(buf, 188, 140, 108, 48, 18, W, 0.97)          # the viewfinder bump
+    knock = hexrgb("#3E82C9")
+    disc(buf, 256, 288, 84, knock)                       # the lens well
+    ring(buf, 256, 288, 66, 20, W, 0.95)                 # the lens ring
+    disc(buf, 256, 288, 30, W, 0.9)                      # the bright core
+    disc(buf, 356, 214, 14, knock)                       # the flash
+    return buf
+
+
 def photos_icon():
     # A photograph: a white frame holding a sun and two hills — the mark every
     # gallery in the world uses, because it is the only one that reads at 104
@@ -449,6 +464,7 @@ ICONS = {
     "os.zelto.share": share_icon,
     "os.zelto.sensors": sensors_icon,          # the P38 native sensor/location app
     "os.zelto.photos": photos_icon,            # the P53 photo library
+    "os.zelto.camera": camera_icon,            # the P53 capture app
     "os.zelto.andemu.demo": andemu_icon,       # the andemu Android-compat demo
     "Placeholder": placeholder_icon,
 }

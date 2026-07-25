@@ -240,6 +240,7 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app" \
          "$REPO_ROOT/system/apps/sensors/zelto-sensors.app" \
          "$REPO_ROOT/system/apps/photos/zelto-photos.app" \
+         "$REPO_ROOT/system/apps/camera/zelto-camera.app" \
          "$REPO_ROOT/samples/andemu-demo/zelto-andemu.app"; do
     [ -f "$m" ] || { echo "!! manifest missing: $m"; continue; }
     # exec= is a COMMAND (system/common/exec_cmd.h): the binary, then optional

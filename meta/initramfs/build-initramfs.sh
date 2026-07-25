@@ -71,6 +71,7 @@ PINGER="${PINGER:-$REPO_ROOT/build-arm64/system/apps/pinger/zelto-pinger}"
 # in the same family as LOCK/VOLUME/KBD (the P20 trap).
 SHOTAPP="${SHOTAPP:-$REPO_ROOT/build-arm64/system/shot/zelto-shot}"
 PHOTOS="${PHOTOS:-$REPO_ROOT/build-arm64/system/apps/photos/zelto-photos}"
+CAMERA="${CAMERA:-$REPO_ROOT/build-arm64/system/apps/camera/zelto-camera}"
 # P11 persistent storage: the Notepad demo (prefs + SQLite on the virtio-blk disk).
 NOTEPAD="${NOTEPAD:-$REPO_ROOT/build-arm64/system/apps/notepad/zelto-notepad}"
 # P18 brokered settings: the Settings app (reads/writes the zsysd settings store,
@@ -167,6 +168,7 @@ install_bin "$KBDAPP"   zelto-keyboard   # on-screen keyboard (P21, layer-shell 
 install_bin "$PINGER"   zelto-pinger     # notification-source demo app ("Pinger")
 install_bin "$SHOTAPP"  zelto-shot       # screenshot service (P53; forked by zcomp)
 install_bin "$PHOTOS"   zelto-photos     # photo library browser (P53)
+install_bin "$CAMERA"   zelto-camera     # camera capture app (P53)
 install_bin "$NOTEPAD"  zelto-notepad    # persistent-storage demo app ("Notepad")
 install_bin "$SETTINGS_APP" zelto-settings # brokered-settings demo app ("Settings")
 install_bin "$FETCH"    zelto-fetch      # networking demo app ("Fetch")
@@ -196,7 +198,8 @@ for m in "$REPO_ROOT/samples/hello/zelto-hello.app" \
          "$REPO_ROOT/system/apps/store/zelto-store.app" \
          "$REPO_ROOT/system/apps/jsdemo/zelto-jsdemo.app" \
          "$REPO_ROOT/system/apps/sensors/zelto-sensors.app" \
-         "$REPO_ROOT/system/apps/photos/zelto-photos.app"; do
+         "$REPO_ROOT/system/apps/photos/zelto-photos.app" \
+         "$REPO_ROOT/system/apps/camera/zelto-camera.app"; do
     if [ -f "$m" ]; then
         echo "    manifest: $(basename "$m")"
         cp "$m" "$ROOT/usr/share/zelto/apps/"

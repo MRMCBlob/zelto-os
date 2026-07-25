@@ -2116,6 +2116,54 @@ const ZTask *z_running_apps(ZApp *app, int *count);
 void z_task_activate(ZApp *app, const ZTask *task);
 void z_task_close(ZApp *app, const ZTask *task);
 
+// ---------------------------------------------------------------------------
+// Camera (P53).
+//
+// A live preview stream and the still a shutter keeps. Shaped like the sensor
+// route (P38/P39) on purpose: the app asks for the `camera` permission through
+// the ordinary consent flow, opens a stream at a rate, and receives frames on
+// the app loop. Backgrounding STOPS the stream — the privacy rule, not a power
+// optimisation — and the broker records who is streaming so a system in-use
+// indicator cannot be forged or suppressed by the app being indicated.
+//
+// WHERE THE PIXELS COME FROM. There is no camera in the simulator or in QEMU, so
+// the shipped source is SYNTHETIC, generated behind one seam
+// (camera_source_fill in sdk/src/camera.c) that a device port replaces with a
+// V4L2 or HAL read. The frames carry their own sequence number in the top-left
+// pixel so that a capture can be PROVEN to have kept the frame that was live
+// rather than a stale one — read the header of camera.c for the full decision
+// and, more importantly, for what this does and does not verify.
+typedef struct ZCameraFrame {
+    const char *key;     // pass straight to Image() / Cover()
+    int w, h;
+    int64_t seq;         // frame number since the stream opened
+} ZCameraFrame;
+
+typedef void (*ZCameraCb)(ZApp *app, const ZCameraFrame *f, void *ud);
+
+// Open the preview at `fps` (clamped 1..30). Returns a handle, or -1. Request
+// the `camera` permission FIRST (z_perm_request) — the broker re-checks the
+// grant here and refuses a stream the user never allowed.
+int  z_camera_open(ZApp *app, int fps, ZCameraCb cb, void *ud);
+void z_camera_close(int handle);
+
+// True when this build has a camera source at all. A caller must still cope with
+// z_camera_preview_key() returning NULL until the first frame lands.
+bool z_camera_available(void);
+
+// The image key for the CURRENT frame, or NULL before the first one arrives (and
+// while the stream is paused). Draw it like any other image:
+//   const char *k = z_camera_preview_key();
+//   ZView v = k ? Cover(Image(k)) : Rect(.color = Z_COLOR_SURFACE);
+const char *z_camera_preview_key(void);
+
+// The live frame's PIXELS, for a caller that wants to keep it — straight-alpha
+// ARGB8888, `*w` by `*h`, stride = *w * 4, valid until the next frame. Returns
+// NULL when nothing is streaming. This is what a shutter hands to
+// zelto_photo_store(); the library convention lives in system/common/photos.h,
+// deliberately not in the SDK.
+const uint32_t *z_camera_frame_pixels(int *w, int *h, int64_t *seq);
+
 // A picture of a running app's WINDOW, as it looked when it was last on screen.
 //
 // Returns a key to pass straight to Image() / Cover(), or NULL when no picture
