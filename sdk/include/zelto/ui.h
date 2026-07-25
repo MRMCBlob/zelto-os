@@ -610,6 +610,36 @@ bool z_image_loads(const char *path);
 //   Frame(w, h, CornerRadius(r, Cover(Image(path))))
 ZView Cover(ZView view);
 
+// Write an ARGB8888 image to `path` as a PNG — the encode half of the image
+// module, and the primitive every piece of user-created content in the OS goes
+// through (a screenshot, a camera still). Until P53 libpng was linked for decode
+// only: the system could show a picture and could not make one.
+//
+// `stride` is the source's BYTES PER ROW (not pixels), so a sub-rect of a larger
+// buffer can be written without a copy. `premultiplied` says which convention the
+// caller's pixels use, and there is no default because a wrong answer is
+// invisible on an opaque image and wrong only where alpha < 255 — it would ship
+// looking correct. libzelto's own canvas and decoded bitmaps are PREMULTIPLIED;
+// a wl_shm client buffer and a wlr-screencopy frame are STRAIGHT.
+//
+// Writes RGB when every pixel is opaque and RGBA otherwise (measured, not a
+// flag). The file appears atomically — written to a sibling and renamed — because
+// another process enumerates the directory while this one writes into it, and
+// image.c CACHES a failed decode, so a torn read would leave a permanently blank
+// tile.
+bool z_image_write_png(const char *path, const void *pixels, int w, int h,
+                       size_t stride, bool premultiplied);
+
+// Box-downscale an ARGB8888 image to dw x dh, returning a freshly allocated
+// dw*dh buffer in the SAME alpha convention as the source (the caller frees), or
+// NULL. Averaging the source block rather than dropping pixels is what keeps
+// small text legible — a screenshot is mostly small text. This is how a
+// thumbnail is MADE, by the writer that already holds the pixels; see the note in
+// sdk/src/image_write.c for why a photo library does not share one cache entry
+// between thumb and full size the way the wallpaper picker deliberately does.
+uint32_t *z_image_box_scale(const void *pixels, int sw, int sh, size_t stride,
+                            int dw, int dh);
+
 // A round-capped polyline — the toolkit's vector-mark primitive, for crisp icons
 // that rectangles can't draw (a chevron, a circle, a square outline) at any size
 // without shipping a bitmap. `points` is an array of x,y pairs in the UNIT box
@@ -1647,6 +1677,15 @@ void z_notify_set_channel(ZNotification *n, const char *channel_id);
 void z_notify_set_tap_route(ZNotification *n, const char *url);   // deep link on body tap
 void z_notify_add_action(ZNotification *n, const char *id, const char *title);
 
+// Attach an image the notification is ABOUT — a thumbnail of the thing that just
+// happened, shown at the card's trailing edge. `path` is absolute and must be
+// readable by whatever surface draws the card (the shade, the lock screen), so
+// in practice it lives in the shared media tree rather than in an app's private
+// directory. This is NOT the poster's icon: that is resolved from the app id and
+// is still drawn. A screenshot notification carrying only a camera glyph says an
+// event happened; one carrying the picture says WHICH.
+void z_notify_set_image(ZNotification *n, const char *path);
+
 // Post the notification (synchronous: blocks until the broker — possibly after a
 // consent prompt — assigns an id). Returns the global notification id, or -1 if
 // the permission was denied / the broker is unreachable. Frees the builder.
@@ -1693,6 +1732,9 @@ typedef struct ZShownNotification {
     const char *tap_route;
     const char *action_id;
     const char *action_title;
+    // Absolute path to an image the notification is ABOUT (empty when there is
+    // none). NOT the poster's icon — that is still resolved from app_id.
+    const char *image;
 } ZShownNotification;
 
 typedef void (*ZNotifyShowCb)(ZApp *app, const ZShownNotification *n, void *ud);
@@ -1785,6 +1827,16 @@ bool   z_file_delete(const char *path);
 ZList *z_file_list(const char *dir);
 char  *z_path_documents(const char *rel);      // persistent;  caller frees
 char  *z_path_cache(const char *rel);          // evictable;   caller frees
+
+// --- Shared media (NOT app-scoped) ----------------------------------------
+// "<data>/media/<rel>", the one root every app sees the same view of. It exists
+// because a photo library has several writers (the screenshot service, the
+// camera) and several readers (Photos, the share sheet, the wallpaper picker) —
+// a directory only one app can reach is not a library. The subtree names are the
+// system's, not each app's: see system/common/photos.h. Caller frees.
+// It is a CONVENTION, not a permission boundary; the reasoning is in storage.c.
+char  *z_path_media(const char *rel);
+void   z_mkdir_p(const char *path);            // mkdir -p, for those subtrees
 
 // --- Database (SQLite) -----------------------------------------------------
 typedef struct ZDatabase ZDatabase;            // opaque connection handle

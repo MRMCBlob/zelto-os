@@ -44,6 +44,7 @@ libzelto = static_library(
     'src/contrast.c',
     'src/render.c',
     'src/image.c',
+    'src/image_write.c',
     'src/reconcile.c',
     'src/animation.c',
     'src/scroll.c',

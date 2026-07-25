@@ -125,10 +125,19 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/zelto-tests.XXXXXX")"
 trap 'rm -rf "$WORK"; exit 130' INT TERM
 
 CC="${CC:-gcc}"
+# -I system/ reaches the shared System-UI headers (common/photos.h and friends);
+# libpng is on the line because P53's image ENCODER is compiled into a test as a
+# TU, and the test decodes what it wrote with libpng directly rather than with
+# image.c — an encoder verified by its own decoder can agree with itself about a
+# wrong convention. pkg-config rather than a bare -lpng so the include path comes
+# with it (libpng16 is not on the default search path on Debian/Ubuntu).
+PNG_CFLAGS=($(pkg-config --cflags libpng 2>/dev/null || true))
+PNG_LIBS=($(pkg-config --libs libpng 2>/dev/null || echo -lpng))
 CFLAGS=(-std=c17 -D_GNU_SOURCE -O0 -g
         -I "$REPO_ROOT/test" -I "$REPO_ROOT/third_party/quickjs"
-        -I "$REPO_ROOT/sdk/include" -I "$REPO_ROOT/sdk/src")
-LDLIBS=("$QUICKJS_LIB" -lm -lpthread)
+        -I "$REPO_ROOT/sdk/include" -I "$REPO_ROOT/sdk/src"
+        -I "$REPO_ROOT/system" "${PNG_CFLAGS[@]}")
+LDLIBS=("$QUICKJS_LIB" -lm -lpthread "${PNG_LIBS[@]}")
 
 # --- pretty-print captured failures ----------------------------------------
 # Reproduce ZT_FAIL lines and any stderr the runner captured, indented.

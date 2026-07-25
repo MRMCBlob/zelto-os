@@ -92,6 +92,51 @@ static char *app_path(const char *sub, const char *rel) {
 char *z_path_documents(const char *rel) { return app_path("documents", rel); }
 char *z_path_cache(const char *rel) { return app_path("cache", rel); }
 
+// THE SHARED MEDIA ROOT — "<data>/media/<rel>", and deliberately NOT under
+// apps/<app_id>/.
+//
+// Everything above this line is scoped by the calling app precisely so that one
+// app cannot read another's files. A photo library is the first thing in this OS
+// that has to break that, and it is worth writing down why rather than treating
+// it as an oversight: a library is defined by having MORE THAN ONE WRITER and
+// more than one reader. The screenshot service and the camera both put photos
+// in; Photos browses them, the share sheet sends them, and the wallpaper picker
+// (P25) is supposed to be able to choose one. If the pictures lived in the
+// camera's private directory, "set as wallpaper" would be a copy and the library
+// would just be a directory one app happens to own.
+//
+// So this is a THIRD root beside documents/ and cache/, at the same level as
+// apps/, with the same lifetime and the same fsync guarantees. The scoping that
+// was removed is replaced by a convention rather than by nothing: media/ holds
+// system-defined subtrees (photos/, thumbs/) named by system/common/photos.h,
+// not per-app namespaces.
+//
+// WHAT THIS IS NOT. It is not a permission boundary — any process that can call
+// libzelto can read it. Gating who may enumerate the library belongs to zsysd
+// (the `camera` grant already exists and a `photos` grant would join it), and
+// pretending a path is a control would be the same mistake as a privacy
+// indicator an app can suppress. Stated here so the absence is a decision on
+// record instead of an assumption.
+char *z_path_media(const char *rel) {
+    char dir[512];
+    int m = snprintf(dir, sizeof(dir), "%s/media", data_root());
+    if (m <= 0 || (size_t)m >= sizeof(dir)) {
+        return NULL;
+    }
+    mkdir_p(dir);
+    char full[768];
+    m = snprintf(full, sizeof(full), "%s/%s", dir, rel ? rel : "");
+    if (m <= 0 || (size_t)m >= sizeof(full)) {
+        return NULL;
+    }
+    return strdup(full);
+}
+
+// Create `path` and its parents. Exposed because the media tree's subdirectories
+// are named by a shared header rather than by this file, so the caller that owns
+// the convention is the one that has to make the directory.
+void z_mkdir_p(const char *path) { mkdir_p(path); }
+
 // ---------------------------------------------------------------------------
 // Files.
 // ---------------------------------------------------------------------------
