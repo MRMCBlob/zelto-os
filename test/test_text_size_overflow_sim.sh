@@ -27,9 +27,7 @@
 #                stepper with it — the key is a Frame, it got the 52 units it
 #                asked for, and its label fits perfectly. It is simply 33 units
 #                off the edge of the screen where it cannot be pressed. Read as
-#                a DELTA against the default size, never as a zero: a scroll
-#                builds the rows below its fold and the home carousel builds the
-#                page you have not swiped to, and both are one gesture away.
+#                a DECLARED number per surface (P53) — see the note in check().
 #
 # WHAT THE AUDIT FOUND, which is what these boots are. P50: 'andemu Demo' needed
 # 206 units in a 158-unit home cell; the consent alert's two buttons wanted 61 in
@@ -44,19 +42,27 @@
 # Fetch's status line 887 in 656 beside a 560x160 panel narrower than its own
 # caption.
 #
-# THE POSITIVE CONTROL IS ON EVERY ASSERTION, at BOTH SIZES. "0 overflowing" out
-# of 0 text nodes is an empty screen, not a healthy one — a crashed sim, a
-# surface that never came up and a perfect layout all report it — so each check
-# reads the scanned count from both log lines and fails if either surface was not
-# really there. That matters twice over for the sideways delta, whose baseline is
-# worthless if the boot it came from drew nothing.
+# THE POSITIVE CONTROL IS ON EVERY ASSERTION. "0 overflowing" out of 0 text nodes
+# is an empty screen, not a healthy one — a crashed sim, a surface that never came
+# up and a perfect layout all report it — so each check reads the scanned count
+# and fails if the surface was not really there.
+#
+# ONE BOOT PER SURFACE, as of P53. This test used to boot every surface TWICE,
+# once at each end of the range, purely to get a sideways baseline to subtract.
+# P53 narrowed probe_sideways to what no gesture can reach, and the baseline then
+# measured ZERO on eleven of twelve surfaces — so the second boot was five and a
+# half minutes of every test run spent comparing 0 against 0. The baselines are
+# declared at the call sites instead, as EXACT values (see check() for why
+# equality rather than a ceiling is what stops a declared number rotting).
 #
 # NEGATIVE-TESTED: reverting the consent button height to its 46-unit literal
 # makes `the consent alert` fail with the two button labels named; reverting the
 # home label to a bare Text makes `the home grid` fail naming 'andemu Demo';
 # reverting Z_TEXT_SIZE_REFLOW_FIRST to a step above the range makes `the
 # Settings list` fail on the sideways delta, naming the stepper key that left the
-# screen.
+# screen. P53: declaring the camera's sideways baseline as 1 when it measures 0
+# fails too — which is the property that matters for a declared number, because a
+# mere ceiling would have passed and let the declaration rot upward unnoticed.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -105,9 +111,6 @@ if [ -z "$TS_STEPS" ]; then
     exit 1
 fi
 TS_LARGEST="${TS_LARGEST:-$((TS_STEPS - 1))}"
-TS_DEFAULT="$(sed -n 's/^#define Z_TEXT_SIZE_DEFAULT \([0-9]*\).*/\1/p' \
-    "$REPO_ROOT/sdk/include/zelto/ui.h" | head -1)"
-: "${TS_DEFAULT:=3}"
 
 run_boot() {   # <tag> <step> <probe-app> <delay> [env...]
     local tag="$1" step="$2" who="$3" delay="$4"; shift 4
@@ -127,78 +130,94 @@ field() {   # <log> <sed expr> — one number off the probe summary line
     sed -n "$2" "$1" | head -1
 }
 
-# <name> <largest log> <default log> <min texts> — the surface drew text; none of
-# it needs more room than it was given on either axis; and nothing left the
-# screen SIDEWAYS that had not already left it at the default size.
+# <name> <largest log> <min texts> <expected sideways> — the surface drew text;
+# none of it needs more room than it was given on either axis; and exactly the
+# declared number of nodes run off the right edge.
 check() {
-    local name="$1" log="$2" base="$3" min="$4"
-    local scanned over tall side scanned0 side0
+    local name="$1" log="$2" min="$3" want_side="$4"
+    local scanned over tall side
     scanned="$(field "$log" 's/.*text \([0-9]*\) scanned .*/\1/p')"
     over="$(field "$log" 's/.*text [0-9]* scanned \([0-9]*\) overflowing.*/\1/p')"
     tall="$(field "$log" 's/.*off-surface \([0-9]*\) clipped.*/\1/p')"
     side="$(field "$log" 's/.*) \([0-9]*\) sideways.*/\1/p')"
-    scanned0="$(field "$base" 's/.*text \([0-9]*\) scanned .*/\1/p')"
-    side0="$(field "$base" 's/.*) \([0-9]*\) sideways.*/\1/p')"
-    if [ -z "$scanned" ] || [ -z "$scanned0" ]; then
-        zt_fail "$name never reported a probe summary at one of the two text sizes — the surface did not come up, so nothing below is evidence" \
-            "'probe taps: ... text N scanned ...'" "absent (see $log and $base)"
+    if [ -z "$scanned" ]; then
+        zt_fail "$name never reported a probe summary — the surface did not come up, so nothing below is evidence" \
+            "'probe taps: ... text N scanned ...'" "absent (see $log)"
         return
     fi
-    # The positive control, on BOTH boots. "0 overflowing" out of 0 text nodes is
-    # an empty screen, and a sideways count that did not grow is worth nothing if
-    # the surface it was measured on never drew.
-    if [ "$scanned" -lt "$min" ] || [ "$scanned0" -lt "$min" ]; then
-        zt_fail "$name drew $scanned text nodes at the largest text size and $scanned0 at the default, fewer than the $min it must have — it is not showing the content this test boots it for, so a clean count means nothing" \
-            ">= $min text nodes at both sizes" "$scanned / $scanned0 (see $log)"
+    # The positive control. "0 overflowing" out of 0 text nodes is an empty
+    # screen, not a healthy one — a crashed sim, a surface that never came up and
+    # a perfect layout all report it.
+    if [ "$scanned" -lt "$min" ]; then
+        zt_fail "$name drew $scanned text nodes at the largest text size, fewer than the $min it must have — it is not showing the content this test boots it for, so a clean count means nothing" \
+            ">= $min text nodes" "$scanned (see $log)"
         return
     fi
     zt_expect_eq "0" "$over" \
         "$name has text WIDER than its box at the largest text size: $(grep -m1 'probe OVERFLOW' "$log" || echo '(see the log)') (see $log)"
     zt_expect_eq "0" "$tall" \
         "$name has text TALLER than its box at the largest text size — a fixed height holding a line that outgrew it, painting through into its neighbours: $(grep -m1 'probe OVERFLOW' "$log" || echo '(see the log)') (see $log)"
-    # THE THIRD AXIS (P51), and it is a DELTA rather than a zero on purpose. A
-    # scroll builds the rows below its fold and the home carousel builds the page
-    # you have not swiped to; both are off the surface and both are one gesture
-    # away, so an absolute zero here would be a number that is never zero and
-    # therefore never read. What is never reachable is content that left the
-    # screen SIDEWAYS — which is exactly what a row does when its label grows and
-    # pushes its control past the right edge. So the question is P50's question
-    # about `worst`, asked of a count: does it GROW WHEN THE TEXT DOES.
-    if [ "$side" -gt "$side0" ]; then
-        zt_fail "$name pushed $((side - side0)) more node(s) off the screen SIDEWAYS at the largest text size than at the default — a control or a label that grew past the right edge, where no scroll can reach it: $(grep -m1 'offscreen' "$log" || echo '(see the log)') (see $log)" \
-            "<= $side0 sideways (what it has at the default size)" "$side (see $log)"
-    fi
+    # THE THIRD AXIS (P51), and as of P53 a DECLARED NUMBER rather than a delta
+    # against a second boot.
+    #
+    # It was a delta because the counter used to include everything off the right
+    # edge — a carousel's other pages, a scroll's rows below the fold — so an
+    # absolute figure was never zero and therefore never read. P53 narrowed
+    # probe_sideways to what NO GESTURE CAN REACH (a node that BEGINS on screen
+    # and runs off it), and the measurement then came back 0 for eleven of the
+    # twelve surfaces here. A second boot per surface to compare 0 against 0 is
+    # five minutes of every test run buying nothing.
+    #
+    # EQUALITY, NOT A CEILING, and that is what keeps a declared baseline honest.
+    # A stored number that is only an upper bound rots silently upward: it passes
+    # while the truth drifts beneath it, which is precisely the failure mode this
+    # project keeps getting bitten by. Asserting the exact value means a
+    # declaration that is too HIGH fails just as loudly as a regression, so the
+    # number cannot quietly stop describing the surface. Regenerate them all with
+    # the AUDIT_BASELINE lines this prints.
+    zt_expect_eq "$want_side" "$side" \
+        "$name has $side node(s) that begin on screen and run off the right edge, where no gesture can reach them (declared: $want_side): $(grep -m1 'offscreen' "$log" || echo '(see the log)') (see $log)"
+    echo "AUDIT_BASELINE|$name|scanned=$scanned|over=$over|tall=$tall|side=$side"
 }
 
-# <name> <tag> <probe-app> <delay> <min texts> [env...] — the same surface, twice:
-# once at the top of the range and once at the default. The second boot is not
-# duplication, it is the BASELINE the sideways count is read against and the
-# positive control that says the first boot drew anything at all.
+# <name> <tag> <probe-app> <delay> <min texts> <expected sideways> [env...]
+#
+# ONE BOOT, at the top of the range. The ladder is monotonic, so the largest size
+# is the worst case for every box in the OS and a surface that survives it
+# survives every step below. The second boot this used to take existed only to
+# supply a sideways baseline, and that baseline is now declared per surface (see
+# check) — which halves a test that had grown to five and a half minutes and was
+# the slowest thing in the repo.
 audit() {
-    local name="$1" tag="$2" who="$3" delay="$4" min="$5"; shift 5
-    local hi lo
+    local name="$1" tag="$2" who="$3" delay="$4" min="$5" side="$6"; shift 6
+    local hi
     hi="$(run_boot "$tag-max" "$TS_LARGEST" "$who" "$delay" "$@")"
-    lo="$(run_boot "$tag-def" "$TS_DEFAULT" "$who" "$delay" "$@")"
-    check "$name" "$hi" "$lo" "$min"
+    check "$name" "$hi" "$min" "$side"
 }
 
 # --- the home grid -----------------------------------------------------------
 # An app NAME comes out of a manifest into a 158-unit cell. Also the surface with
 # the biggest structural sideways count in the OS — the carousel builds every
 # home page side by side — which is exactly why that count is read as a delta.
-audit "the home grid" home launcher_body 6 20
+audit "the home grid" home launcher_body 6 20 0
 
 # --- the consent alert -------------------------------------------------------
 # The dialog where being able to read the two answers is the entire point.
-audit "the consent alert" consent Permission 7 4 \
+audit "the consent alert" consent Permission 7 4 0 \
     SIM_CONSENT="os.zelto.pinger notifications"
 
 # --- the App Switcher --------------------------------------------------------
-audit "the App Switcher" switcher recents_body 9 5 SIM_APP=zelto-notes \
+# THE ONE SURFACE WITH A NON-ZERO DECLARATION, and it is structural rather than a
+# defect: the card deck parks the NEXT card peeking in at the right edge, so that
+# card and its "Paused" chip both begin on screen and run off it. They are one
+# swipe away, which is the whole idiom of a deck. It is 2 at every text size —
+# the peek is a layout constant, not something the type pushes — so declaring 2
+# asserts the deck still peeks by exactly one card.
+audit "the App Switcher" switcher recents_body 9 5 2 SIM_APP=zelto-notes \
     SIM_EXTRA="zelto-cards zelto-fetch" SIM_RECENTS=1
 
 # --- the share sheet ---------------------------------------------------------
-audit "the share sheet" share Chooser 10 5 SIM_APP=zelto-notes \
+audit "the share sheet" share Chooser 10 5 0 SIM_APP=zelto-notes \
     SIM_CHOOSER="os.zelto.notes os.zelto.store os.zelto.notepad" \
     ZELTO_SHARE_MIME=text/plain ZELTO_SHARE_PAYLOAD="Zelto OS design tokens"
 
@@ -206,17 +225,17 @@ audit "the share sheet" share Chooser 10 5 SIM_APP=zelto-notes \
 # The densest rows in the OS: Settings ▸ Lock Screen is toggles, steppers and an
 # action row. This is the screen the reflow break was measured on — at the
 # largest size every one of these rows is a label above its control.
-audit "the Settings list" settings os.zelto.settings 8 12 \
+audit "the Settings list" settings os.zelto.settings 8 12 0 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=lock
 
 # --- the new Accessibility screen --------------------------------------------
 # The screen that sets the size has to survive the size it sets, which is not a
 # joke: its slider row holds two glyphs at fixed steps and a preview at Body.
-audit "the Accessibility screen" accessibility os.zelto.settings 8 8 \
+audit "the Accessibility screen" accessibility os.zelto.settings 8 8 0 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=accessibility
 
 # --- an app whose prose is not its own ---------------------------------------
-audit "Fetch" fetch os.zelto.fetch 8 5 SIM_APP=zelto-fetch
+audit "Fetch" fetch os.zelto.fetch 8 5 0 SIM_APP=zelto-fetch
 
 # --- the photo grid ----------------------------------------------------------
 # P53's new surface, and "the image scales" is not an answer for it: the cell is
@@ -236,7 +255,7 @@ for wp in "$REPO_ROOT"/resources/wallpaper/*.png; do
     cp "$wp" "$PHOTOLIB/thumbs/$pl_id.png"
     pl_i=$((pl_i + 1))
 done
-audit "the photo grid" photos os.zelto.photos 8 2 \
+audit "the photo grid" photos os.zelto.photos 8 2 0 \
     SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB"
 
 # --- the viewer, with its confirmation up --------------------------------
@@ -244,7 +263,7 @@ audit "the photo grid" photos os.zelto.photos 8 2 \
 # an alert whose body is prose. The toolbar is where the size hurts — three
 # labels side by side is exactly the shape that walks a control off the right
 # edge — and the card is a WrapText that must not outgrow the card it is in.
-audit "the photo viewer" photos-viewer os.zelto.photos 12 4 \
+audit "the photo viewer" photos-viewer os.zelto.photos 12 4 0 \
     SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB" ZELTO_PHOTOS_VIEW=1 \
     ZELTO_TAP_LABEL=Delete ZELTO_TAP_APP=os.zelto.photos ZELTO_TAP_AT=9000
 
@@ -253,20 +272,20 @@ audit "the photo viewer" photos-viewer os.zelto.photos 12 4 \
 # easy to forget: a status line and a shutter under a pane whose height is a
 # fixed ratio of the column, so the text has to fit what is left rather than
 # push the pane off the screen.
-audit "the camera" camera os.zelto.camera 10 2     SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/true
+audit "the camera" camera os.zelto.camera 10 2 0     SIM_APP=zelto-camera ZELTO_CONSENT_BIN=/bin/true
 
 # --- the empty photo library -------------------------------------------------
 # The state a new phone is in, and the one screen in this app made of PROSE. A
 # Text neither wraps nor truncates, so the sentence under "No photos" is a
 # WrapText — and a WrapText is handed its column at BUILD time, which is where
 # this kind of thing goes wrong.
-audit "the empty photo library" photos-empty os.zelto.photos 8 2 \
+audit "the empty photo library" photos-empty os.zelto.photos 8 2 0 \
     SIM_APP=zelto-photos
 
 # --- the SDK's own List sample -----------------------------------------------
 # Not a system surface, and in for a reason: it is what an APP DEVELOPER copies.
 # A List virtualises on its row height, so a row too short for its own text does
 # not merely clip — it puts the wrong rows on screen.
-audit "the Rows sample" hello body 8 20 SIM_APP=zelto-hello
+audit "the Rows sample" hello body 8 20 0 SIM_APP=zelto-hello
 
 zt_done
