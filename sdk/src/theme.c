@@ -183,20 +183,65 @@ static const ZTokenRow g_palette[Z_TOKEN_COUNT] = {
     // way round its palette runs.
     [Z_TOKEN_SCRIM]            = {RGBA(0x00, 0x00, 0x00, 0xb0), RGBA(0x00, 0x00, 0x00, 0xb0)},
 
-    // STAGE 2 OWNS THE FIVE BELOW and they are deliberately still their dark
-    // selves in the light column. They are not colours in the sense the rest of
-    // this table is — they are a tint over a BLUR, a rim catching a light, a
-    // penumbra and a press veil, and each of them is wrong in light in a way a
-    // hex swap does not fix (a white veil over a white surface does nothing at
-    // all). Leaving them visibly unconverted is the honest state; a plausible
-    // light value here would hide the work rather than do it.
-    [Z_TOKEN_MATERIAL_THIN]    = {RGBA(0x1c, 0x1c, 0x1e, 0x8c), RGBA(0x1c, 0x1c, 0x1e, 0x8c)},
-    [Z_TOKEN_MATERIAL_REGULAR] = {RGBA(0x14, 0x14, 0x16, 0xb8), RGBA(0x14, 0x14, 0x16, 0xb8)},
-    [Z_TOKEN_MATERIAL_THICK]   = {RGBA(0x0e, 0x0e, 0x10, 0xdb), RGBA(0x0e, 0x0e, 0x10, 0xdb)},
-    [Z_TOKEN_MATERIAL_SHEET]   = {RGBA(0x08, 0x08, 0x0a, 0xe6), RGBA(0x08, 0x08, 0x0a, 0xe6)},
-    [Z_TOKEN_MATERIAL_EDGE]    = {RGBA(0xff, 0xff, 0xff, 0x1f), RGBA(0xff, 0xff, 0xff, 0x1f)},
-    [Z_TOKEN_SHADOW]           = {RGBA(0x00, 0x00, 0x00, 0x80), RGBA(0x00, 0x00, 0x00, 0x80)},
+    // MATERIALS: THE TINT KEEPS ITS STRUCTURE, MIRRORED. Dark goes darker as it
+    // thickens (1c -> 14 -> 0e -> 08); light goes lighter (f2 -> f7 -> fb -> ff),
+    // at the same alphas. Apple publishes zero numbers for any material (P52), so
+    // Zelto owns these — but owning them is not the same as guessing them.
+    //
+    // THE BAR IS THE WORST-CASE BACKDROP, because a material is a tint over a
+    // BLUR of whatever is behind it and its job is to carry its own content. The
+    // hardest backdrop is the one that drags the composite towards the ink:
+    // WHITE under a dark material, BLACK under a light one. Composited there,
+    // with each appearance's own primary ink on top:
+    //
+    //             dark, over white          light, over black
+    //     THIN        3.44                       4.62
+    //     REGULAR     6.67                       8.04
+    //     THICK      11.80                      11.95
+    //     SHEET      14.58                      13.63
+    //
+    // Recorded rather than fixed: dark THIN over a bright wallpaper is 3.44 for
+    // TEXT, under the 4.5 body bar. THIN's only caller is the dock plate, which
+    // carries icons and no text, so it clears the 3.0 non-text minimum — but it
+    // is why THIN is not the material to put a label on.
+    [Z_TOKEN_MATERIAL_THIN]    = {RGBA(0x1c, 0x1c, 0x1e, 0x8c), RGBA(0xf2, 0xf2, 0xf7, 0x8c)},
+    [Z_TOKEN_MATERIAL_REGULAR] = {RGBA(0x14, 0x14, 0x16, 0xb8), RGBA(0xf7, 0xf7, 0xfa, 0xb8)},
+    [Z_TOKEN_MATERIAL_THICK]   = {RGBA(0x0e, 0x0e, 0x10, 0xdb), RGBA(0xfb, 0xfb, 0xfd, 0xdb)},
+    [Z_TOKEN_MATERIAL_SHEET]   = {RGBA(0x08, 0x08, 0x0a, 0xe6), RGBA(0xff, 0xff, 0xff, 0xe6)},
+
+    // THE RIM INVERTS, because a white rim on a white material is not a rim: the
+    // shipped white@1f measures 1.008 against a light material — invisible, and
+    // invisible is the whole failure mode of this phase. The dark rim measures
+    // 1.363 to 1.466 against its own material, so the light one is BLACK at the
+    // alpha that lands in that same band (@1f is 1.32, @2b is 1.48). Matched to
+    // the rim that already exists rather than picked to taste.
+    [Z_TOKEN_MATERIAL_EDGE]    = {RGBA(0xff, 0xff, 0xff, 0x1f), RGBA(0x00, 0x00, 0x00, 0x26)},
+
+    // THE SHADOW IS BLACK IN BOTH, AT A DIFFERENT STRENGTH, and this is the one
+    // value in the table with a genuinely arguable answer — so both anchors are
+    // written down, not just the choice.
+    //
+    // The same alpha does not mean the same shadow. Black@0x80 measured as the
+    // step it makes on what it falls on:
+    //     on SURFACE #1c1c1e   1.13      on a white page   4.00
+    //     on SURFACE_2         1.30      over a mid wallpaper #808080   2.63
+    // On a light page 0x80 is not a penumbra, it is a grey smudge.
+    //
+    // The two defensible anchors pull opposite ways: matching the step the dark
+    // shadow makes on the RAISED SURFACES it falls on wants ~0x20 (1.33 on
+    // white) and nearly vanishes over the wallpaper; matching the step it makes
+    // over the WALLPAPER wants ~0x60 and reads as a halo on a white page. 0x33
+    // (1.61 on white) sits between them, nearer the wallpaper anchor, because in
+    // light the tone ladder does less of the depth work and the shadow does
+    // more — the surfaces are 1.12 apart there against dark's 1.23.
+    [Z_TOKEN_SHADOW]           = {RGBA(0x00, 0x00, 0x00, 0x80), RGBA(0x00, 0x00, 0x00, 0x33)},
+
+    // THE PRESS VEIL IS NOT A THEME QUESTION, which is why both columns are the
+    // same and why there are two of these. See z_press_veil() below: the veil
+    // has to oppose THE SURFACE IT IS PAINTED OVER, and the appearance does not
+    // determine that — a near-white PRIMARY button exists in the DARK palette.
     [Z_TOKEN_PRESS]            = {RGBA(0xff, 0xff, 0xff, 0x3d), RGBA(0xff, 0xff, 0xff, 0x3d)},
+    [Z_TOKEN_PRESS_INV]        = {RGBA(0x00, 0x00, 0x00, 0x33), RGBA(0x00, 0x00, 0x00, 0x33)},
 
     // Was a raw #4aa3ff in system/launcher/main.c at two alphas — the only hue
     // in the shipped OS that lived in no table. Kept and named rather than
@@ -297,4 +342,34 @@ static double fill_contrast(ZColor a, ZColor b) {
 ZColor z_on_fill(ZColor fill) {
     ZColor page = Z_COLOR_TEXT, lit = Z_COLOR_ON_PRIMARY;
     return fill_contrast(lit, fill) >= fill_contrast(page, fill) ? lit : page;
+}
+
+// --- The press veil ---------------------------------------------------------
+// THE VEIL WAS NEVER A THEME QUESTION, and finding that out is what P54 stage 2
+// was for. Z_COLOR_PRESS is a WHITE veil at 24%, and the obvious reading is that
+// it wants a black twin for the light appearance. Measured, the obvious reading
+// is wrong in a way that was already shipping:
+//
+//     white@0x3d over dark BG      #000000    1.933   <- works
+//     white@0x3d over dark PRIMARY #f2f2f7    1.026   <- EVERY FILLED BUTTON
+//     white@0x3d over a light page #ffffff    1.000   <- exactly nothing
+//
+// The middle row is the DARK palette. Z_COLOR_PRIMARY is a near-white "lit"
+// surface by design, so every Button, every active Control Center chip and every
+// lit keyboard shift has had press feedback of 1.026:1 since P31 — a veil that
+// is technically painted and cannot be seen. Nobody screenshots a press.
+//
+// So the polarity comes from the SURFACE, not the appearance. Same shape as
+// z_on_fill, same reason: a rule computed from what is actually there cannot
+// drift from it, and one rule fixes light mode and the dark filled button at
+// once. The strengths differ because black and white are not equally strong over
+// a mid tone — 0x3d white on black is 1.93, and 0x33 black on white is 1.61,
+// which is as near as a byte gets while keeping the light veil from reading as
+// a smear on a pale chip.
+ZColor z_press_veil(ZColor under) {
+    // Against BLACK rather than against 0.5: the question is which of the two
+    // veils moves this surface further, and the surface's own luminance answers
+    // it directly. A mid grey takes the light veil, which is the right way for a
+    // tie to fall on a palette whose ink is light more often than not.
+    return fill_lum(under) > 0.18 ? Z_COLOR_PRESS_INV : Z_COLOR_PRESS;
 }

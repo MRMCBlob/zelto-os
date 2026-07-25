@@ -54,6 +54,19 @@ static double ratio(ZColor a, ZColor b) {
     return (hi + 0.05) / (lo + 0.05);
 }
 
+// Straight-alpha composite of `over` onto an opaque `base`. Half the palette is
+// translucent — the materials, their rim, the scrim, the shadow, the press veil
+// — and a translucent token has no ratio of its own to measure. What can be
+// measured is what it RESOLVES TO on the thing it is painted over, which is also
+// the only number a user ever sees.
+static ZColor composite(ZColor over, ZColor base) {
+    double a = (double)over.a / 255.0;
+    return z_rgba(
+        (uint8_t)((double)over.r * a + (double)base.r * (1.0 - a) + 0.5),
+        (uint8_t)((double)over.g * a + (double)base.g * (1.0 - a) + 0.5),
+        (uint8_t)((double)over.b * a + (double)base.b * (1.0 - a) + 0.5), 0xff);
+}
+
 // WHICH APPEARANCE a failure is in. Every assertion below runs over both, and
 // "TEXT_MUTED does not reach 4.5" names half a defect if it does not say where.
 static const char *g_where = "dark";
@@ -420,5 +433,110 @@ static void audit_appearance(void) {
                  g_where);
         zt_fail_(__FILE__, __LINE__, msg, "the ink that reaches further",
                  "the other one");
+    }
+
+    // --- 6. THE THINGS THAT ARE NOT COLOURS (P54 stage 2) ------------------
+    //
+    // A material is a TINT OVER A BLUR, so it has no fixed value to measure —
+    // what it looks like depends on what is behind it. The bar is therefore the
+    // WORST-CASE BACKDROP: the one that drags the composite towards the ink,
+    // which is white under a dark material and black under a light one. Assert
+    // there, and the material is legible everywhere.
+    z_contrast_apply(false);
+    ZColor worst = z_theme() == Z_THEME_LIGHT ? Z_COLOR_BG : Z_COLOR_TEXT;
+    struct { const char *n; ZColor c; double bar; } mats[] = {
+        // THIN carries ICONS, not text — the dock plate is its only caller —
+        // so its bar is WCAG's 3:1 non-text minimum. It does not reach 4.5 in
+        // dark (3.44 over a bright wallpaper) and that is why nothing puts a
+        // label on it.
+        {"Z_COLOR_MATERIAL_THIN", Z_COLOR_MATERIAL_THIN, 3.0},
+        {"Z_COLOR_MATERIAL_REGULAR", Z_COLOR_MATERIAL_REGULAR, 4.5},
+        {"Z_COLOR_MATERIAL_THICK", Z_COLOR_MATERIAL_THICK, 4.5},
+        {"Z_COLOR_MATERIAL_SHEET", Z_COLOR_MATERIAL_SHEET, 4.5},
+    };
+    for (int i = 0; i < 4; i++) {
+        char nm[96];
+        snprintf(nm, sizeof(nm), "%s (over the worst backdrop)", mats[i].n);
+        need("Z_COLOR_TEXT", Z_COLOR_TEXT, nm, composite(mats[i].c, worst),
+             mats[i].bar, "what a material must carry on its hardest backdrop");
+    }
+
+    // THE RIM MUST BE A RIM. A hairline that edges a material is what stops the
+    // panel dissolving into a busy backdrop, and the shipped white@1f measures
+    // 1.008 against a LIGHT material — painted, invisible, and exactly the class
+    // of defect this phase exists to find. The band is the one the dark rim
+    // already occupies against its own material (1.363 to 1.466).
+    ZColor plate = composite(Z_COLOR_MATERIAL_REGULAR, worst);
+    double rim = ratio(composite(Z_COLOR_MATERIAL_EDGE, plate), plate);
+    if (rim < 1.20) {
+        char got[64], msg[240];
+        snprintf(got, sizeof(got), "%.3f:1", rim);
+        snprintf(msg, sizeof(msg),
+                 "[%s] Z_COLOR_MATERIAL_EDGE does not separate from the "
+                 "material it edges - a rim that cannot be seen is not a rim",
+                 g_where);
+        zt_fail_(__FILE__, __LINE__, msg, ">= 1.20:1", got);
+    }
+
+    // THE PRESS VEIL MUST MOVE WHAT IT IS PAINTED OVER — on every surface a
+    // control is actually built on, in this appearance. The pair that convicted
+    // the old single white veil is PRIMARY: a near-white "lit" fill exists in
+    // the DARK palette, so `white over PRIMARY` was 1.026:1 and every filled
+    // Button in the OS had press feedback nobody could see.
+    struct { const char *n; ZColor c; } pressed[] = {
+        {"BG", Z_COLOR_BG},
+        {"SURFACE", Z_COLOR_SURFACE},
+        {"SURFACE_3", Z_COLOR_SURFACE_3},
+        {"SURFACE_4", Z_COLOR_SURFACE_4},
+        {"PRIMARY", Z_COLOR_PRIMARY},
+    };
+    for (int i = 0; i < 5; i++) {
+        ZColor veiled = composite(z_press_veil(pressed[i].c), pressed[i].c);
+        double moved = ratio(veiled, pressed[i].c);
+        if (moved < 1.25) {
+            char got[64], msg[240];
+            snprintf(got, sizeof(got), "%.3f:1", moved);
+            snprintf(msg, sizeof(msg),
+                     "[%s] the press veil does not move %s - touch-down on a "
+                     "control built on it gives feedback that is painted and "
+                     "cannot be seen",
+                     g_where, pressed[i].n);
+            zt_fail_(__FILE__, __LINE__, msg, ">= 1.25:1", got);
+        }
+    }
+    // POSITIVE CONTROL for the veil rule: the veil it did NOT pick must be the
+    // one that fails. Without this, two veils that were both dark would satisfy
+    // every row above on a dark palette and nothing would say the rule ran.
+    ZColor lit = Z_COLOR_PRIMARY;
+    ZColor chosen = z_press_veil(lit);
+    ZColor spurned = (chosen.r == Z_COLOR_PRESS.r && chosen.a == Z_COLOR_PRESS.a)
+                         ? Z_COLOR_PRESS_INV
+                         : Z_COLOR_PRESS;
+    double bad = ratio(composite(spurned, lit), lit);
+    if (!(bad < ratio(composite(chosen, lit), lit))) {
+        char msg[240];
+        snprintf(msg, sizeof(msg),
+                 "[%s] positive control: z_press_veil must pick the veil that "
+                 "moves PRIMARY further - if both veils do equally well the "
+                 "rule is not choosing anything",
+                 g_where);
+        zt_fail_(__FILE__, __LINE__, msg, "the stronger veil", "either one");
+    }
+
+    // THE SHADOW MUST BE A PENUMBRA, NOT A BAND. Its peak, composited on the
+    // surface it falls on, is a step of the same order as the tone ladder's own
+    // — over about 4:1 it stops reading as depth and starts reading as a grey
+    // rectangle, which is what the dark 0x80 does on a white page (4.00).
+    ZColor page = Z_COLOR_BG;
+    double sh = ratio(composite(Z_COLOR_SHADOW, page), page);
+    if (sh > 2.60) {
+        char got[64], msg[240];
+        snprintf(got, sizeof(got), "%.2f:1", sh);
+        snprintf(msg, sizeof(msg),
+                 "[%s] Z_COLOR_SHADOW is a smudge on this page, not a shadow - "
+                 "the same alpha does not mean the same shadow on a palette "
+                 "with a different page",
+                 g_where);
+        zt_fail_(__FILE__, __LINE__, msg, "<= 2.60:1 on the page", got);
     }
 }

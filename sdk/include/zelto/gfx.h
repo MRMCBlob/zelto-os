@@ -176,6 +176,7 @@ typedef enum ZToken {
     Z_TOKEN_MATERIAL_EDGE,
     Z_TOKEN_SHADOW,
     Z_TOKEN_PRESS,
+    Z_TOKEN_PRESS_INV,
     Z_TOKEN_DROP_TARGET,
     Z_TOKEN_COUNT,
 } ZToken;
@@ -560,12 +561,28 @@ ZColor z_on_fill(ZColor fill);
 #define Z_COLOR_SHADOW      z_token(Z_TOKEN_SHADOW)
 
 // --- Press feedback — the touch-down highlight veil ----------------------
-// A tappable control (Button, an OnTap tile, a nav mark) paints this soft light
-// veil over itself while pressed, so touch-down gets an immediate visual response
-// and release fades it out. One token, whose peak alpha the toolkit scales by the
-// live press spring (0 released -> 1 held); a light overlay reads as a highlight
-// on both the dark surfaces and the azure PRIMARY fill. See P31 (Feedback.md).
-#define Z_COLOR_PRESS      z_token(Z_TOKEN_PRESS)  // peak ~24% veil
+// A tappable control (Button, an OnTap tile, a nav mark) paints a soft veil over
+// itself while pressed, so touch-down gets an immediate visual response and
+// release fades it out. The toolkit scales the peak alpha by the live press
+// spring (0 released -> 1 held). See P31 (Feedback.md).
+//
+// TWO VEILS, AND THE CHOICE IS COMPUTED FROM THE SURFACE — never from the
+// appearance, and never named at the call site. Use z_press_veil().
+//
+// The old comment here read "a light overlay reads as a highlight on both the
+// dark surfaces and the azure PRIMARY fill". Two things wrong with that
+// sentence: PRIMARY has not been azure for several phases, and the claim was
+// false for it either way. white@0x3d over PRIMARY #f2f2f7 measures 1.026:1, so
+// every filled Button in the DARK palette has had press feedback that is painted
+// and cannot be seen since P31 — see the measured note over z_press_veil in
+// sdk/src/theme.c. A light appearance made the same defect unmissable on the
+// page itself (1.000:1), which is how it was finally found.
+#define Z_COLOR_PRESS      z_token(Z_TOKEN_PRESS)      // over a dark surface
+#define Z_COLOR_PRESS_INV  z_token(Z_TOKEN_PRESS_INV)  // over a light one
+
+// The veil to paint over `under`. Same shape and same argument as z_on_fill: a
+// rule computed from what is actually there cannot drift from it.
+ZColor z_press_veil(ZColor under);
 
 // --- Back-compat aliases (older token names) -----------------------------
 #define Z_COLOR_BACKGROUND Z_COLOR_BG

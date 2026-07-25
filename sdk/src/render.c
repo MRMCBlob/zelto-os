@@ -654,7 +654,17 @@ static void paint(ZCanvas *canvas, ZView n, float alpha) {
     // own rounded corners (a bare tap frame with radius 0 gets a soft default so
     // the highlight reads as a rounded tap target, not a hard box).
     if (n->press > 0.003f) {
-        ZColor veil = Z_COLOR_PRESS;
+        // WHAT IS UNDER THE VEIL decides its polarity (P54). The node's own
+        // background if it has one — that is the case that was broken, a
+        // near-white PRIMARY button taking a white veil — else its Rect fill,
+        // else the page, which is the right answer for a bare tap frame over
+        // the app's own background. A tile over the WALLPAPER falls through to
+        // the page too and is the one case this cannot see; the wallpaper is
+        // stage 4's subject and the veil is not the surface it will be fixed on.
+        ZColor under = n->has_bg           ? n->bg
+                       : n->kind == Z_K_RECT ? n->color
+                                             : Z_COLOR_BG;
+        ZColor veil = z_press_veil(under);
         veil.a = (uint8_t)((float)veil.a * (n->press < 1.0f ? n->press : 1.0f) +
                            0.5f);
         float pr = n->radius > 0.5f ? n->radius : 10.0f;
