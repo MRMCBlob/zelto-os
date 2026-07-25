@@ -57,6 +57,7 @@ typedef struct SettingsState {
     bool bold_text;
     bool reduce_motion;
     bool increase_contrast;   // P51
+    bool light_theme;         // P54 — sys.theme, 0 dark / 1 light
     ZSlider text_slider;
 } SettingsState;
 
@@ -95,6 +96,8 @@ static void on_changed(ZApp *app, const char *key, const char *value, void *ud) 
         s->reduce_motion = v != 0;
     } else if (strcmp(key, ZELTO_KEY_INCREASE_CONTRAST) == 0) {
         s->increase_contrast = v != 0;
+    } else if (strcmp(key, ZELTO_KEY_THEME) == 0) {
+        s->light_theme = v != 0;
     } else if (strcmp(key, ZELTO_WALLPAPER_KEY) == 0) {
         snprintf(s->wp_current, sizeof(s->wp_current), "%s", value ? value : "");
     }
@@ -130,6 +133,7 @@ static void ensure_init(ZApp *app, SettingsState *s) {
     s->reduce_motion = z_setting_get_int("sys.reduce_motion", 0) != 0;
     s->increase_contrast =
         z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0;
+    s->light_theme = z_setting_get_int(ZELTO_KEY_THEME, 0) != 0;
     s->text_slider.on_change = text_slide;
     // Wallpaper picker: enumerate the directory once and record the active choice.
     s->wp_count = zelto_wallpaper_list(s->wp_paths, ZELTO_WALLPAPER_MAX);
@@ -233,6 +237,18 @@ static void t_bold(ZApp *app, void *state) {
     SettingsState *s = state;
     s->bold_text = !s->bold_text;
     z_setting_set_int(ZELTO_KEY_BOLD_TEXT, s->bold_text);
+    z_invalidate(app);
+}
+
+// THE APPEARANCE (P54). Written as "Light Appearance" rather than a Light/Dark
+// pair of tiles: this OS has exactly two appearances and no automatic third, so
+// the control is a boolean and every other boolean in Settings is a switch. A
+// segmented pair would also have to answer what it shows when there is no auto,
+// which is a screen full of chrome for a question with two answers.
+static void t_light_theme(ZApp *app, void *state) {
+    SettingsState *s = state;
+    s->light_theme = !s->light_theme;
+    z_setting_set_int(ZELTO_KEY_THEME, s->light_theme);
     z_invalidate(app);
 }
 
@@ -821,16 +837,24 @@ static ZView screen_network(ZApp *app, void *props) {
 
 static ZView screen_display(ZApp *app, void *props) {
     SettingsState *s = props;
+    ZView appearance[] = {
+        toggle_row(app, 0x5E710Au, "Light Appearance", s->light_theme,
+                   t_light_theme),
+    };
     ZView rows[] = {
         slider_row(app, "Brightness", &s->bright_slider),
         toggle_row(app, 0x5E7103u, "Brightness Boost", s->bright, t_bright),
         toggle_row(app, 0x5E7102u, "Silent", s->mute, t_mute),
     };
     ZView blocks[] = {
+        section_block(app, NULL, group(appearance, 1),
+            "The whole system follows this, live. There is no automatic "
+            "setting: a phone that changes appearance because a room got dark "
+            "is worse than one that never changes at all."),
         section_block(app, NULL, group(rows, 3),
             "Brightness runs 1 to 5 and dims the screen with a scrim."),
     };
-    return settings_screen(app, "Display & Sound", blocks, 1);
+    return settings_screen(app, "Display & Sound", blocks, 2);
 }
 
 static ZView screen_wallpaper(ZApp *app, void *props) {

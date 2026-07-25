@@ -56,6 +56,7 @@
 //   ZELTO_KEY_TEXT_SIZE  "sys.text_size"  — 0..11, default Z_TEXT_SIZE_DEFAULT
 //   ZELTO_KEY_BOLD_TEXT  "sys.bold_text"  — 0/1
 //   ZELTO_KEY_INCREASE_CONTRAST  "sys.increase_contrast"  — 0/1 (P51)
+//   ZELTO_KEY_THEME              "sys.theme"              — 0 dark / 1 light (P54)
 //
 // sys.reduce_motion has no #define anywhere yet: it predates this header (P31)
 // and is read as a literal in four places. Left alone deliberately — moving it

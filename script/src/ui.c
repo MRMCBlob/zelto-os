@@ -884,6 +884,9 @@ static JSValue js_prefs_remove(JSContext *ctx, JSValueConst this_val, int argc,
 
 // --- module table ----------------------------------------------------------
 
+static JSValue js_token(JSContext *ctx, JSValueConst this_val, int argc,
+                        JSValueConst *argv);
+
 static const JSCFunctionListEntry zs_native_funcs[] = {
     // views
     JS_CFUNC_DEF("stack", 3, js_stack),
@@ -946,6 +949,8 @@ static const JSCFunctionListEntry zs_native_funcs[] = {
     JS_CFUNC_DEF("prefsGet", 1, js_prefs_get),
     JS_CFUNC_DEF("prefsSet", 2, js_prefs_set),
     JS_CFUNC_DEF("prefsRemove", 1, js_prefs_remove),
+    // The live palette read. Defined below, beside the token table.
+    JS_CFUNC_DEF("token", 1, js_token),
 };
 
 // The design tokens (gfx.h) and the type/weight/axis enums, exported as plain
@@ -961,33 +966,72 @@ static const JSCFunctionListEntry zs_native_funcs[] = {
 // upgrade is a `token(name)` accessor rather than frozen exports, which is a
 // break in the JS palette's shape; measured and decided in P54 stage 3 rather
 // than guessed here.
+// THE COLOUR HALF, as one list of NAME -> TOKEN rather than name -> value.
+//
+// It used to be name -> value, and the values were read once at module init. The
+// appearance is a runtime axis now (P54), so a snapshot is a script app that
+// keeps the palette it launched under while the rest of the phone changes — and
+// there was a second copy of these names further down this file for the export
+// declarations, which is one list too many for something that must not drift.
+static const struct { const char *name; ZToken token; } zs_colors[] = {
+    {"COLOR_BG", Z_TOKEN_BG},
+    {"COLOR_SURFACE", Z_TOKEN_SURFACE},
+    {"COLOR_SURFACE_2", Z_TOKEN_SURFACE_2},
+    {"COLOR_SURFACE_3", Z_TOKEN_SURFACE_3},
+    {"COLOR_BORDER", Z_TOKEN_BORDER},
+    {"COLOR_PRIMARY", Z_TOKEN_PRIMARY},
+    // NEW IN P54, and it should have been here since the JS Button existed:
+    // that Button painted COLOR_TEXT_INV on COLOR_PRIMARY, which is 1.01:1.
+    // See the note over Button in script/js/ui.js.
+    {"COLOR_ON_PRIMARY", Z_TOKEN_ON_PRIMARY},
+    {"COLOR_ACCENT", Z_TOKEN_ACCENT},
+    {"COLOR_TEXT", Z_TOKEN_TEXT},
+    {"COLOR_TEXT_MUTED", Z_TOKEN_TEXT_MUTED},
+    {"COLOR_TEXT_FAINT", Z_TOKEN_TEXT_FAINT},
+    {"COLOR_SUCCESS", Z_TOKEN_SUCCESS},
+    {"COLOR_WARN", Z_TOKEN_WARN},
+    {"COLOR_DANGER", Z_TOKEN_DANGER},
+    {"COLOR_SUCCESS_DIM", Z_TOKEN_SUCCESS_DIM},
+    {"COLOR_WARN_DIM", Z_TOKEN_WARN_DIM},
+    {"COLOR_DANGER_DIM", Z_TOKEN_DANGER_DIM},
+    {"COLOR_ACCENT_DIM", Z_TOKEN_ACCENT_DIM},
+};
+
+#define ZS_COLOR_COUNT ((int)(sizeof(zs_colors) / sizeof(zs_colors[0])))
+
+// token(name) -> packed rgba, resolved NOW. This is what makes the JS palette
+// follow the appearance: zelto/ui's Color object is a set of getters over this,
+// so a script app repainting after a settings change reads the new palette
+// rather than the one its module was initialised with.
+static JSValue js_token(JSContext *ctx, JSValueConst this_val, int argc,
+                        JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "token(name) needs a name");
+    }
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+    for (int i = 0; i < ZS_COLOR_COUNT; i++) {
+        if (strcmp(zs_colors[i].name, name) == 0) {
+            JS_FreeCString(ctx, name);
+            return JS_NewUint32(ctx, color_pack(z_token(zs_colors[i].token)));
+        }
+    }
+    JSValue err = JS_ThrowRangeError(ctx, "no such design token: %s", name);
+    JS_FreeCString(ctx, name);
+    return err;
+}
+
 static void export_tokens(JSContext *ctx, JSModuleDef *m) {
-    struct { const char *name; uint32_t rgba; } colors[] = {
-        {"COLOR_BG", color_pack(Z_COLOR_BG)},
-        {"COLOR_SURFACE", color_pack(Z_COLOR_SURFACE)},
-        {"COLOR_SURFACE_2", color_pack(Z_COLOR_SURFACE_2)},
-        {"COLOR_SURFACE_3", color_pack(Z_COLOR_SURFACE_3)},
-        {"COLOR_BORDER", color_pack(Z_COLOR_BORDER)},
-        {"COLOR_PRIMARY", color_pack(Z_COLOR_PRIMARY)},
-        // NEW IN P54, and it should have been here since the JS Button existed:
-        // that Button painted COLOR_TEXT_INV on COLOR_PRIMARY, which is 1.01:1.
-        // See the note over Button in script/js/ui.js.
-        {"COLOR_ON_PRIMARY", color_pack(Z_COLOR_ON_PRIMARY)},
-        {"COLOR_ACCENT", color_pack(Z_COLOR_ACCENT)},
-        {"COLOR_TEXT", color_pack(Z_COLOR_TEXT)},
-        {"COLOR_TEXT_MUTED", color_pack(Z_COLOR_TEXT_MUTED)},
-        {"COLOR_TEXT_FAINT", color_pack(Z_COLOR_TEXT_FAINT)},
-        {"COLOR_SUCCESS", color_pack(Z_COLOR_SUCCESS)},
-        {"COLOR_WARN", color_pack(Z_COLOR_WARN)},
-        {"COLOR_DANGER", color_pack(Z_COLOR_DANGER)},
-        {"COLOR_SUCCESS_DIM", color_pack(Z_COLOR_SUCCESS_DIM)},
-        {"COLOR_WARN_DIM", color_pack(Z_COLOR_WARN_DIM)},
-        {"COLOR_DANGER_DIM", color_pack(Z_COLOR_DANGER_DIM)},
-        {"COLOR_ACCENT_DIM", color_pack(Z_COLOR_ACCENT_DIM)},
-    };
-    for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
-        JS_SetModuleExport(ctx, m, colors[i].name,
-                           JS_NewUint32(ctx, colors[i].rgba));
+    // The COLOR_* constants stay, for back-compat and because most reads want a
+    // number rather than a call. They are the palette AT MODULE INIT, which for
+    // a freshly launched app is the current one.
+    for (int i = 0; i < ZS_COLOR_COUNT; i++) {
+        JS_SetModuleExport(
+            ctx, m, zs_colors[i].name,
+            JS_NewUint32(ctx, color_pack(z_token(zs_colors[i].token))));
     }
 
     struct { const char *name; int32_t value; } ints[] = {
@@ -1041,13 +1085,9 @@ static void export_tokens(JSContext *ctx, JSModuleDef *m) {
     }
 }
 
+// The NON-colour export names. The colour ones are declared from zs_colors
+// above, because two lists of the same names is how one of them goes stale.
 static const char *const zs_token_names[] = {
-    "COLOR_BG", "COLOR_SURFACE", "COLOR_SURFACE_2", "COLOR_SURFACE_3",
-    "COLOR_BORDER", "COLOR_PRIMARY", "COLOR_ON_PRIMARY", "COLOR_ACCENT",
-    "COLOR_TEXT",
-    "COLOR_TEXT_MUTED", "COLOR_TEXT_FAINT", "COLOR_SUCCESS",
-    "COLOR_WARN", "COLOR_DANGER", "COLOR_SUCCESS_DIM", "COLOR_WARN_DIM",
-    "COLOR_DANGER_DIM", "COLOR_ACCENT_DIM",
     "AXIS_VERTICAL", "AXIS_HORIZONTAL", "AXIS_DEPTH",
     "ALIGN_LEADING", "ALIGN_CENTER", "ALIGN_TRAILING",
     "FONT_CAPTION2", "FONT_CAPTION", "FONT_FOOTNOTE", "FONT_SUBHEAD",
@@ -1087,5 +1127,8 @@ void zs_init_native_module(JSContext *ctx) {
     JS_AddModuleExportList(ctx, m, zs_sensor_funcs, zs_sensor_funcs_count);
     for (size_t i = 0; i < sizeof(zs_token_names) / sizeof(zs_token_names[0]); i++) {
         JS_AddModuleExport(ctx, m, zs_token_names[i]);
+    }
+    for (int i = 0; i < ZS_COLOR_COUNT; i++) {
+        JS_AddModuleExport(ctx, m, zs_colors[i].name);
     }
 }

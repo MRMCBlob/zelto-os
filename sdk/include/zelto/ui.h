@@ -429,6 +429,20 @@ bool z_text_size_reflows(void);
 // question, so the numbers and the decision live in <zelto/gfx.h>.
 #define ZELTO_KEY_INCREASE_CONTRAST "sys.increase_contrast"   // 0/1
 
+// THE APPEARANCE (P54). 0 = dark (the default and the OS's original and only
+// look), 1 = light. Same layering reason as the three above: libzelto applies it
+// in every process before the first build. What the two appearances ARE is a
+// palette question and lives in <zelto/gfx.h>.
+//
+// TWO VALUES, AND NO "AUTO". The reasoning is over ZTheme in <zelto/gfx.h>; the
+// short version is that no phone switches appearance on a light reading (iOS's
+// "Automatic" and Android's are sunset/sunrise SCHEDULES, not photometry), that
+// this OS's ambient sensor is fabricated by zsysd from an environment variable
+// and so is constant for the life of a process — making any hysteresis band a
+// threshold no test could ever cross — and that a schedule would need a real
+// clock and a location the phone does not have.
+#define ZELTO_KEY_THEME "sys.theme"   // 0 = dark, 1 = light
+
 // The per-step offset in POINTS, indexed by the size step. Down from the default
 // it is one point per step; up it is two, then two, then two — Apple's own
 // spacing, which grows faster above the default because that is the direction

@@ -161,9 +161,9 @@ export function Navigator(rootScreen) {
 // because the STRINGS were laid out, which they were. They were just invisible.
 export function Button(label, onTap) {
   return HStack({ padding: 14, align: N.ALIGN_CENTER }, [
-    Text(label).color(N.COLOR_ON_PRIMARY).weight(N.WEIGHT_MEDIUM),
+    Text(label).color(Color.onPrimary).weight(N.WEIGHT_MEDIUM),
   ])
-    .bg(N.COLOR_PRIMARY)
+    .bg(Color.primary)
     .radius(12)
     .onTap(onTap);
 }
@@ -171,26 +171,37 @@ export function Button(label, onTap) {
 // --- Design tokens ---------------------------------------------------------
 // Re-exported straight from gfx.h (via the native module), so the palette has
 // exactly one source of truth.
+//
+// GETTERS, NOT CONSTANTS (P54). The OS has a runtime appearance now, and these
+// used to be read once when the module initialised — so a script app kept the
+// palette it launched under while every C surface around it changed. Each
+// property is a call into z_token(), which is where the C side reads it from
+// too, so a script app repainting after a settings change gets the new one.
+//
+// The N.COLOR_* constants are still exported and are still a snapshot. They are
+// the right thing for a value captured once at startup and the wrong thing for
+// anything drawn per build; this object is the one to use.
+const token = (name) => N.token(name);
 
 export const Color = {
-  bg: N.COLOR_BG,
-  surface: N.COLOR_SURFACE,
-  surface2: N.COLOR_SURFACE_2,
-  surface3: N.COLOR_SURFACE_3,
-  border: N.COLOR_BORDER,
-  primary: N.COLOR_PRIMARY,
-  onPrimary: N.COLOR_ON_PRIMARY,
-  accent: N.COLOR_ACCENT,
-  text: N.COLOR_TEXT,
-  textMuted: N.COLOR_TEXT_MUTED,
-  textFaint: N.COLOR_TEXT_FAINT,
-  success: N.COLOR_SUCCESS,
-  warn: N.COLOR_WARN,
-  danger: N.COLOR_DANGER,
-  successDim: N.COLOR_SUCCESS_DIM,
-  warnDim: N.COLOR_WARN_DIM,
-  dangerDim: N.COLOR_DANGER_DIM,
-  accentDim: N.COLOR_ACCENT_DIM,
+  get bg() { return token("COLOR_BG"); },
+  get surface() { return token("COLOR_SURFACE"); },
+  get surface2() { return token("COLOR_SURFACE_2"); },
+  get surface3() { return token("COLOR_SURFACE_3"); },
+  get border() { return token("COLOR_BORDER"); },
+  get primary() { return token("COLOR_PRIMARY"); },
+  get onPrimary() { return token("COLOR_ON_PRIMARY"); },
+  get accent() { return token("COLOR_ACCENT"); },
+  get text() { return token("COLOR_TEXT"); },
+  get textMuted() { return token("COLOR_TEXT_MUTED"); },
+  get textFaint() { return token("COLOR_TEXT_FAINT"); },
+  get success() { return token("COLOR_SUCCESS"); },
+  get warn() { return token("COLOR_WARN"); },
+  get danger() { return token("COLOR_DANGER"); },
+  get successDim() { return token("COLOR_SUCCESS_DIM"); },
+  get warnDim() { return token("COLOR_WARN_DIM"); },
+  get dangerDim() { return token("COLOR_DANGER_DIM"); },
+  get accentDim() { return token("COLOR_ACCENT_DIM"); },
 };
 
 // An ad-hoc colour: rgba(0x4a, 0xa3, 0xff) — prefer a token, but a chart or an

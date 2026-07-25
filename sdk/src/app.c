@@ -3031,14 +3031,19 @@ static int app_run(ZApp *app) {
     // is not gated on the opt-out: a colour swap moves no geometry, so the bar
     // and the keyboard take it too.
     z_contrast_apply(z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0);
-    // THE APPEARANCE (P54). An env hook for now, which is this project's
-    // convention for any actuation a test or the shot catalogue has to drive
-    // without tapping a coordinate. The brokered sys.theme that supersedes it is
-    // stage 3's; this line becomes its default rather than its replacement.
+    // THE APPEARANCE (P54). The brokered value, with ZELTO_THEME as an override
+    // for the harnesses — this project's convention for any actuation a test or
+    // the shot catalogue has to drive without tapping a coordinate. The env wins
+    // when set, because a shot that says "light" must not depend on what the
+    // seeded settings store happened to contain.
     {
         const char *th = getenv("ZELTO_THEME");
-        z_theme_apply(th && strcmp(th, "light") == 0 ? Z_THEME_LIGHT
-                                                     : Z_THEME_DARK);
+        z_theme_apply(th && th[0]
+                          ? (strcmp(th, "light") == 0 ? Z_THEME_LIGHT
+                                                      : Z_THEME_DARK)
+                          : (z_setting_get_int(ZELTO_KEY_THEME, 0) != 0
+                                 ? Z_THEME_LIGHT
+                                 : Z_THEME_DARK));
     }
 
     // SAYABLE ON THE TARGET (P51). The whole of Dynamic Type verifies in the sim
@@ -3049,9 +3054,11 @@ static int app_run(ZApp *app) {
     // ACTUATE harness had to make sayable first. One line, per process, naming
     // the step, what Body becomes, and whether the process opted out — so a
     // seeded boot shows the number moved and the bar's line shows it did not.
-    fprintf(stderr, "zelto: type step=%d body=%.0f reflow=%d contrast=%d%s\n",
+    fprintf(stderr,
+            "zelto: type step=%d body=%.0f reflow=%d contrast=%d theme=%s%s\n",
             z_text_size(), (double)z_font_units(Z_FONT_BODY),
             z_text_size_reflows() ? 1 : 0, z_contrast_increased() ? 1 : 0,
+            z_theme() == Z_THEME_LIGHT ? "light" : "dark",
             z_font_units(Z_FONT_BODY) == (float)Z_FONT_BODY &&
                     z_text_size() != Z_TEXT_SIZE_DEFAULT
                 ? " (opted out)"
@@ -4107,7 +4114,8 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
         // setting.
         if (strcmp(key, ZELTO_KEY_TEXT_SIZE) == 0 ||
             strcmp(key, ZELTO_KEY_BOLD_TEXT) == 0 ||
-            strcmp(key, ZELTO_KEY_INCREASE_CONTRAST) == 0) {
+            strcmp(key, ZELTO_KEY_INCREASE_CONTRAST) == 0 ||
+            strcmp(key, ZELTO_KEY_THEME) == 0) {
             bool moved = z_text_size_apply(
                 (int)z_setting_get_int(ZELTO_KEY_TEXT_SIZE,
                                        Z_TEXT_SIZE_DEFAULT),
@@ -4116,7 +4124,34 @@ static void ctrl_dispatch_line(ZApp *app, const char *line) {
             // the old contrast is a frame drawn at neither setting.
             moved |= z_contrast_apply(
                 z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0);
+            // THE APPEARANCE, unless a harness pinned it. ZELTO_THEME is an
+            // override at startup, so it has to stay an override here — a shot
+            // booted at ZELTO_THEME=light must not flip to dark because some
+            // other process wrote the setting while the picture was being taken.
+            {
+                const char *th = getenv("ZELTO_THEME");
+                if (!(th && th[0])) {
+                    moved |= z_theme_apply(
+                        z_setting_get_int(ZELTO_KEY_THEME, 0) != 0
+                            ? Z_THEME_LIGHT
+                            : Z_THEME_DARK);
+                }
+            }
             if (moved) {
+                // SAYABLE, for the reason the startup line above is: an
+                // actuation with no log line cannot be tested, and the claim
+                // here — "every process applied it WITHOUT a reboot" — is
+                // exactly the kind that a screenshot of one surface appears to
+                // support and does not. One line per process that actually
+                // moved, so counting them counts the surfaces that followed.
+                // (P54: written because the first version of
+                // test_theme_setting_sim passed with sys.theme deleted from the
+                // fan-out list — it was only ever checking zsysd's broadcast.)
+                fprintf(stderr,
+                        "zelto: settings applied step=%d contrast=%d theme=%s\n",
+                        z_text_size(), z_contrast_increased() ? 1 : 0,
+                        z_theme() == Z_THEME_LIGHT ? "light" : "dark");
+                fflush(stderr);
                 // A FULL REPAINT, not an invalidate. A size change is not a
                 // recolour: every string on the surface re-measures, so every
                 // frame the damage tracker still believes is clean is now wrong.
