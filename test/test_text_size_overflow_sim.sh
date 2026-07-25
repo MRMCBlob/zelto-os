@@ -239,6 +239,15 @@ done
 audit "the photo grid" photos os.zelto.photos 8 2 \
     SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB"
 
+# --- the viewer, with its confirmation up --------------------------------
+# The densest thing this app draws: a three-button toolbar in a row, and over it
+# an alert whose body is prose. The toolbar is where the size hurts — three
+# labels side by side is exactly the shape that walks a control off the right
+# edge — and the card is a WrapText that must not outgrow the card it is in.
+audit "the photo viewer" photos-viewer os.zelto.photos 12 4 \
+    SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB" ZELTO_PHOTOS_VIEW=1 \
+    ZELTO_TAP_LABEL=Delete ZELTO_TAP_APP=os.zelto.photos ZELTO_TAP_AT=9000
+
 # --- the empty photo library -------------------------------------------------
 # The state a new phone is in, and the one screen in this app made of PROSE. A
 # Text neither wraps nor truncates, so the sentence under "No photos" is a

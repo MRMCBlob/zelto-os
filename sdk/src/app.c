@@ -330,6 +330,7 @@ struct ZApp {
     // ZELTO_TAP_LABEL (P46): press a control by the WORDS ON IT, at a deadline.
     bool tap_armed;
     double tap_deadline;
+    size_t tap_seq_off;   // ZELTO_TAP_LABEL: offset of the NEXT label in the list
     ZTimerCb after_cb;
     void *after_ud;
 
@@ -3303,8 +3304,37 @@ static int app_run(ZApp *app) {
         if (app->tap_armed && z_now_seconds() >= app->tap_deadline) {
             // As with the probe: wait for a tree rather than press into nothing.
             if (app->root) {
-                app->tap_armed = false;
-                tap_by_label(app, getenv("ZELTO_TAP_LABEL"));
+                // A SEQUENCE, comma-separated: "Delete,Delete". One label could
+                // not drive anything behind a confirmation, and a confirmation is
+                // exactly the thing a harness must be able to reach — the second
+                // tap lands on a control that DID NOT EXIST when the first was
+                // arranged, so it cannot be expressed as two independent hooks
+                // and certainly not as a coordinate.
+                //
+                // Each step re-arms rather than firing in a loop: the next
+                // control has to be BUILT before it can be found, and a build
+                // happens between iterations of this loop, not inside one.
+                const char *all = getenv("ZELTO_TAP_LABEL");
+                const char *p = all ? all + app->tap_seq_off : NULL;
+                if (p && *p) {
+                    char one[64];
+                    const char *comma = strchr(p, ',');
+                    size_t len = comma ? (size_t)(comma - p) : strlen(p);
+                    if (len >= sizeof(one)) {
+                        len = sizeof(one) - 1;
+                    }
+                    memcpy(one, p, len);
+                    one[len] = '\0';
+                    tap_by_label(app, one);
+                    if (comma) {
+                        app->tap_seq_off = (size_t)(comma - all) + 1;
+                        app->tap_deadline = z_now_seconds() + 1.0;
+                    } else {
+                        app->tap_armed = false;
+                    }
+                } else {
+                    app->tap_armed = false;
+                }
             } else {
                 app->tap_deadline = z_now_seconds() + 0.1;
             }

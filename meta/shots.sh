@@ -1268,6 +1268,22 @@ EXPECT='zelto-photos\|No photos' MUSTNOT='zelto-photos\|5 photos' \
 run_shot 94-photos-empty "Photos: nothing captured yet (the empty state)" 8 \
     SIM_APP=zelto-photos
 
+# 95/96: the viewer and its one irreversible action. Reached by the env hook
+# (ZELTO_PHOTOS_VIEW), never by a tap coordinate; the delete card by the label
+# sequence, which is also the only way to photograph a screen that exists for one
+# tap and then goes away.
+#
+# The position counter is the marker rather than a filename: "2 of 5" says the
+# viewer is on a specific photo of a known library, which a picture alone cannot.
+EXPECT='zelto-photos\|2 of 5' \
+run_shot 95-photos-viewer "Photos: the full-size viewer (swipe between, three actions)" 9 \
+    SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB" ZELTO_PHOTOS_VIEW=1
+
+EXPECT='zelto-photos\|Delete photo?' \
+run_shot 96-photos-delete "Photos: the delete confirmation (the only irreversible action)" 12 \
+    SIM_APP=zelto-photos ZELTO_PHOTOS_ROOT="$PHOTOLIB" ZELTO_PHOTOS_VIEW=1 \
+    ZELTO_TAP_LABEL=Delete ZELTO_TAP_APP=os.zelto.photos ZELTO_TAP_AT=9000
+
 # ===========================================================================
 # CONTACT SHEET (self-contained HTML gallery — no ImageMagick dependency)
 # ===========================================================================

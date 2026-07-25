@@ -7,6 +7,6 @@ name=Notes
 subtitle=Receives shares + deep links
 exec=/usr/bin/zelto-notes
 color=1d6e44
-share_targets=text/plain
+share_targets=text/plain,image/png
 links=zelto
 icon=/usr/share/zelto/apps/icons/os.zelto.notes.png

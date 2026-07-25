@@ -113,3 +113,39 @@ applying a rule to itself — a claim, not a control.
 What that does **not** cover: wlr-screencopy is still bindable by any client, so this stops
 the *system* screenshot path rather than every possible capture. Closing that would also
 stop `grim`, which is how the shot catalogue photographs the lock screen.
+
+## Browsing, and what you can do with a photo
+
+`zelto-photos` is the reader: a grid of thumbnails, and a full-screen viewer you
+reach by tapping one. Back out of the viewer with the system gesture — it is a
+`Navigator`, so the edge-swipe and Escape pop it like any other screen in the OS.
+
+| Action | What it actually does |
+|---|---|
+| Swipe left / right | Steps to the next or previous photo, clamped at both ends. |
+| Share | `z_share` with `mime = image/png` and the photo's **path** as the payload. |
+| Wallpaper | Writes `sys.wallpaper` (P25). The launcher and lock screen repaint live. |
+| Delete | Asks first, then unlinks the photo **and** its thumbnail. |
+
+**Share carries a path, not bytes.** `z_share` moves text (binary items are
+Planned), and a path is a working handle here precisely because the media root is
+shared rather than app-scoped — the receiver can open it. A receiving app
+declares `share_targets=image/png` in its manifest.
+
+**Delete is the only irreversible thing in this app.** There is no trash: the
+bytes are unlinked. So it is confirmed, and the confirmation is tested as a real
+gate — one tap must *not* delete — rather than assumed to be one.
+
+### Driving it without coordinates
+
+`ZELTO_PHOTOS_VIEW=<index>` opens the viewer on a photo at boot (the
+`ZELTO_SETTINGS_SCREEN` idiom), and `ZELTO_PHOTOS_ROOT` points the library at a
+prepared directory. Controls are pressed by label:
+
+```sh
+ZELTO_TAP_LABEL="Delete,Delete Photo" ZELTO_TAP_APP=os.zelto.photos
+```
+
+`ZELTO_TAP_LABEL` takes a **comma-separated sequence**, because a control behind
+a confirmation did not exist when the first tap was arranged and so cannot be
+reached by any single hook — or by a coordinate.

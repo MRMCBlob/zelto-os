@@ -136,6 +136,22 @@ ZCOMP_INPUT_DELAY=ms            # when to start (default 6500 — after the app 
 ZCOMP_SHOT_AT="ms [ms ...]"     # fire the capture chord at each moment
 ```
 
+Controls are pressed by NAME, never by coordinate:
+
+```sh
+ZELTO_TAP_LABEL="Delete,Delete Photo"   # a comma-separated SEQUENCE
+ZELTO_TAP_APP=os.zelto.photos           # scope it to one surface
+ZELTO_TAP_AT=9000                       # when (ms; the app has to have mapped)
+```
+
+The sequence exists for confirmations: the second control did not exist when the
+first tap was arranged, so it cannot be reached by two independent hooks. Each
+step re-arms rather than firing in a loop, because the next control has to be
+built before it can be found. Scope it with `ZELTO_TAP_APP` — without it every
+surface in the boot gets the same hook, and a label two surfaces share is pressed
+on whichever built first.
+
+
 `ZCOMP_SHOT_AT` takes a **list** on purpose. A test asserting that no screenshot was written
 while the screen was locked also passes in a boot that never managed to take one at all, so
 two moments in one boot — one before the lock engages, one after — let the run carry its own
