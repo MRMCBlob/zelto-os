@@ -37,7 +37,7 @@
 
 #include "framework/ztest.h"
 
-#include "contrast.c"
+#include "theme.c"
 
 // WCAG 2.1 relative luminance. The channel transfer is sRGB's, not a gamma of
 // 2.2 — the difference is small in the mid greys and this palette lives there.
@@ -70,6 +70,37 @@ static void need(const char *ink_name, ZColor ink, const char *surf_name,
 }
 
 int main(void) {
+    // --- 0. THE TABLE IS COMPLETE -----------------------------------------
+    // The palette is a designated-initialiser table indexed by ZToken (P54), so
+    // a token added to the enum and forgotten in the table is not a compile
+    // error — it is a silently TRANSPARENT colour, which paints nothing and
+    // looks like a layout bug on whatever surface happened to use it. Nothing in
+    // this OS is legitimately alpha 0 (the transparent fixed-gap idiom writes
+    // z_rgba(0,0,0,0) directly and never goes through a token), so a zero alpha
+    // is exactly the missing row.
+    z_contrast_apply(false);
+    for (int t = 0; t < Z_TOKEN_COUNT; t++) {
+        if (z_token((ZToken)t).a == 0) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "token %d has no row in the palette table - a token the "
+                     "enum knows and the table does not is a transparent colour, "
+                     "not a compile error",
+                     t);
+            zt_fail_(__FILE__, __LINE__, msg, "a colour", "alpha 0");
+        }
+    }
+    // And out of range is LOUD. The two quiet answers — clamp to the first
+    // entry, or read past the table — both paint a plausible screen.
+    ZColor oob = z_token((ZToken)Z_TOKEN_COUNT);
+    if (!(oob.r == 0xff && oob.g == 0x00 && oob.b == 0xff && oob.a == 0xff)) {
+        zt_fail_(__FILE__, __LINE__,
+                 "z_token() of an out-of-range token must be the one colour "
+                 "that is not in the palette, so a bad index is the loudest "
+                 "thing on the screen rather than a plausible one",
+                 "magenta", "something paintable");
+    }
+
     // --- 1. Increase Contrast ON: everything clears its bar ----------------
     // The surfaces are the four an ink is drawn on in this OS. SURFACE_4 is not
     // in the list on purpose: it is the keyboard's raised key cap, and the only

@@ -34,6 +34,15 @@ static inline ZColor z_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 // colour token; use it wherever a surface is darkened rather than tinted.
 static inline ZColor z_scrim(uint8_t a) { return z_rgba(0, 0, 0, a); }
 
+// The same colour at a different opacity. For the case where one token has two
+// strengths and they are strengths of the SAME thing — the drag drop-target's
+// empty slot and the placeholder under the icon in hand. Two tokens for that
+// would be two things to retint and one of them would be forgotten.
+static inline ZColor z_fade(ZColor c, uint8_t a) {
+    c.a = a;
+    return c;
+}
+
 // Linearly interpolate between two colours (t in [0,1]: 0 = a, 1 = b), each
 // channel independently — the cross-fade a state-change animation drives (a
 // toggle chip recolouring off->on on a spring-backed t rather than hard-swapping).
@@ -54,10 +63,31 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // that the one thing that IS coloured on screen — an app's icon — is the thing
 // the eye goes to. Von Restorff: an accent only accents if it is rare.
 //
-// This header is the single source of truth: every system surface and app draws
-// from these tokens (no ad-hoc hexes), so retinting the OS is a matter of editing
-// the values below. A themed, runtime z_token_color() (and a light palette) is
-// Planned — see the P37 notes.
+// This header is the single source of truth for the token NAMES and for what
+// each one means; sdk/src/theme.c holds the VALUES, one column per appearance.
+// Every system surface and app draws from these tokens (no ad-hoc hexes), so
+// retinting the OS is a matter of editing that table.
+//
+// EVERY TOKEN IS A RUNTIME LOOKUP (P54). Until P54 they were compile-time
+// constants and exactly four of them — z_ink_muted, z_ink_faint, z_hairline,
+// z_on_fill — could change at runtime, because P51 needed those four for
+// Increase Contrast and generalised nothing. A phone that cannot be light is
+// not a themed phone, it is a dark phone. So the P51 shape is now the shape of
+// the whole palette: each macro expands to `z_token(Z_TOKEN_*)`, which is a
+// function call it already was (z_rgba is a static inline), and not one of the
+// 121 migrated call sites changed or learned that an appearance exists.
+//
+// WHAT THAT COSTS AND WHY IT IS FINE: a token read is now an indexed load out of
+// a static table instead of an immediate. The toolkit builds a tree per frame at
+// 40Hz on a phone-sized surface; the palette is read a few hundred times per
+// build against a keyboard prediction pass that was measured in HUNDREDS of
+// microseconds. It is not on the list of things that cost anything here.
+//
+// A NOTE ON WHERE VALUES LIVE. Two appearances in one header, side by side in
+// the comments, is how a palette drifts: the eye reads the column it is looking
+// for. In theme.c the two are one table with two columns, which is the form a
+// palette is actually reviewed in — and the WCAG table in test_contrast_tokens
+// is computed over both of them, so neither column can quietly go wrong.
 //
 // SURFACES climb from BG (the deepest, root — true black, which on an OLED phone
 // is the panel switched off) up through SURFACE_3 (the highest: an input, a key);
@@ -70,29 +100,89 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // introducing a hue. SUCCESS/WARN/DANGER stay coloured because their whole job is
 // to be exceptional, each with a *_DIM panel fill for a state-tinted surface.
 
+// THE TOKENS, as an enumeration. The macros below are the way to say one of
+// these; this enum exists so the table in theme.c can be indexed by it (a
+// designated initialiser per token, so the table cannot silently depend on the
+// order things are written in) and so a test can walk the whole palette.
+typedef enum ZToken {
+    Z_TOKEN_BG,
+    Z_TOKEN_SURFACE,
+    Z_TOKEN_SURFACE_2,
+    Z_TOKEN_SURFACE_3,
+    Z_TOKEN_SURFACE_4,
+    Z_TOKEN_BORDER,
+    Z_TOKEN_PRIMARY,
+    Z_TOKEN_ON_PRIMARY,
+    Z_TOKEN_ACCENT,
+    Z_TOKEN_TEXT,
+    Z_TOKEN_TEXT_MUTED,
+    Z_TOKEN_TEXT_FAINT,
+    Z_TOKEN_TEXT_INV,
+    Z_TOKEN_SUCCESS,
+    Z_TOKEN_WARN,
+    Z_TOKEN_DANGER,
+    Z_TOKEN_SUCCESS_DIM,
+    Z_TOKEN_WARN_DIM,
+    Z_TOKEN_DANGER_DIM,
+    Z_TOKEN_ACCENT_DIM,
+    Z_TOKEN_SCRIM,
+    Z_TOKEN_MATERIAL_THIN,
+    Z_TOKEN_MATERIAL_REGULAR,
+    Z_TOKEN_MATERIAL_THICK,
+    Z_TOKEN_MATERIAL_SHEET,
+    Z_TOKEN_MATERIAL_EDGE,
+    Z_TOKEN_SHADOW,
+    Z_TOKEN_PRESS,
+    Z_TOKEN_DROP_TARGET,
+    Z_TOKEN_COUNT,
+} ZToken;
+
+// The palette, resolved for the appearance this process is drawing in and for
+// whether Increase Contrast is on. Out-of-range returns opaque magenta rather
+// than reading past the table: a token that does not exist should be the
+// loudest thing on the screen, not black-on-black.
+ZColor z_token(ZToken token);
+
 // Base surfaces (deepest -> highest elevation).
-#define Z_COLOR_BG         z_rgba(0x00, 0x00, 0x00, 0xff)  // root background (true black)
-#define Z_COLOR_SURFACE    z_rgba(0x1c, 0x1c, 0x1e, 0xff)  // raised panel
-#define Z_COLOR_SURFACE_2  z_rgba(0x2c, 0x2c, 0x2e, 0xff)  // card / row
-#define Z_COLOR_SURFACE_3  z_rgba(0x3a, 0x3a, 0x3c, 0xff)  // input / key / chip
-// One step lighter again, for a control that must stand OFF a surface which is
-// itself already raised — the character caps on the keyboard's dark material,
-// where SURFACE_3 sits too close to the field of keys to read as a key.
-#define Z_COLOR_SURFACE_4  z_rgba(0x55, 0x55, 0x59, 0xff)  // key cap on a panel
-#define Z_COLOR_BORDER     z_hairline()                    // hairline / divider
+#define Z_COLOR_BG         z_token(Z_TOKEN_BG)         // root background
+#define Z_COLOR_SURFACE    z_token(Z_TOKEN_SURFACE)    // raised panel
+#define Z_COLOR_SURFACE_2  z_token(Z_TOKEN_SURFACE_2)  // card / row
+#define Z_COLOR_SURFACE_3  z_token(Z_TOKEN_SURFACE_3)  // input / key / chip
+// One step further from the page again, for a control that must stand OFF a
+// surface which is itself already raised — the character caps on the keyboard's
+// material, where SURFACE_3 sits too close to the field of keys to read as a key.
+#define Z_COLOR_SURFACE_4  z_token(Z_TOKEN_SURFACE_4)  // key cap on a panel
+#define Z_COLOR_BORDER     z_token(Z_TOKEN_BORDER)     // hairline / divider
 
 // The interactive fill. Not a hue — a light, "lit" surface. Text and glyphs on it
 // use ON_PRIMARY (dark), NOT TEXT_INV.
-#define Z_COLOR_PRIMARY    z_rgba(0xf2, 0xf2, 0xf7, 0xff)  // filled action / active
-#define Z_COLOR_ON_PRIMARY z_rgba(0x0a, 0x0a, 0x0c, 0xff)  // ink ON a PRIMARY fill
-#define Z_COLOR_ACCENT     z_rgba(0xff, 0xff, 0xff, 0xff)  // highlight / active glyph
+#define Z_COLOR_PRIMARY    z_token(Z_TOKEN_PRIMARY)    // filled action / active
+#define Z_COLOR_ON_PRIMARY z_token(Z_TOKEN_ON_PRIMARY) // ink ON a PRIMARY fill
+#define Z_COLOR_ACCENT     z_token(Z_TOKEN_ACCENT)     // highlight / active glyph
 
 // Text. NOT all AA, and the comment that used to say so was the reason nobody
-// looked — see the measured table above z_ink_muted() below.
-#define Z_COLOR_TEXT       z_rgba(0xf2, 0xf2, 0xf7, 0xff)  // primary (soft white)
-#define Z_COLOR_TEXT_MUTED z_ink_muted()                   // secondary / caption
-#define Z_COLOR_TEXT_FAINT z_ink_faint()                   // de-emphasised / disabled
-#define Z_COLOR_TEXT_INV   z_rgba(0xf4, 0xf4, 0xf8, 0xff)  // on a SEMANTIC (coloured) fill
+// looked — see the measured table below.
+#define Z_COLOR_TEXT       z_token(Z_TOKEN_TEXT)       // primary
+#define Z_COLOR_TEXT_MUTED z_token(Z_TOKEN_TEXT_MUTED) // secondary / caption
+#define Z_COLOR_TEXT_FAINT z_token(Z_TOKEN_TEXT_FAINT) // de-emphasised / disabled
+#define Z_COLOR_TEXT_INV   z_token(Z_TOKEN_TEXT_INV)   // on a SEMANTIC (coloured) fill
+
+// THE DRAG DROP TARGET — the one hue in the OS, and the one place the "no brand
+// hue" rule argues FOR a colour rather than against it.
+//
+// This was a raw #4aa3ff in system/launcher/main.c, at two alphas, and it is the
+// only hue in the shipped product that was in no table. The rule it appeared to
+// break is at the top of this file: the colour in the OS comes from the wallpaper
+// and the app icons, never from the chrome. But the argument that rule rests on
+// is Von Restorff — an accent only accents if it is RARE — and this mark is the
+// rarest thing the OS draws. It exists for the seconds a finger is holding an app
+// icon, over a wallpaper, to say "it can go here". Its predecessor was a white
+// ghost at 8% and the comment beside it records why that was replaced: on a busy
+// wallpaper it was easy to miss, which for a drop target is the whole failure.
+//
+// So it is KEPT and NAMED rather than deleted, and naming it is what makes it
+// theme-able — a hardcoded azure at 19% alpha over a light wallpaper is a smear.
+#define Z_COLOR_DROP_TARGET z_token(Z_TOKEN_DROP_TARGET)
 
 // ---------------------------------------------------------------------------
 // INCREASE CONTRAST (P51) — the three tokens with two values, and the numbers.
@@ -141,9 +231,12 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // sites keep working unchanged and none of them learns a setting exists. This
 // is the runtime z_token_color() the P37 note called Planned, arriving for the
 // one reason that needed it first.
-ZColor z_ink_muted(void);
-ZColor z_ink_faint(void);
-ZColor z_hairline(void);
+//
+// P54 GENERALISED IT AND DELETED THE THREE FUNCTIONS. z_ink_muted /
+// z_ink_faint / z_hairline were three hand-written two-branch functions for
+// three tokens; there are 29 tokens and two appearances now, so the branch
+// lives once, in z_token(), over a table with a high-contrast column. The three
+// names had no caller outside their own macros.
 
 // On/off for this process, and whether it is on. Applied from the brokered
 // ZELTO_KEY_INCREASE_CONTRAST at startup and on change, exactly like the text
@@ -198,9 +291,9 @@ bool z_contrast_increased(void);
 // that pairing measures 3.11:1 — Apple's own red badge does not clear AA. Zelto
 // picks the ink by measurement, so a DANGER fill gets dark ink and looks slightly
 // unlike iOS. That is the rule doing its job, not a mistake.
-#define Z_COLOR_SUCCESS    z_rgba(0x30, 0xd1, 0x58, 0xff)  // iOS dark systemGreen
-#define Z_COLOR_WARN       z_rgba(0xff, 0x9f, 0x0a, 0xff)  // iOS dark systemOrange
-#define Z_COLOR_DANGER     z_rgba(0xff, 0x45, 0x3a, 0xff)  // iOS dark systemRed
+#define Z_COLOR_SUCCESS    z_token(Z_TOKEN_SUCCESS)  // iOS systemGreen
+#define Z_COLOR_WARN       z_token(Z_TOKEN_WARN)     // iOS systemOrange
+#define Z_COLOR_DANGER     z_token(Z_TOKEN_DANGER)   // iOS systemRed
 
 // THE INK TO DRAW ON A FILL — never a fixed token. Returns whichever of the OS's
 // two inks (TEXT_INV, light / ON_PRIMARY, dark) reaches further from `fill` by
@@ -213,13 +306,13 @@ bool z_contrast_increased(void);
 ZColor z_on_fill(ZColor fill);
 
 // Semantic — dim panel fills (a state-tinted surface, not a saturated block).
-#define Z_COLOR_SUCCESS_DIM z_rgba(0x16, 0x3d, 0x2a, 0xff)
-#define Z_COLOR_WARN_DIM    z_rgba(0x3d, 0x30, 0x16, 0xff)
-#define Z_COLOR_DANGER_DIM  z_rgba(0x3d, 0x1c, 0x1e, 0xff)
-#define Z_COLOR_ACCENT_DIM  z_rgba(0x16, 0x32, 0x4a, 0xff)
+#define Z_COLOR_SUCCESS_DIM z_token(Z_TOKEN_SUCCESS_DIM)
+#define Z_COLOR_WARN_DIM    z_token(Z_TOKEN_WARN_DIM)
+#define Z_COLOR_DANGER_DIM  z_token(Z_TOKEN_DANGER_DIM)
+#define Z_COLOR_ACCENT_DIM  z_token(Z_TOKEN_ACCENT_DIM)
 
 // Modal backdrop behind an overlay card (chooser / consent / recents).
-#define Z_COLOR_SCRIM       z_scrim(0xb0)
+#define Z_COLOR_SCRIM       z_token(Z_TOKEN_SCRIM)
 
 // --- Materials — the translucent tint of a blurred system surface ---------
 // The shade, the dock, the keyboard and a modal sheet are not opaque panels: they
@@ -242,14 +335,14 @@ ZColor z_on_fill(ZColor fill);
 //            sheet must be laid over — frost it over the WALLPAPER, not over the
 //            screen it covered, or the content underneath reads through the
 //            content on top (two sets of app icons at once).
-#define Z_COLOR_MATERIAL_THIN    z_rgba(0x1c, 0x1c, 0x1e, 0x8c)   // ~55%
-#define Z_COLOR_MATERIAL_REGULAR z_rgba(0x14, 0x14, 0x16, 0xb8)   // ~72%
-#define Z_COLOR_MATERIAL_THICK   z_rgba(0x0e, 0x0e, 0x10, 0xdb)   // ~86%
-#define Z_COLOR_MATERIAL_SHEET   z_rgba(0x08, 0x08, 0x0a, 0xe6)   // ~90%
+#define Z_COLOR_MATERIAL_THIN    z_token(Z_TOKEN_MATERIAL_THIN)     // ~55%
+#define Z_COLOR_MATERIAL_REGULAR z_token(Z_TOKEN_MATERIAL_REGULAR)  // ~72%
+#define Z_COLOR_MATERIAL_THICK   z_token(Z_TOKEN_MATERIAL_THICK)    // ~86%
+#define Z_COLOR_MATERIAL_SHEET   z_token(Z_TOKEN_MATERIAL_SHEET)    // ~90%
 
 // The hairline that edges a material (a 1px inner border catching the "light" at
 // its rim). It is what stops a translucent panel dissolving into a busy backdrop.
-#define Z_COLOR_MATERIAL_EDGE    z_rgba(0xff, 0xff, 0xff, 0x1f)
+#define Z_COLOR_MATERIAL_EDGE    z_token(Z_TOKEN_MATERIAL_EDGE)
 
 // --- Corner radii — one geometry for the whole OS -------------------------
 // Every rounded surface picks a step here, so the system reads as one object set.
@@ -406,7 +499,7 @@ ZColor z_on_fill(ZColor fill);
 #define Z_ELEV_1   6.0f    // subtle: a knob, a key cap, an app icon
 #define Z_ELEV_2   14.0f   // a home widget, the dock plate — over the wallpaper
 #define Z_ELEV_3   28.0f   // overlays, modals, the lifted ghost
-#define Z_COLOR_SHADOW      z_scrim(0x80)
+#define Z_COLOR_SHADOW      z_token(Z_TOKEN_SHADOW)
 
 // --- Press feedback — the touch-down highlight veil ----------------------
 // A tappable control (Button, an OnTap tile, a nav mark) paints this soft light
@@ -414,7 +507,7 @@ ZColor z_on_fill(ZColor fill);
 // and release fades it out. One token, whose peak alpha the toolkit scales by the
 // live press spring (0 released -> 1 held); a light overlay reads as a highlight
 // on both the dark surfaces and the azure PRIMARY fill. See P31 (Feedback.md).
-#define Z_COLOR_PRESS      z_rgba(0xff, 0xff, 0xff, 0x3d)  // peak ~24% white veil
+#define Z_COLOR_PRESS      z_token(Z_TOKEN_PRESS)  // peak ~24% veil
 
 // --- Back-compat aliases (older token names) -----------------------------
 #define Z_COLOR_BACKGROUND Z_COLOR_BG

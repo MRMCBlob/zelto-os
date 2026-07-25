@@ -279,7 +279,13 @@ run_shot() {
         MARKERLESS+=("$name")
         MARKER_FAIL=1
     fi
-    if [ -n "$ONLY" ] && [[ "$name" != *"$ONLY"* ]]; then SEED=""; ZAP=""; return 0; fi
+    # ONLY is an EXTENDED REGEX matched against the shot name, not a substring.
+    # A bare word is still a valid regex that matches as a substring, so every
+    # existing `ONLY=home` invocation means what it always did — but a review
+    # subset ("re-shoot these fifteen and diff them", P54 stage 0) is a set of
+    # unrelated names, and fifteen sequential full-catalogue passes to reach
+    # them is three hours to answer a question worth fifteen minutes.
+    if [ -n "$ONLY" ] && [[ ! "$name" =~ $ONLY ]]; then SEED=""; ZAP=""; return 0; fi
 
     local dir="$TMP/$name"
     local data="$dir/data" xdg="$dir/xdg"

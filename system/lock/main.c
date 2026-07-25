@@ -515,7 +515,10 @@ static ZView keypad(LockState *s) {
     for (int i = 0; i < 4; i++) {
         bool on = i < s->entry_len;
         dots.children[i] = Frame(16.0f, 16.0f,
-            Rect(.color = on ? Z_COLOR_TEXT : z_rgba(0xf2, 0xf2, 0xf7, 0x4d),
+            // An unfilled dot is the SAME ink at 30%, not a second colour: it is
+            // the empty half of one indicator. (Was a hardcoded #f2f2f7, which
+            // a light appearance would have left invisible — P54.)
+            Rect(.color = on ? Z_COLOR_TEXT : z_fade(Z_COLOR_TEXT, 0x4d),
                  .radius = 8.0f));
     }
 

@@ -66,6 +66,11 @@ const ZImage *z_image_get(const char *path) { (void)path; return NULL; }
 
 #include "layout.c"
 #include "render.c"
+// The palette became a runtime lookup in P54 (z_token), so render.c's
+// Z_COLOR_SHADOW / Z_COLOR_ACCENT / Z_COLOR_PRESS are calls now rather than
+// static inlines. This file compiles the renderer standalone rather than
+// linking libzelto, so it has to bring the palette with it.
+#include "theme.c"
 
 // --- tiny tree builder ------------------------------------------------------
 #define MAX_NODES 32

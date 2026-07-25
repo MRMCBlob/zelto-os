@@ -1545,11 +1545,11 @@ static ZView raster_layer(LauncherState *s, int rows) {
             ZRect r = cell_rect(s->surface_w, col, row, 1, 1);
             // A brighter, accent-tinted slot so the alignment grid actually
             // reads while dragging (the old near-invisible 0x14 white ghost was
-            // easy to miss against a busy wallpaper).
+            // easy to miss against a busy wallpaper). P54 gave the hue a token —
+            // it was the one colour in the OS that lived in no table.
             ZView tile = Frame(r.w, r.h,
                 CornerRadius(ICON_RADIUS,
-                    Rect(.color = z_rgba(0x4a, 0xa3, 0xff, 0x30),
-                         .radius = ICON_RADIUS)));
+                    Rect(.color = Z_COLOR_DROP_TARGET, .radius = ICON_RADIUS)));
             st.children[k++] = placed(s->surface_w, s->surface_h, r, tile);
         }
     }
@@ -2145,9 +2145,11 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
                                 pl[i].ch);
             if (special &&
                 entry_eq(&disp[i], state->held_kind, state->held_ref)) {
+                // The SAME mark, a shade stronger: this is where the icon in
+                // hand came from, and the empty slots above are where it can go.
                 ZView ph = Frame(r.w, r.h,
                     CornerRadius(ICON_RADIUS,
-                        Rect(.color = z_rgba(0x4a, 0xa3, 0xff, 0x45),
+                        Rect(.color = z_fade(Z_COLOR_DROP_TARGET, 0x45),
                              .radius = ICON_RADIUS)));
                 pcells.children[ck++] = placed(state->surface_w,
                                                state->surface_h, r, ph);

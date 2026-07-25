@@ -169,8 +169,11 @@ static ZView bar_body(ZApp *app, HomeBarState *s) {
     // Under the finger the pill draws in a touch tighter and brighter — the only
     // feedback the indicator gives, and enough to say "yes, I have you".
     float pill_w = w * PILL_W_FRAC * (1.0f - 0.10f * g);
-    ZColor idle = z_rgba(0xf2, 0xf2, 0xf7, 0xd8);
-    ZColor held = z_rgba(0xff, 0xff, 0xff, 0xff);
+    // The ink token at 85%, not a hardcoded #f2f2f7: this pill sits directly on
+    // the wallpaper, and a light ink baked in here is invisible the moment the
+    // OS has a light appearance (P54). Held, it goes to the full ACCENT.
+    ZColor idle = z_fade(Z_COLOR_TEXT, 0xd8);
+    ZColor held = Z_COLOR_ACCENT;
 
     // The pill carries a shadow rather than a plate: the indicator has to stay
     // legible over an arbitrary wallpaper, and a soft dark penumbra does that
