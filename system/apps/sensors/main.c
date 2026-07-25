@@ -106,7 +106,7 @@ static ZView reading(const char *label, const char *value) {
     return HStack(
         Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", label))),
         Spacer(),
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_BODY, Text("%s", value))),
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", value))),
         .align = Z_ALIGN_CENTER);
 }
 
@@ -141,7 +141,7 @@ static ZView sensors_body(ZApp *app, SensorsState *st) {
     return Background(Z_COLOR_BG,
         VStack(
             Spacer(),
-            Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("Sensors"))),
+            Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("Sensors"))),
             Foreground(Z_COLOR_TEXT_MUTED, Font(Z_FONT_CAPTION, Text("%s", sub))),
             Spacer(),
             Background(Z_COLOR_SURFACE_2,

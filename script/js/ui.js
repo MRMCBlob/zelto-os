@@ -150,10 +150,18 @@ export function Navigator(rootScreen) {
 }
 
 // The filled, rounded, tappable control — the same recipe as the C toolkit's
-// Button (a padded stack + an inverted label), so the two look identical.
+// Button (a padded stack + a label in the fill's own ink), so the two look
+// identical.
+//
+// THE INK IS COLOR_ON_PRIMARY, and until P54 it was COLOR_TEXT_INV. That comment
+// above said "so the two look identical" while the C Button used ON_PRIMARY and
+// this one used a near-white on a near-white fill: #f4f4f8 on #f2f2f7, 1.01:1.
+// Every button label in every script app was a blank slab, and it was in the
+// shot catalogue the whole time (38-app-jsdemo) — the shot's EXPECT passed
+// because the STRINGS were laid out, which they were. They were just invisible.
 export function Button(label, onTap) {
   return HStack({ padding: 14, align: N.ALIGN_CENTER }, [
-    Text(label).color(N.COLOR_TEXT_INV).weight(N.WEIGHT_MEDIUM),
+    Text(label).color(N.COLOR_ON_PRIMARY).weight(N.WEIGHT_MEDIUM),
   ])
     .bg(N.COLOR_PRIMARY)
     .radius(12)
@@ -171,11 +179,11 @@ export const Color = {
   surface3: N.COLOR_SURFACE_3,
   border: N.COLOR_BORDER,
   primary: N.COLOR_PRIMARY,
+  onPrimary: N.COLOR_ON_PRIMARY,
   accent: N.COLOR_ACCENT,
   text: N.COLOR_TEXT,
   textMuted: N.COLOR_TEXT_MUTED,
   textFaint: N.COLOR_TEXT_FAINT,
-  textInv: N.COLOR_TEXT_INV,
   success: N.COLOR_SUCCESS,
   warn: N.COLOR_WARN,
   danger: N.COLOR_DANGER,

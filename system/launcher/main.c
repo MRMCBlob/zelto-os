@@ -1316,7 +1316,11 @@ static ZView app_monogram(const AppEntry *e) {
     if (c == '\0') {
         c = '?';
     }
-    return Foreground(Z_COLOR_TEXT_INV,
+    // COMPUTED from the tile, not a named ink. The tile colour is whatever the
+    // app's manifest declared (parse_color), so a light one used to get a
+    // near-white initial on it — invisible, and nothing in the OS could have
+    // told you. This was a Z_COLOR_TEXT_INV before P54 deleted that token.
+    return Foreground(z_on_fill(e->color),
         Font(Z_FONT_LARGE_TITLE, Text("%c", c)));
 }
 
@@ -1765,12 +1769,12 @@ static ZView page_dots(int npages, int nlib, float page_v) {
         float d = on ? 9.0f : 7.0f;
         row.children[k++] = Frame(d, d,
             CornerRadius(d / 2.0f,
-                Rect(.color = on ? Z_COLOR_TEXT_INV : Z_COLOR_TEXT_MUTED,
+                Rect(.color = on ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED,
                      .radius = d / 2.0f)));
     }
     if (nlib > 0) {
         bool on = active >= npages;
-        ZColor c = on ? Z_COLOR_TEXT_INV : Z_COLOR_TEXT_MUTED;
+        ZColor c = on ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED;
         float q = on ? 4.0f : 3.0f;
         ZView quad = VStack(
             HStack(Frame(q, q, Rect(.color = c, .radius = 1.0f)),
@@ -2319,7 +2323,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
             Background(Z_COLOR_SURFACE_2,
                 CornerRadius(Z_RADIUS_CARD,
                     Padding(Z_SPACE_S,
-                        Foreground(Z_COLOR_TEXT_INV,
+                        Foreground(Z_COLOR_TEXT,
                             Font(Z_FONT_BODY, Text("%s", state->toast)))))));
         toast = Opacity(te * (1.0f - dprog), OffsetXY(0.0f, tslide + td, Fill(VStack(
             Spacer(),

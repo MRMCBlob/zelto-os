@@ -951,6 +951,16 @@ static const JSCFunctionListEntry zs_native_funcs[] = {
 // The design tokens (gfx.h) and the type/weight/axis enums, exported as plain
 // numbers so the JS palette in zelto/ui is a re-export rather than a second
 // source of truth for the colours.
+//
+// COLOR_TEXT_INV IS GONE (P54) along with the token behind it — see gfx.h. A
+// script app that wants the ink for a fill it chose has COLOR_TEXT and the
+// surface tokens; the computed z_on_fill is not bound to JS.
+//
+// ponytail: these are a SNAPSHOT taken at module init, so a script app reads
+// the appearance it launched under and does not follow a live change to it. The
+// upgrade is a `token(name)` accessor rather than frozen exports, which is a
+// break in the JS palette's shape; measured and decided in P54 stage 3 rather
+// than guessed here.
 static void export_tokens(JSContext *ctx, JSModuleDef *m) {
     struct { const char *name; uint32_t rgba; } colors[] = {
         {"COLOR_BG", color_pack(Z_COLOR_BG)},
@@ -959,11 +969,14 @@ static void export_tokens(JSContext *ctx, JSModuleDef *m) {
         {"COLOR_SURFACE_3", color_pack(Z_COLOR_SURFACE_3)},
         {"COLOR_BORDER", color_pack(Z_COLOR_BORDER)},
         {"COLOR_PRIMARY", color_pack(Z_COLOR_PRIMARY)},
+        // NEW IN P54, and it should have been here since the JS Button existed:
+        // that Button painted COLOR_TEXT_INV on COLOR_PRIMARY, which is 1.01:1.
+        // See the note over Button in script/js/ui.js.
+        {"COLOR_ON_PRIMARY", color_pack(Z_COLOR_ON_PRIMARY)},
         {"COLOR_ACCENT", color_pack(Z_COLOR_ACCENT)},
         {"COLOR_TEXT", color_pack(Z_COLOR_TEXT)},
         {"COLOR_TEXT_MUTED", color_pack(Z_COLOR_TEXT_MUTED)},
         {"COLOR_TEXT_FAINT", color_pack(Z_COLOR_TEXT_FAINT)},
-        {"COLOR_TEXT_INV", color_pack(Z_COLOR_TEXT_INV)},
         {"COLOR_SUCCESS", color_pack(Z_COLOR_SUCCESS)},
         {"COLOR_WARN", color_pack(Z_COLOR_WARN)},
         {"COLOR_DANGER", color_pack(Z_COLOR_DANGER)},
@@ -1030,8 +1043,9 @@ static void export_tokens(JSContext *ctx, JSModuleDef *m) {
 
 static const char *const zs_token_names[] = {
     "COLOR_BG", "COLOR_SURFACE", "COLOR_SURFACE_2", "COLOR_SURFACE_3",
-    "COLOR_BORDER", "COLOR_PRIMARY", "COLOR_ACCENT", "COLOR_TEXT",
-    "COLOR_TEXT_MUTED", "COLOR_TEXT_FAINT", "COLOR_TEXT_INV", "COLOR_SUCCESS",
+    "COLOR_BORDER", "COLOR_PRIMARY", "COLOR_ON_PRIMARY", "COLOR_ACCENT",
+    "COLOR_TEXT",
+    "COLOR_TEXT_MUTED", "COLOR_TEXT_FAINT", "COLOR_SUCCESS",
     "COLOR_WARN", "COLOR_DANGER", "COLOR_SUCCESS_DIM", "COLOR_WARN_DIM",
     "COLOR_DANGER_DIM", "COLOR_ACCENT_DIM",
     "AXIS_VERTICAL", "AXIS_HORIZONTAL", "AXIS_DEPTH",

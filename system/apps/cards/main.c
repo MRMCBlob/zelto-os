@@ -42,10 +42,13 @@ static void use_camera(ZApp *app, void *state) {
 // backgrounded. Driven by the xdg activated state the compositor broadcasts.
 static ZView lifecycle_banner(ZApp *app) {
     bool act = z_app_active(app);
-    return Background(act ? Z_COLOR_SUCCESS_DIM
-                          : Z_COLOR_WARN_DIM,
+    ZColor panel = act ? Z_COLOR_SUCCESS_DIM : Z_COLOR_WARN_DIM;
+    return Background(panel,
         Padding(Z_SPACE_S,
-            Foreground(Z_COLOR_TEXT_INV,
+            // z_on_fill, not a named ink: the panel is a state TINT and its two
+            // appearances are opposite polarities (a dark green plate in dark, a
+            // pale one in light), so the ink has to be computed from it.
+            Foreground(z_on_fill(panel),
                 Font(Z_FONT_CALLOUT, Text(act ? "ACTIVE" : "PAUSED")))));
 }
 
@@ -91,7 +94,7 @@ static ZView cards_body(ZApp *app, CardsState *state) {
     return Background(Z_COLOR_BG,
         VStack(
             lifecycle_banner(app),
-            Foreground(Z_COLOR_TEXT_INV,
+            Foreground(Z_COLOR_TEXT,
                 Font(Z_FONT_LARGE_TITLE, Text("Cards"))),
             // The ZStack is what CENTRES the number. Frame only sets a size — a
             // Text made a Frame's direct child is laid out at the frame's origin

@@ -69,7 +69,7 @@ static ZView pinger_body(ZApp *app, PingerState *state) {
 
     return Background(Z_COLOR_BG,
         VStack(
-            Foreground(Z_COLOR_TEXT_INV,
+            Foreground(Z_COLOR_TEXT,
                 Font(Z_FONT_LARGE_TITLE, Text("Pinger"))),
             Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT, Text("Posts heads-up notifications"))),
@@ -84,7 +84,9 @@ static ZView pinger_body(ZApp *app, PingerState *state) {
                         VStack(
                             Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("last action"))),
-                            Foreground(Z_COLOR_TEXT_INV,
+                            // Computed from the panel, which is a state tint
+                            // that changes polarity with the appearance.
+                            Foreground(z_on_fill(panel_bg),
                                 Font(Z_FONT_CALLOUT,
                                     Text("%s", state->got_action
                                                    ? state->last_action

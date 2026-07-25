@@ -89,16 +89,60 @@ static inline ZColor z_color_lerp(ZColor a, ZColor b, float t) {
 // palette is actually reviewed in — and the WCAG table in test_contrast_tokens
 // is computed over both of them, so neither column can quietly go wrong.
 //
-// SURFACES climb from BG (the deepest, root — true black, which on an OLED phone
-// is the panel switched off) up through SURFACE_3 (the highest: an input, a key);
-// BORDER is the hairline between them. Ink is DELIBERATELY not pure white: #f2f2f7
-// on #000 is still far past AA and is markedly easier to sit in front of for an
-// hour than 21:1 white-on-black.
+// SURFACES step AWAY FROM THE PAGE, from BG (the root) through SURFACE_3 (an
+// input, a key, a chip); BORDER is the hairline between them. Which DIRECTION
+// that is belongs to the appearance, not to the token: dark climbs from true
+// black (on an OLED phone, the panel switched off) and light descends from white
+// down Apple's systemGray ramp. What a step MEANS is the same either way, and
+// that invariant is why the ladder stays monotone in both — see the note over
+// the table in theme.c for the measurement that settled it.
 //
-// The interactive fill (PRIMARY) is near-white with dark ink on it (ON_PRIMARY) —
-// an active toggle reads as "lit", the way a Control Center chip does, without
-// introducing a hue. SUCCESS/WARN/DANGER stay coloured because their whole job is
-// to be exceptional, each with a *_DIM panel fill for a state-tinted surface.
+// Ink is DELIBERATELY not pure white in dark: #f2f2f7 on #000 is still far past
+// AA and is markedly easier to sit in front of for an hour than 21:1
+// white-on-black. Light's #1c1c1e on #fff is the same choice mirrored.
+//
+// The interactive fill (PRIMARY) is the page's OWN POLARITY INVERTED, with
+// ON_PRIMARY as its ink — near-white on black, near-black on white. An active
+// toggle reads as "lit", the way a Control Center chip does, without introducing
+// a hue. SUCCESS/WARN/DANGER stay coloured because their whole job is to be
+// exceptional, each with a *_DIM panel fill for a state-tinted surface.
+
+// --- The appearance -------------------------------------------------------
+// Process-global and applied at startup and on change, exactly like the text
+// size. A process draws one surface in this OS, so one global is one surface's
+// appearance. z_theme_apply returns true when the value moved, so the caller
+// knows a repaint is owed — and unlike Dynamic Type it is NOT gated on
+// z_text_scaling_disable(): a colour swap moves no geometry, so the status bar,
+// the keyboard and the home indicator take it too.
+//
+// THERE IS NO "AUTO", AND THAT IS A DECISION RATHER THAN AN OMISSION.
+//
+// The tempting one is the AMBIENT LIGHT SENSOR, which exists end to end in this
+// OS already (Z_SENSOR_LIGHT, sim-scriptable through ZELTO_SIM_LIGHT). Three
+// reasons it is not wired to the appearance:
+//
+//   1. NO PHONE DOES THIS, and not for want of a sensor. iOS's "Automatic" and
+//      Android's are SCHEDULES — sunset to sunrise — not photometry. A dim
+//      office at two in the afternoon is not a request for dark mode, and an
+//      appearance that changes when someone walks past a window is worse than
+//      one that never changes at all.
+//   2. THE SENSOR HERE IS SYNTHETIC. zsysd fabricates the reading from an
+//      environment variable (sensor_synth, default 300 lux) and re-reads it per
+//      sample, so it is constant for the life of a process. A hysteresis band
+//      guarding a constant is a mechanism no test in this repo could exercise —
+//      it would be a number nobody ever crossed, which is how a threshold ends
+//      up wrong for years.
+//   3. A SCHEDULE NEEDS A REAL CLOCK AND A LOCATION and the OS has neither.
+//
+// What would have to become true first: a physical ambient sensor whose reading
+// varies, or a location and a real-time clock. Until then two values, chosen.
+typedef enum ZTheme {
+    Z_THEME_DARK = 0,
+    Z_THEME_LIGHT = 1,
+} ZTheme;
+
+bool z_theme_apply(ZTheme theme);
+ZTheme z_theme(void);
 
 // THE TOKENS, as an enumeration. The macros below are the way to say one of
 // these; this enum exists so the table in theme.c can be indexed by it (a
@@ -117,7 +161,6 @@ typedef enum ZToken {
     Z_TOKEN_TEXT,
     Z_TOKEN_TEXT_MUTED,
     Z_TOKEN_TEXT_FAINT,
-    Z_TOKEN_TEXT_INV,
     Z_TOKEN_SUCCESS,
     Z_TOKEN_WARN,
     Z_TOKEN_DANGER,
@@ -165,7 +208,22 @@ ZColor z_token(ZToken token);
 #define Z_COLOR_TEXT       z_token(Z_TOKEN_TEXT)       // primary
 #define Z_COLOR_TEXT_MUTED z_token(Z_TOKEN_TEXT_MUTED) // secondary / caption
 #define Z_COLOR_TEXT_FAINT z_token(Z_TOKEN_TEXT_FAINT) // de-emphasised / disabled
-#define Z_COLOR_TEXT_INV   z_token(Z_TOKEN_TEXT_INV)   // on a SEMANTIC (coloured) fill
+
+// Z_COLOR_TEXT_INV IS GONE (P54), and how it died is worth keeping.
+//
+// It was documented as "the ink on a SEMANTIC (coloured) fill" — #f4f4f8, a
+// near-white. Every one of its fifteen call sites was something else: a page
+// TITLE drawn straight onto Z_COLOR_BG (Sensors, Notepad, Store, Fetch, Pinger,
+// Widget, the share sheet), or body ink on a *_DIM panel. Not one of them was
+// the thing the name described.
+//
+// In a dark-only OS that was invisible, because TEXT_INV #f4f4f8 and TEXT
+// #f2f2f7 are the same colour to within 2/255. A light appearance is what makes
+// them opposites, and every one of those titles would have been white on white —
+// the exact failure mode this phase is about, in the theme nobody screenshots.
+//
+// So: a title on a page is Z_COLOR_TEXT, and ink on a fill is z_on_fill(fill),
+// which computes the answer instead of naming it. Nothing needs a third ink.
 
 // THE DRAG DROP TARGET — the one hue in the OS, and the one place the "no brand
 // hue" rule argues FOR a colour rather than against it.

@@ -115,7 +115,7 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
     return Background(Z_COLOR_BG,
         VStack(
             Spacer(),
-            Foreground(Z_COLOR_TEXT_INV,
+            Foreground(Z_COLOR_TEXT,
                 Font(Z_FONT_LARGE_TITLE, Text("Fetch"))),
             // WRAPPED, and it was overflowing BEFORE Dynamic Type existed: this
             // sentence measures 702 units at the default text size in a 656-unit
@@ -154,7 +154,9 @@ static ZView fetch_body(ZApp *app, FetchState *state) {
                             // app chose: the P46 answer to that is a measured cut,
                             // not a wrap — a response wrapped over ten lines is a
                             // panel that has eaten the screen.
-                            Foreground(Z_COLOR_TEXT_INV,
+                            // Computed from the panel, which is a state tint
+                            // that changes polarity with the appearance.
+                            Foreground(z_on_fill(panel_bg),
                                 EllipsizeText(app,
                                     state->done || state->pending
                                         ? state->body

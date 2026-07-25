@@ -143,11 +143,11 @@ static ZView rows_panel(NotepadState *s) {
     opts.children[k++] = Foreground(Z_COLOR_TEXT_MUTED,
         Font(Z_FONT_CAPTION, Text("DB rows (newest first)")));
     if (s->row_count == 0) {
-        opts.children[k++] = Foreground(Z_COLOR_TEXT_INV,
+        opts.children[k++] = Foreground(Z_COLOR_TEXT,
             Font(Z_FONT_BODY, Text("(no rows yet)")));
     }
     for (int i = 0; i < s->row_count && k < Z_MAX_CHILDREN; i++) {
-        opts.children[k++] = Foreground(Z_COLOR_TEXT_INV,
+        opts.children[k++] = Foreground(Z_COLOR_TEXT,
             Font(Z_FONT_BODY, Text("%s", s->rows[i])));
     }
     return Background(Z_COLOR_SURFACE_2,
@@ -227,7 +227,7 @@ static ZView notepad_body(ZApp *app, NotepadState *state) {
     // status bar catches the pull-down gesture) so the bar slot below it is tappable.
     col.children[k++] = Rect(.height = 84.0f);
     col.children[k++] =
-        Foreground(Z_COLOR_TEXT_INV, Font(Z_FONT_TITLE, Text("Notepad")));
+        Foreground(Z_COLOR_TEXT, Font(Z_FONT_TITLE, Text("Notepad")));
     // Two fields: the note is pre-filled "hello world"; long-press a word to select
     // it, Copy, then Paste into the title field (in-app text move).
     col.children[k++] = Frame(360.0f, 0.0f,

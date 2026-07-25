@@ -68,7 +68,7 @@ static ZView detail_screen(ZApp *app, void *props) {
             // Navbar.
             Background(z_rgba(0x1c, 0x22, 0x2b, 0xff),
                 HStack(
-                    Foreground(Z_COLOR_TEXT_INV,
+                    Foreground(Z_COLOR_TEXT,
                         Font(Z_FONT_TITLE, Text("%s", it->title))),
                     Spacer(),
                     Button(pop_screen, "Back"),
@@ -127,7 +127,7 @@ static ZView item_row(ZApp *app, const void *item, int index) {
         Background(z_rgba(0x1a, 0x20, 0x28, 0xff),
             HStack(
                 Frame(ROW_SWATCH, ROW_SWATCH, Rect(.color = it->color, .radius = 10)),
-                Foreground(Z_COLOR_TEXT_INV, Text("%s", it->title)),
+                Foreground(Z_COLOR_TEXT, Text("%s", it->title)),
                 Spacer(),
                 Foreground(z_rgba(0x6b, 0x74, 0x7d, 0xff), Text("#%d", it->id)),
                 .padding = ROW_PAD, .spacing = 14, .align = Z_ALIGN_CENTER)));
@@ -140,7 +140,7 @@ static ZView lifecycle_banner(ZApp *app) {
     return Background(act ? z_rgba(0x1d, 0x5e, 0x3a, 0xff)
                           : z_rgba(0x5e, 0x49, 0x1d, 0xff),
         Padding(10,
-            Foreground(Z_COLOR_TEXT_INV,
+            Foreground(Z_COLOR_TEXT,
                 Font(Z_FONT_CALLOUT, Text(act ? "ACTIVE" : "PAUSED")))));
 }
 
@@ -152,7 +152,7 @@ static ZView list_screen(ZApp *app, void *props) {
             lifecycle_banner(app),
             Background(z_rgba(0x1c, 0x22, 0x2b, 0xff),
                 HStack(
-                    Foreground(Z_COLOR_TEXT_INV,
+                    Foreground(Z_COLOR_TEXT,
                         Font(Z_FONT_TITLE, Text("Zelto · Rows"))),
                     Spacer(),
                     .padding = 16)),

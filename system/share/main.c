@@ -33,7 +33,7 @@ static ZView share_body(ZApp *app, ShareState *state) {
     (void)app;
     return Background(Z_COLOR_BG,
         VStack(
-            Foreground(Z_COLOR_TEXT_INV,
+            Foreground(Z_COLOR_TEXT,
                 Font(Z_FONT_LARGE_TITLE, Text("Share"))),
             Foreground(Z_COLOR_TEXT_MUTED,
                 Font(Z_FONT_CALLOUT,

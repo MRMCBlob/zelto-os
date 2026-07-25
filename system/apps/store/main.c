@@ -102,7 +102,7 @@ static ZView store_body(ZApp *app, StoreState *state) {
     return Background(Z_COLOR_BG,
         VStack(
             Spacer(),
-            Foreground(Z_COLOR_TEXT_INV,
+            Foreground(Z_COLOR_TEXT,
                 Font(Z_FONT_LARGE_TITLE, Text("Store"))),
             Foreground(Z_COLOR_TEXT_MUTED,
                 WrapText(app, "Install signed .zap packages onto the disk",
@@ -121,7 +121,9 @@ static ZView store_body(ZApp *app, StoreState *state) {
                         VStack(
                             Foreground(Z_COLOR_TEXT_MUTED,
                                 Font(Z_FONT_CAPTION, Text("result"))),
-                            Foreground(Z_COLOR_TEXT_INV,
+                            // Computed from the panel, which is a state tint
+                            // that changes polarity with the appearance.
+                            Foreground(z_on_fill(panel_bg),
                                 WrapText(app,
                                          state->ran
                                              ? state->last_msg

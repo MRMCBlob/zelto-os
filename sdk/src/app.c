@@ -3031,6 +3031,15 @@ static int app_run(ZApp *app) {
     // is not gated on the opt-out: a colour swap moves no geometry, so the bar
     // and the keyboard take it too.
     z_contrast_apply(z_setting_get_int(ZELTO_KEY_INCREASE_CONTRAST, 0) != 0);
+    // THE APPEARANCE (P54). An env hook for now, which is this project's
+    // convention for any actuation a test or the shot catalogue has to drive
+    // without tapping a coordinate. The brokered sys.theme that supersedes it is
+    // stage 3's; this line becomes its default rather than its replacement.
+    {
+        const char *th = getenv("ZELTO_THEME");
+        z_theme_apply(th && strcmp(th, "light") == 0 ? Z_THEME_LIGHT
+                                                     : Z_THEME_DARK);
+    }
 
     // SAYABLE ON THE TARGET (P51). The whole of Dynamic Type verifies in the sim
     // by the standing instruction, but z_font_units() runs in every process on
