@@ -45,6 +45,15 @@ A node count in the dashboard is **double** the real one: with
 `/datasets/<id>/graph` returns the same whole graph for each, and the overview
 sums them. 146 in the UI = 73 nodes.
 
+**`/add` succeeding does NOT mean the document is searchable.** `POST /cognify`
+skips a dataset whose pipeline already ran — it answers
+`PipelineRunAlreadyCompleted` and exits 0 in a couple of minutes, which looks
+exactly like a successful build. The new document is simply not in the graph, and
+a recall keeps returning the older phases as if nothing had been added. Pass
+**`"incremental_loading": false`** to force it (the reply then says
+`PipelineRunStarted`), and CHECK by recalling a string that exists only in the
+new document — not by reading the cognify's own status.
+
 **Ollama serves one request at a time**, so a bulk cognify queues hundreds of
 calls ahead of anything interactive: a recall that takes **24s** on a quiet server
 did not return in **10 minutes** during one, and it looks exactly like a hang. If
