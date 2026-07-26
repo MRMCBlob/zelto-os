@@ -4,5 +4,8 @@
     "triage": "off",
     "web-artifacts-builder": "off",
     "webapp-testing": "off"
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true
   }
 }
