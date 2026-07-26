@@ -3,6 +3,55 @@
 A phone OS in C: wlroots compositor (`compositor/`), UI toolkit + SDK (`sdk/`),
 System UI and apps (`system/`), packaging/harnesses (`meta/`), tests (`test/`).
 
+## Memory: start the Cognee container first
+
+Long-term memory is a **self-hosted Cognee** in Docker, running entirely on the
+local Ollama — no API credits, no data leaving the machine. It is not always up
+(Docker Desktop does not survive a reboot), and a recall against a dead server
+silently returns nothing, so **start it before doing anything else**:
+
+```sh
+docker compose -f ~/.cognee/docker-compose.yml up -d     # idempotent; no-op if running
+curl -s http://localhost:8000/health                     # {"status":"ready",...}
+```
+
+That brings up two containers: `cognee-local` (the API, `:8000`, `/docs` for
+Swagger) and `cognee-ui` (cognee's own web dashboard, **`:3050`**). If `/health`
+does not answer, Docker Desktop itself is down — say so rather than working on
+with memory quietly disabled. `docker logs cognee-local` has the reason. The
+models it needs (`qwen2.5:7b-instruct`, `nomic-embed-text`) must be in
+`ollama list`, and Ollama must be listening on `0.0.0.0:11434`, not `127.0.0.1` —
+the container reaches it as `host.docker.internal`.
+
+The config lives in `~/.cognee/` (`.env` = models + endpoints, gitignored by
+being outside the repo); `migrate-from-cloud.py` re-imports the cloud tenant's
+datasets. Note **`COGNEE_SKIP_CONNECTION_TEST=true`** there: the startup probe
+gives the LLM 30s, and Ollama loading a 7B into VRAM from cold disk takes longer,
+which aborts `/add` outright. Cognify of a document is **minutes**, not seconds —
+a 7B on one RTX 3080 is the tradeoff for spending no credits. Both models stay
+resident during a run (~7.7 GB of the card's 10 GB), so a bigger LLM does not fit
+however tempting `gpt-oss:20b` looks in `ollama list`.
+
+**Never stop the container mid-cognify without the grace period.** The image ships
+`StopTimeout: 1` — Docker SIGKILLs one second after SIGTERM, and LadybugDB cannot
+checkpoint in that time, so the graph silently rolls back to its last commit.
+That cost **1667 nodes → 73** on one recreate, and it does not look like data
+loss: the volume is intact and the API answers normally, just with an older
+graph. `stop_grace_period: 180s` in the compose file is what prevents it — check
+it is still there before believing a node count that dropped.
+
+A node count in the dashboard is **double** the real one: with
+`ENABLE_BACKEND_ACCESS_CONTROL=false` every dataset shares one graph store, so
+`/datasets/<id>/graph` returns the same whole graph for each, and the overview
+sums them. 146 in the UI = 73 nodes.
+
+**Ollama serves one request at a time**, so a bulk cognify queues hundreds of
+calls ahead of anything interactive: a recall that takes **24s** on a quiet server
+did not return in **10 minutes** during one, and it looks exactly like a hang. If
+recall stalls, check `docker logs cognee-local` for a running pipeline before
+believing anything is broken. `~/.cognee/cognify-all.sh <dataset>...` exists to
+keep that queue short (sequential, `data_per_batch: 4`).
+
 ## Build
 
 Builds in **WSL Ubuntu**, not the MSYS Bash tool. Write commands to a `.sh` file
@@ -67,6 +116,13 @@ looks broken. Three shipped for 13+ phases.
   told where the compositor put its surface, and it is not only layer surfaces —
   the launcher is 720x1359 on a 720x1440 screen (the status bar's exclusive
   zone). So a probe frame can never become a box on a screenshot.
+- **The same confusion again, one layer down: IMAGE fractions are not SCREEN
+  fractions.** A wallpaper is drawn with `Cover()` — aspect-FILL, centre-crop —
+  so a 946x2048 picture on a 720x1440 screen becomes 720x1558 and loses 59 units
+  off each end. Asking the IMAGE for its top 5.6% asks about a strip that is not
+  on screen: measured, the file's top band reads **0.169** while the pixels under
+  the status bar read **0.396**, which is the opposite ink. `zelto_wallpaper_*`
+  takes the `ZApp` and puts the rectangle through Cover's own transform.
 - The probe's summary line carries **three** counters and each is read
   differently: `overflowing` must be **zero**; `clipped (worst N)` and
   `N sideways` are read as "does it **grow when the text does**" — both have a
@@ -112,6 +168,36 @@ the log: `ZELTO_SETTINGS_SET` · `ZELTO_KBD_TYPE` · `ZELTO_NOTEPAD_AUTOSAVE` ·
 · cmdline `zelto.seedsettings=` / `zelto.kbd=` / `zelto.actuate=`. If an actuation
 has no log line, add one.
 
+## Colour: two appearances, and the invisible failures
+
+Every colour is `z_token(Z_TOKEN_*)` over the two-column table in
+`sdk/src/theme.c`; `sys.theme` (0 dark / 1 light) fans out live, `ZELTO_THEME`
+overrides it for harnesses. **There is no `auto`** — the reasons are over
+`ZTheme` in `gfx.h`.
+
+- **A wrong colour is usually visible, which is why the dangerous ones are not.**
+  Every defect P54 found had shipped for phases in the DARK build: the JS
+  `Button` painted `TEXT_INV` on `PRIMARY` at **1.01:1** (six blank slabs in shot
+  38 the whole time), the press veil was **1.026:1** on every filled button, and
+  `TEXT_INV`'s fifteen call sites were all page titles rather than ink on a fill.
+  A light appearance did not cause these; it made them impossible to miss.
+- **An overlay opposes what is UNDER it, never the appearance.** `z_press_veil()`
+  and the caption halo pick their polarity from the surface, because a near-white
+  `PRIMARY` fill exists in the DARK palette. `z_scrim(a)` / `z_glow(a)` are that
+  pair when it is not a token.
+- **A translucent token has no ratio of its own** — measure what it RESOLVES TO.
+  A material's bar is its WORST-CASE backdrop (white under a dark material, black
+  under a light one); the shadow's is the step it makes on the page it falls on
+  (the dark 0x80 is 1.13 on `SURFACE` and **4.00** on a white page, which is a
+  grey rectangle, not a penumbra).
+- **The ladder's DIRECTION belongs to the appearance; its ORDER does not.**
+  `view.c` reads it as a direction (`active ? SURFACE_3 : SURFACE_2`), so light
+  descends from white rather than following iOS's grouped ladder up — the
+  alternative puts Notepad's editor at 1.05:1 against its own page.
+- **Both ends or it did not happen.** `meta/theme-both-ends.sh` shoots the subset
+  twice and fails a frame whose two appearances are the same — a surface the
+  theme never reached is invisible in the appearance you are looking at.
+
 ## Traps
 
 - Fixed gap = `Frame(w,h, Rect(.color=z_rgba(0,0,0,0)))`, never `Spacer()`.
@@ -149,8 +235,16 @@ has no log line, add one.
   at shot 48 of 77, silently, **with status 0**. Put the assignment in an `if`.
 - Clock skew: measure the **symptom**, never back-date `meson.build` (under that
   workaround build-system edits are silently ignored).
-- **Cognee writes go to `localhost:8011` unless `.env` is sourced** — and the local
-  server ACCEPTS them and returns `ok: true`, so a successful-looking upload can
-  land nowhere the user can see. `set -a; . ./.env; set +a` first (gitignored;
-  holds `COGNEE_BASE_URL`/`COGNEE_API_KEY`), and confirm the `dataset_id` in the
-  reply is the tenant's, not the local one.
+- **Cognee writes go to `localhost:8011` unless `COGNEE_BASE_URL` is set** — and
+  a server there would ACCEPT them and return `ok: true`, so a successful-looking
+  upload can land nowhere. The real one is **`localhost:8000`** (the container
+  above); `8011` is the plugin's compiled-in default, not a fallback. Confirm the
+  `dataset_id` in the reply against `GET /api/v1/datasets/`.
+- The tenant authenticates on **`X-Api-Key`**, not `Authorization: Bearer` — a
+  Bearer header returns `{"detail":"Invalid header"}`, which reads like a bad key
+  and is not. The self-hosted server needs no key at all
+  (`ENABLE_BACKEND_ACCESS_CONTROL=false`), but the plugin client refuses HTTP
+  mode with an empty `COGNEE_API_KEY`, so it still wants a dummy one.
+- `.env` is written **CRLF**, so `. ./.env` puts a `\r` inside every value — that
+  `\r` in a curl header is itself an `Invalid header`. Use
+  `. <(tr -d '\r' < .env)`.
