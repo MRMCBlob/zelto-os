@@ -36,6 +36,7 @@
 #include <zelto/ui.h>
 
 #include "common/safe_areas.h"
+#include "common/wallpaper.h"
 
 // The pill itself. The WIDTH is a fraction of the screen (already in screen
 // units, so it does not convert); the other two are Apple's 5pt bar sitting 8pt
@@ -169,11 +170,22 @@ static ZView bar_body(ZApp *app, HomeBarState *s) {
     // Under the finger the pill draws in a touch tighter and brighter — the only
     // feedback the indicator gives, and enough to say "yes, I have you".
     float pill_w = w * PILL_W_FRAC * (1.0f - 0.10f * g);
-    // The ink token at 85%, not a hardcoded #f2f2f7: this pill sits directly on
-    // the wallpaper, and a light ink baked in here is invisible the moment the
-    // OS has a light appearance (P54). Held, it goes to the full ACCENT.
-    ZColor idle = z_fade(Z_COLOR_TEXT, 0xd8);
-    ZColor held = Z_COLOR_ACCENT;
+    // THE INK COMES FROM THE WALLPAPER (P54), measured over the bottom strip
+    // this surface occupies. The pill sits directly on the picture, and a
+    // picture does not change when the appearance does — taking Z_COLOR_TEXT
+    // here made the indicator dark-on-dark the moment a light appearance
+    // existed. Held, it goes to full opacity rather than to a second colour.
+    float sh = (float)z_screen_height(app);
+    if (sh < 1.0f) {
+        sh = 1440.0f;
+    }
+    // The pill is centred and spans about a third of the width, so the patch
+    // it stands on is the middle of the bottom strip, not the whole of it.
+    ZColor wink = zelto_wallpaper_ink(
+        app, 0.5f - PILL_W_FRAC * 0.5f, 1.0f - (float)ZELTO_HOMEBAR_H / sh,
+        0.5f + PILL_W_FRAC * 0.5f, 1.0f);
+    ZColor idle = z_fade(wink, 0xd8);
+    ZColor held = wink;
 
     // The pill carries a shadow rather than a plate: the indicator has to stay
     // legible over an arbitrary wallpaper, and a soft dark penumbra does that

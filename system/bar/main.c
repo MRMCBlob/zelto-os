@@ -25,6 +25,7 @@
 #include "common/glyphs.h"
 #include "common/safe_areas.h"
 #include "common/settings_defaults.h"
+#include "common/wallpaper.h"
 
 // A FIXED horizontal gap. Not Frame(w, h, Spacer()): a Spacer carries grow, so
 // Frame'ing one still lets it eat every spare pixel in the stack and the "12px"
@@ -147,6 +148,28 @@ static ZView bar_body(ZApp *app, BarState *state) {
     // showing signal strength next to it states the opposite of the truth. That is
     // also what the mode does functionally here — airplane gates the network stack
     // (P19, z_net_send/z_ws_open) and forces Wi-Fi to read as down below.
+    // THE INK COMES FROM THE WALLPAPER, NOT FROM THE PALETTE (P54). The bar has
+    // an exclusive zone, so app windows are laid out BELOW it and what is behind
+    // this strip is always the wallpaper — a photograph, which does not change
+    // when the appearance does. A light appearance would otherwise put a #1c1c1e
+    // clock over a dark picture.
+    //
+    // Measured over the top band only, which is the strip this surface occupies:
+    // see the note in common/wallpaper.h for why a whole-image mean picks the
+    // wrong ink on four of the ten shipped wallpapers.
+    // TWO MEASUREMENTS, ONE PER END OF THE STRIP, because the first version of
+    // this took the whole width and came out wrong on the shipped wallpaper: its
+    // top band is dark on the right and bright peach on the LEFT, which is
+    // exactly where the clock is. The mean of the strip said "dark", so the
+    // clock was drawn light, on the one part of the strip that is not.
+    float band = (float)ZELTO_BAR_H / (float)z_screen_height(app);
+    ZColor clock_ink = zelto_wallpaper_ink(app, 0.0f, 0.0f, 0.35f, band);
+    ZColor ink = zelto_wallpaper_ink(app, 0.55f, 0.0f, 1.0f, band);
+    // The de-emphasised mark (an unlit cellular bar, Wi-Fi when it is off) is the
+    // same ink at 45%, not TEXT_FAINT: it has to stay a step below the ink it
+    // sits beside, and that ink is now the wallpaper's, not the palette's.
+    ZColor ink_dim = z_fade(ink, 0x73);
+
     ZStackOpts cluster = {.spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER};
     int k = 0;
     // THE CAMERA IN-USE DOT, and it leads the cluster because it is the one mark
@@ -169,20 +192,19 @@ static ZView bar_body(ZApp *app, BarState *state) {
                 Frame(Z_CAMERA_DOT, Z_CAMERA_DOT, Spacer())));
     }
     if (state->airplane) {
-        cluster.children[k++] = zelto_glyph_airplane(15.0f, Z_COLOR_TEXT);
+        cluster.children[k++] = zelto_glyph_airplane(15.0f, ink);
     } else {
         cluster.children[k++] = zelto_glyph_cellular(
-            15.0f, (int)state->signal, Z_COLOR_TEXT, Z_COLOR_TEXT_FAINT);
+            15.0f, (int)state->signal, ink, ink_dim);
     }
     if (state->lock_enabled) {
-        cluster.children[k++] = zelto_glyph_lock(15.0f, Z_COLOR_TEXT);
+        cluster.children[k++] = zelto_glyph_lock(15.0f, ink);
     }
-    cluster.children[k++] = zelto_glyph_wifi(
-        18.0f, wifi_live ? Z_COLOR_TEXT : Z_COLOR_TEXT_FAINT);
+    cluster.children[k++] = zelto_glyph_wifi(18.0f, wifi_live ? ink : ink_dim);
     ZColor bat = state->charging ? Z_COLOR_SUCCESS
-               : (state->battery_pct <= 20 ? Z_COLOR_DANGER : Z_COLOR_TEXT);
-    cluster.children[k++] =
-        zelto_glyph_battery(state->battery_pct, bat, Z_COLOR_BORDER);
+               : (state->battery_pct <= 20 ? Z_COLOR_DANGER : ink);
+    cluster.children[k++] = zelto_glyph_battery(state->battery_pct, bat,
+                                                z_fade(ink, 0x59));
 
     // WHAT THIS BAR JUST BUILT, in words (P47).
     //
@@ -262,7 +284,7 @@ static ZView bar_body(ZApp *app, BarState *state) {
             // at this size just reads as a smeared double-strike, not as depth.
             // Small text wants contrast, not a shadow.
             Weight(Z_WEIGHT_SEMIBOLD,
-                Foreground(Z_COLOR_TEXT, Font(Z_FONT_CAPTION,
+                Foreground(clock_ink, Font(Z_FONT_CAPTION,
                     Text("%s", clock)))),
             Spacer(),
             z_stack(Z_AXIS_HORIZONTAL, &cluster),

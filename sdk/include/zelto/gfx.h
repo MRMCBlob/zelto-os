@@ -34,6 +34,14 @@ static inline ZColor z_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 // colour token; use it wherever a surface is darkened rather than tinted.
 static inline ZColor z_scrim(uint8_t a) { return z_rgba(0, 0, 0, a); }
 
+// The light counterpart: pure white at the given opacity. Same argument as
+// z_scrim — not a palette hue, so not a token — and it exists because the two
+// come in PAIRS wherever an overlay has to oppose what is under it rather than
+// follow the appearance. The caption halo picks between these two by the ink's
+// own luminance (sdk/src/render.c); before P54 there was only the dark one, and
+// a dark halo under a dark label is not a shadow, it is a thicker glyph.
+static inline ZColor z_glow(uint8_t a) { return z_rgba(0xff, 0xff, 0xff, a); }
+
 // The same colour at a different opacity. For the case where one token has two
 // strengths and they are strengths of the SAME thing — the drag drop-target's
 // empty slot and the placeholder under the icon in hand. Two tokens for that

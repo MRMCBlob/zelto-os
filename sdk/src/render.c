@@ -623,10 +623,23 @@ static void paint(ZCanvas *canvas, ZView n, float alpha) {
         break;
     case Z_K_TEXT:
         if (n->text_shadow) {
-            // A dark, slightly-dropped copy under the ink so a light label holds
-            // legibility over a bright/busy backdrop (a home caption over art).
+            // A slightly-dropped copy under the ink so a label holds legibility
+            // over a busy backdrop (a home caption over art).
+            //
+            // IT OPPOSES THE INK, not the appearance (P54). This was a fixed
+            // black drop, written when every label over art was light — and a
+            // dark drop under a DARK label is not a shadow, it is a smudge that
+            // thickens the glyph and makes it harder to read, which is what a
+            // light appearance over a bright wallpaper produces. The rule is the
+            // same one z_press_veil uses: look at what is actually there.
+            //
+            // Deliberately NOT z_on_fill: this is not ink on a fill, it is a
+            // halo whose whole job is to be the ink's opposite at low alpha.
+            bool dark_ink = 0.2126 * (double)n->fg.r + 0.7152 * (double)n->fg.g +
+                            0.0722 * (double)n->fg.b < 128.0;
+            ZColor halo = dark_ink ? z_glow(0x9e) : z_scrim(0x9e);
             z_text_draw(canvas, n->text, n->font_size, n->weight,
-                        apply_alpha(z_scrim(0x9e), a),
+                        apply_alpha(halo, a),
                         n->x + n->padding + 1.0f, n->y + n->padding + 1.5f);
         }
         z_text_draw(canvas, n->text, n->font_size, n->weight,

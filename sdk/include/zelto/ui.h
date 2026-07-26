@@ -616,6 +616,43 @@ ZView z_image(const char *path);
 // wants a fallback image (an app icon → a placeholder) probes with this first.
 bool z_image_loads(const char *path);
 
+// The image's own pixel dimensions, false if it does not decode. Cached like
+// Image(). Needed by anything that has to reason about WHERE in a picture a
+// piece of the screen lands — Cover() crops, so screen fractions and image
+// fractions are not the same thing (see system/common/wallpaper.h).
+bool z_image_intrinsic(const char *path, int *w, int *h);
+
+// THE MEAN BRIGHTNESS OF A RECTANGLE of an image, as WCAG relative luminance
+// in [0,1]; -1 when the image does not decode. The bounds are FRACTIONS of
+// the image's size, so a caller asks about the patch it is drawing on without
+// knowing the image's pixel dimensions.
+//
+// WHY THIS EXISTS (P54). The wallpaper is a PHOTOGRAPH and does not change when
+// the appearance does, so the surfaces that sit directly on it — the status bar,
+// the home captions, the home indicator, the lock clock — cannot take their ink
+// from a palette column. They have to take it from the picture. The decode is
+// already cached by path (P24), so the mean costs one pass over pixels the
+// process had anyway.
+//
+// AND IT IS A PATCH RATHER THAN THE WHOLE IMAGE, which is a measurement and not
+// a preference. Over the ten shipped wallpapers, the whole-image mean picks a
+// DIFFERENT ink from the band's own mean on FOUR of them, with band spreads up
+// to 0.364 — one wallpaper reads 0.173 under the status bar, 0.373 behind the
+// captions and 0.010 under the home indicator. A single number for the whole
+// picture is the wrong statistic for a surface that occupies part of it.
+//
+// The HORIZONTAL bound matters for the same reason, and it was found the same
+// way — by looking at a frame. With a full-width band the status-bar clock came
+// out LIGHT over a wallpaper whose top strip is dark on the right and bright
+// peach on the left, which is exactly where the clock is. The bar measures its
+// two ends separately now.
+//
+// It is still a MEAN, and a mean cannot see a bright object inside a dark band.
+// That residue is what the caption text-shadow and the launcher's bottom scrim
+// are for; this chooses the ink, they cover the variance under it.
+float z_image_region_luma(const char *path, float x0, float y0, float x1,
+                          float y1);
+
 // Make an Image aspect-FILL its frame — scale up so the frame is fully covered,
 // center-cropping whatever overflows — instead of the default aspect-fit
 // (letterboxed). Use for a full-bleed backdrop (a wallpaper) that must leave no

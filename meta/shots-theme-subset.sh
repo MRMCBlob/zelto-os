@@ -22,6 +22,7 @@
 #     30-app-cards        the app-chrome card + BORDER hairlines
 #     33-app-fetch        prose: TEXT / TEXT_MUTED / TEXT_FAINT together
 #     34-app-settings     the grouped inset list — the most-drawn screen there is
+#     34a-settings-display the Appearance switch itself (P54's new row)
 #     40-home-press       Z_COLOR_PRESS, the veil that a light theme deletes
 #     91-increase-contrast the three tokens that already had two values
 #     95-photos-viewer    a photo on BG, and a toolbar over it
@@ -39,7 +40,16 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 DEST="${1:?usage: shots-theme-subset.sh <dest-dir>}"
 case "$DEST" in /*) ;; *) DEST="$REPO_ROOT/$DEST" ;; esac
 
-SUBSET='^(01-home-page1|10-app-library|11-control-center|13-keyboard|16-lock-screen|18-switcher|19-consent|20-banner|24-bar-charging|30-app-cards|33-app-fetch|34-app-settings|40-home-press|91-increase-contrast|95-photos-viewer|96-photos-delete)$'
+SUBSET='^(01-home-page1|10-app-library|11-control-center|13-keyboard|16-lock-screen|18-switcher|19-consent|20-banner|24-bar-charging|30-app-cards|33-app-fetch|34-app-settings|34a-settings-display|40-home-press|91-increase-contrast|95-photos-viewer|96-photos-delete)$'
+
+# THEME=light shoots the whole subset in the light appearance. shots.sh reaches
+# run-sim.sh through `env "$@" ...` without -i, so the environment is inherited
+# and an export here lands in every process of every boot — the same route the
+# ZELTO_* test hooks already take.
+if [ "${THEME:-dark}" = "light" ]; then
+    export ZELTO_THEME=light
+    echo "==> shooting the subset in the LIGHT appearance"
+fi
 
 SKIP_BUILD=1 ONLY="$SUBSET" "$HERE/shots.sh"
 

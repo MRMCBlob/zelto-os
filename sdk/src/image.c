@@ -166,6 +166,74 @@ bool z_image_intrinsic(const char *path, int *w, int *h) {
     return true;
 }
 
+// The sRGB transfer, the same one theme.c and test_contrast_tokens use. A
+// wallpaper's brightness has to be measured in the space the contrast rule that
+// consumes it works in, or the ink is chosen against a different definition of
+// "bright" from the one that decides whether it is readable.
+static double band_chan(unsigned v) {
+    double c = (double)v / 255.0;
+    return c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+// Clamp a fractional pair to a valid [lo,hi) pixel span of `n`. Always yields at
+// least one pixel: a caller asking about a zero-height strip wants the row it
+// names, not a division by zero.
+static void band_span(float a, float b, int n, int *lo, int *hi) {
+    if (a > b) {
+        float t = a; a = b; b = t;
+    }
+    int p0 = (int)((a < 0.0f ? 0.0f : a) * (float)n);
+    int p1 = (int)((b > 1.0f ? 1.0f : b) * (float)n);
+    if (p0 >= n) { p0 = n - 1; }
+    if (p1 <= p0) { p1 = p0 + 1; }
+    if (p1 > n) { p1 = n; }
+    *lo = p0;
+    *hi = p1;
+}
+
+float z_image_region_luma(const char *path, float x0, float y0, float x1,
+                          float y1) {
+    const ZImage *e = z_image_get(path);
+    if (!e || !e->ok || e->w <= 0 || e->h <= 0) {
+        return -1.0f;
+    }
+    int r0, r1, c0, c1;
+    band_span(y0, y1, e->h, &r0, &r1);
+    band_span(x0, x1, e->w, &c0, &c1);
+
+    // SUBSAMPLED, and the steps are chosen so a band of any size costs about the
+    // same: a wallpaper is a photograph, and the mean of every 4th row and 4th
+    // column of one is the mean of it. This runs once per process per wallpaper
+    // (the decode above is cached), not per frame.
+    const int ystep = 4, xstep = 4;
+    double tot = 0.0;
+    long n = 0;
+    for (int y = r0; y < r1; y += ystep) {
+        const uint32_t *row = e->px + (size_t)y * (size_t)e->w;
+        for (int x = c0; x < c1; x += xstep) {
+            uint32_t p = row[x];
+            unsigned a = (p >> 24) & 0xff;
+            unsigned r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+            // The cache holds PREMULTIPLIED pixels. Un-premultiply before
+            // measuring, or a translucent wallpaper reads as darker than it
+            // paints — the compositor puts it over black, but the colour whose
+            // brightness the ink is chosen against is the one in the file.
+            if (a > 0 && a < 255) {
+                r = r * 255u / a;
+                g = g * 255u / a;
+                b = b * 255u / a;
+                if (r > 255) { r = 255; }
+                if (g > 255) { g = 255; }
+                if (b > 255) { b = 255; }
+            }
+            tot += 0.2126 * band_chan(r) + 0.7152 * band_chan(g) +
+                   0.0722 * band_chan(b);
+            n++;
+        }
+    }
+    return n > 0 ? (float)(tot / (double)n) : -1.0f;
+}
+
 // --- PNG (libpng) ----------------------------------------------------------
 #include <png.h>
 

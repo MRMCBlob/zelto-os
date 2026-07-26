@@ -950,8 +950,12 @@ run_shot 34-app-settings "App: Settings, root list (drill-down rows)" 8 \
 # scrolled to its end" (ZELTO_SCROLL_TO=1500) — a shot that reviewed the same
 # screen twice. Now each subject is its own pushed screen, reached by an env hook
 # rather than a tap so the catalogue stays reproducible.
-EXPECT='zelto-settings\|Brightness Boost' \
-run_shot 34a-settings-display "Settings: Display & Sound (brightness SLIDER)" 8 \
+# P54 put the APPEARANCE at the top of this screen, so the marker asserts that
+# row rather than the brightness one below it: a new control that nothing checks
+# for is a new control that can vanish. Both strings were read off a run
+# (out/p54/display-dark.png), not typed from the source.
+EXPECT='zelto-settings\|Light Appearance' \
+run_shot 34a-settings-display "Settings: Display & Sound (appearance + brightness)" 8 \
     SIM_APP=zelto-settings ZELTO_SETTINGS_SCREEN=display
 EXPECT='zelto-settings\|Dim After' \
 run_shot 34b-settings-lock "Settings: Lock Screen detail (toggles + steppers)" 8 \

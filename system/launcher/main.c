@@ -1259,13 +1259,30 @@ static void on_home_pan(ZApp *app, void *state, const ZPanEvent *e) {
 // exactly where the widgets sit, so a dark translucent widget card had a dark
 // ground behind it and could not read as a card at all. A material needs
 // something behind it to be a material AGAINST.
-static ZView wallpaper_scrim(void) {
+// A gradient over the bottom of the wallpaper, so what sits there — the dock,
+// the page dots — has something to read against.
+//
+// IT FOLLOWS THE WALLPAPER'S OWN POLARITY (P54). It was a fixed BLACK ramp,
+// written when everything drawn over it was light ink. Now the ink over the
+// wallpaper is measured from the picture, and a dark scrim under DARK ink is not
+// a legibility aid — it closes the gap it exists to open. So the scrim darkens a
+// bright bottom and lightens a dark one, which is the same rule the ink itself
+// follows and therefore always the opposite of it.
+static ZView wallpaper_scrim(ZApp *app) {
+    float sh = (float)z_screen_height(app);
+    if (sh < 1.0f) {
+        sh = 1440.0f;
+    }
+    // The band the ramp actually covers, so the measurement and the paint agree
+    // about which part of the picture is being talked about.
+    bool bright = zelto_wallpaper_luma(app, 0.0f, 0.62f, 1.0f, 1.0f) > 0.18f;
     ZStackOpts col = {0};
     for (int i = 0; i < SCRIM_BANDS; i++) {
         float t = (float)i / (float)(SCRIM_BANDS - 1);
         float e = t < 0.62f ? 0.0f : (t - 0.62f) / 0.38f;   // bottom third only
         uint8_t a = (uint8_t)(e * e * 104.0f);
-        col.children[i] = Rect(.color = z_rgba(0, 0, 0, a), .grow = 1.0f);
+        col.children[i] =
+            Rect(.color = bright ? z_scrim(a) : z_glow(a), .grow = 1.0f);
     }
     return Fill(z_stack(Z_AXIS_VERTICAL, &col));
 }
@@ -1284,11 +1301,11 @@ static ZView wallpaper_gradient(void) {
     return Fill(z_stack(Z_AXIS_VERTICAL, &col));
 }
 
-static ZView wallpaper(LauncherState *s) {
+static ZView wallpaper(ZApp *app, LauncherState *s) {
     if (s->wp_ok) {
         return Fill(ZStack(
             Fill(Cover(Image(s->wp_path))),
-            wallpaper_scrim(),
+            wallpaper_scrim(app),
             .align = Z_ALIGN_CENTER));
     }
     return wallpaper_gradient();
@@ -1352,6 +1369,23 @@ static ZView app_icon_tile(const AppEntry *e) {
     return app_icon_sized(e, ICON_SIZE);
 }
 
+// THE INK OVER THE WALLPAPER (P54). A caption sits on the picture, and a
+// picture does not change when the appearance does — so this ink is measured off
+// the band the grid occupies rather than taken from the palette. The TextShadow
+// below still covers what a band MEAN cannot see: a bright object inside a dark
+// band. See the long note in common/wallpaper.h.
+//
+// The band is the grid's own vertical extent, not the whole image: over the ten
+// shipped wallpapers a whole-image mean picks the wrong ink on four of them.
+static ZColor grid_ink(ZApp *app) {
+    float sh = (float)z_screen_height(app);
+    if (sh < 1.0f) {
+        sh = 1440.0f;
+    }
+    return zelto_wallpaper_ink(app, 0.0f, GRID_TOP / sh, 1.0f,
+                               1.0f - BOTTOM_RESERVE / sh);
+}
+
 static ZView app_cell_content(ZApp *app, const AppEntry *e) {
     // The caption is 11pt Medium — the smallest step in the scale, because an app
     // label is recognised, not read: the icon is what identifies the app and the
@@ -1371,7 +1405,7 @@ static ZView app_cell_content(ZApp *app, const AppEntry *e) {
         TextShadow(Weight(Z_WEIGHT_MEDIUM,
             EllipsizeText(app, e->name, .width = cell_side(z_app_width(app)),
                           .size = Z_FONT_CAPTION2, .weight = Z_WEIGHT_MEDIUM,
-                          .color = Z_COLOR_TEXT))),
+                          .color = grid_ink(app)))),
         .spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER);
 }
 
@@ -1757,8 +1791,14 @@ static ZView library_page_view(ZApp *app, LauncherState *s, int lp,
 // of the road — so it gets its own mark rather than an n+1'th dot, which is where
 // iOS puts it too. `page_v` is the live (fractional) scroll position; the nearest
 // page reads as active mid-flip.
-static ZView page_dots(int npages, int nlib, float page_v) {
+static ZView page_dots(ZApp *app, int npages, int nlib, float page_v) {
     int active = (int)floorf(page_v + 0.5f);
+    // THE DOTS SIT ON THE WALLPAPER (P54), under the ramp wallpaper_scrim
+    // paints, so they take their ink from the picture like every other mark
+    // out here. The inactive dot is the same ink at 55% rather than
+    // TEXT_MUTED: it has to stay one step below the active one, and the
+    // active one is no longer a palette colour.
+    ZColor dot = zelto_wallpaper_ink(app, 0.0f, 0.82f, 1.0f, 0.92f);
     // Flanking Spacers centre the dots: a bare HStack expands to the full width
     // and would otherwise pack the dots at the leading edge.
     ZStackOpts row = {.spacing = Z_SPACE_XS, .align = Z_ALIGN_CENTER};
@@ -1769,12 +1809,12 @@ static ZView page_dots(int npages, int nlib, float page_v) {
         float d = on ? 9.0f : 7.0f;
         row.children[k++] = Frame(d, d,
             CornerRadius(d / 2.0f,
-                Rect(.color = on ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED,
+                Rect(.color = on ? dot : z_fade(dot, 0x8c),
                      .radius = d / 2.0f)));
     }
     if (nlib > 0) {
         bool on = active >= npages;
-        ZColor c = on ? Z_COLOR_TEXT : Z_COLOR_TEXT_MUTED;
+        ZColor c = on ? dot : z_fade(dot, 0x8c);
         float q = on ? 4.0f : 3.0f;
         ZView quad = VStack(
             HStack(Frame(q, q, Rect(.color = c, .radius = 1.0f)),
@@ -2211,7 +2251,8 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
         bstack.children[bk++] = Spacer();
         // Dots stay up in rearrange too: they are the only readout of which page
         // the edge-dwell flip has carried the held item onto.
-        bstack.children[bk++] = page_dots(npages, state->nlib, page_v);
+        bstack.children[bk++] =
+            page_dots(app, npages, state->nlib, page_v);
         bstack.children[bk++] = bottom_content;
         // The surface runs under the home indicator, so hold the dock clear of it.
         bstack.children[bk++] = vgap((float)ZELTO_HOMEBAR_H);
@@ -2261,7 +2302,7 @@ static ZView launcher_body(ZApp *app, LauncherState *state) {
     // Assemble the home surface (back-to-front), the whole thing one pan target.
     ZStackOpts hs = {.align = Z_ALIGN_CENTER};
     int hk = 0;
-    hs.children[hk++] = wallpaper(state);
+    hs.children[hk++] = wallpaper(app, state);
     if (state->rearrange) {
         hs.children[hk++] = raster_layer(state, rpp);
     }

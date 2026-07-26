@@ -76,6 +76,13 @@
 #define LOCK_TOP 96.0f      // from the top edge to the padlock
 #define LOCK_SIDE ((float)Z_SPACE_L)   // side inset for the whole plate
 #define LOCK_MAX_CARDS 4    // cards shown before the list is summarised
+// The band of the WALLPAPER the clock plate stands on, as fractions of the
+// screen height — the strip from the padlock down through the date line, which
+// on the 1440-unit design is roughly 96..360. The ink is measured over this
+// rather than over the whole picture: see common/wallpaper.h for the four
+// shipped wallpapers a whole-image mean gets wrong.
+#define LOCK_CLOCK_BAND_TOP 0.066f
+#define LOCK_CLOCK_BAND_BOT 0.250f
 
 // A fixed gap: NOT Frame(w, h, Spacer()), which keeps its grow flag and eats the
 // stack's spare space.
@@ -549,7 +556,7 @@ static ZView keypad(LockState *s) {
 // screen. Centring it and shrinking it to Large Title made the lock screen look
 // like a splash screen; the time is the content, so it gets display size, and it
 // sits where content starts rather than floating in the middle of the wallpaper.
-static ZView lock_clock(void) {
+static ZView lock_clock(ZApp *app) {
     char clock[16] = "--:--";
     char date[64] = "";
     time_t t = time(NULL);
@@ -558,11 +565,18 @@ static ZView lock_clock(void) {
         strftime(clock, sizeof(clock), "%H:%M", &tmv);
         strftime(date, sizeof(date), "%A %d %B", &tmv);
     }
+    // THE INK OVER THE WALLPAPER (P54), measured off the band the clock occupies
+    // rather than taken from the palette: the lock screen's background is the
+    // picture, and a picture does not follow the appearance. The clock is the
+    // largest thing on this screen, so it is also the one that reads worst when
+    // its ink is chosen by a table instead of by what is behind it.
+    ZColor ink = zelto_wallpaper_ink(app, 0.0f, LOCK_CLOCK_BAND_TOP, 1.0f,
+                                     LOCK_CLOCK_BAND_BOT);
     return VStack(
         Weight(Z_WEIGHT_MEDIUM,
-            Foreground(Z_COLOR_TEXT, Font(Z_FONT_BODY, Text("%s", date)))),
+            Foreground(z_fade(ink, 0xd8), Font(Z_FONT_BODY, Text("%s", date)))),
         Weight(Z_WEIGHT_BOLD,
-            Foreground(Z_COLOR_TEXT, Font(Z_FONT_DISPLAY, Text("%s", clock)))),
+            Foreground(ink, Font(Z_FONT_DISPLAY, Text("%s", clock)))),
         .spacing = Z_SPACE_2XS, .align = Z_ALIGN_CENTER);
 }
 
@@ -613,7 +627,7 @@ static ZView lock_screen(ZApp *app, LockState *s) {
         // so the screen does not change identity under the finger.
         content = VStack(
             lgap(LOCK_TOP - 40.0f),
-            lock_clock(),
+            lock_clock(app),
             Spacer(),
             keypad(s),
             lgap(40.0f),
@@ -626,7 +640,7 @@ static ZView lock_screen(ZApp *app, LockState *s) {
         // merely asleep. Same glyph the status bar and Control Center use.
         col.children[k++] = zelto_glyph_lock(26.0f, Z_COLOR_TEXT);
         col.children[k++] = lgap(14.0f);
-        col.children[k++] = lock_clock();
+        col.children[k++] = lock_clock(app);
         ZView cards = lock_notifs(app, s);
         if (cards) {
             col.children[k++] = lgap(40.0f);
